@@ -345,7 +345,7 @@
 
 					if (signal.aborted) return;
 
-					if (res && speaking) {
+					if (res && !signal.aborted) {
 						const blob = await res.blob();
 						const url = URL.createObjectURL(blob);
 						$audioQueue.enqueue(url);
