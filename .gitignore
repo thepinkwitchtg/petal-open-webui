@@ -311,3 +311,8 @@ cypress/videos
 cypress/screenshots
 .vscode/settings.json
 .cptr
+
+# petal sovereign additions
+backend/open_webui/frontend
+backend/open_webui_data.zip
+backend/open_webui_data/
