@@ -315,3 +315,8 @@ cypress/screenshots
 
 # Local temporary fixtures and screenshots
 /tmp/
+
+# petal sovereign additions
+backend/open_webui/frontend
+backend/open_webui_data.zip
+backend/open_webui_data/
