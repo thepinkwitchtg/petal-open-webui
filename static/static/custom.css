@@ -1,0 +1,17 @@
+/* Lily Sovereign - Samsung Color Emoji + Custom Styles */
+@font-face {
+    font-family: 'SamsungColorEmoji';
+    src: url('/static/fonts/SamsungColorEmoji.ttf') format('truetype');
+    font-weight: normal;
+    font-style: normal;
+}
+
+body, * {
+    font-family: system-ui, -apple-system, "SamsungColorEmoji", "Segoe UI Emoji", "Noto Color Emoji", sans-serif !important;
+}
+
+/* Force better emoji rendering */
+.emoji, span[role="img"], .message-content {
+    font-family: "SamsungColorEmoji", "Segoe UI Emoji", "Noto Color Emoji", sans-serif !important;
+    font-size: 1.1em;
+}
