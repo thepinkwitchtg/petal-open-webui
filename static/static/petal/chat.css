@@ -1,0 +1,56 @@
+/* ═══════════════════════════════════════════════════════════
+   🌸 petal · chat
+   pinning the mockup's signature moves onto real elements.
+   grows as we look at more of the interface together.
+   ═══════════════════════════════════════════════════════════ */
+
+/* ── primary buttons ────────────────────────────────────────
+   open-webui's send / stop / call buttons all carry
+   `bg-black text-white ... dark:bg-white dark:text-black`.
+
+   [class~="dark:bg-white"] is an *exact word* match on the
+   class list, so it catches the solid white buttons and
+   deliberately misses `dark:bg-white/20` and `dark:bg-white/8`
+   (the attachment chip and the progress rail) — those are
+   meant to stay quiet.
+   ──────────────────────────────────────────────────────────── */
+html.petal [class~='dark:bg-white'] {
+	background-color: transparent !important;
+	background-image: var(--grad-fill) !important;
+	color: var(--abyss) !important;
+	box-shadow: 0 0 18px -8px var(--candy);
+	transition:
+		box-shadow 180ms,
+		filter 180ms,
+		transform 180ms;
+}
+
+html.petal [class~='dark:bg-white']:hover {
+	background-image: var(--grad-fill) !important;
+	filter: saturate(1.08) brightness(1.06);
+	box-shadow: 0 0 26px -6px var(--candy);
+	transform: scale(1.04);
+}
+
+html.petal [class~='dark:bg-white']:active {
+	transform: scale(0.97);
+}
+
+html.petal [class~='dark:bg-white']:disabled {
+	filter: saturate(0.35) brightness(0.7);
+	box-shadow: none;
+	transform: none;
+}
+
+/* the glyph inside rides on currentColor */
+html.petal [class~='dark:bg-white'] svg {
+	color: var(--abyss);
+}
+
+@media (prefers-reduced-motion: reduce) {
+	html.petal [class~='dark:bg-white'],
+	html.petal [class~='dark:bg-white']:hover,
+	html.petal [class~='dark:bg-white']:active {
+		transform: none;
+	}
+}
