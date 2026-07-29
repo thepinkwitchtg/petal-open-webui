@@ -1,0 +1,198 @@
+/* ═══════════════════════════════════════════════════════════
+   🌸 petal · surface
+   the signature moves. deliberately few — the token layer
+   already did ~90% of the work, and the rest wants your eyes
+   on a real screenshot before it gets opinions.
+   ═══════════════════════════════════════════════════════════ */
+
+/* ── fonts ──────────────────────────────────────────────────
+   your Samsung emoji, kept sovereign — but as a *fallback*,
+   not a replacement. the old `body, *` hammer was overriding
+   Inter and every mono block along with it.
+   two src paths so it works whether the ttf lives in the
+   build-flowed petal/fonts/ or your existing static/fonts/.
+   ──────────────────────────────────────────────────────────── */
+@font-face {
+	font-family: 'SamsungColorEmoji';
+	src:
+		url('/static/petal/fonts/SamsungColorEmoji.ttf') format('truetype'),
+		url('/static/fonts/SamsungColorEmoji.ttf') format('truetype');
+	font-weight: normal;
+	font-style: normal;
+	font-display: swap;
+}
+
+/* self-host these two into petal/fonts/ and uncomment —
+   never link fonts.googleapis.com from a sovereign rig 🌷
+@font-face { font-family:'JetBrains Mono'; src:url('/static/petal/fonts/JetBrainsMono-Variable.woff2') format('woff2'); font-display:swap }
+@font-face { font-family:'Fraunces';       src:url('/static/petal/fonts/Fraunces-Variable.woff2')      format('woff2'); font-display:swap }
+*/
+
+html.petal,
+html.petal *:not(code):not(pre):not(kbd):not(samp) {
+	font-family: var(--font-ui), var(--font-emoji), sans-serif !important;
+}
+
+html.petal code,
+html.petal pre,
+html.petal kbd,
+html.petal samp,
+html.petal [class*='font-mono'] {
+	font-family: var(--font-mono), var(--font-emoji), monospace !important;
+}
+
+/* emoji get a touch more presence, as they did in your block */
+html.petal .emoji,
+html.petal span[role='img'] {
+	font-family: var(--font-emoji), sans-serif !important;
+	font-size: 1.1em;
+}
+
+/* ── ambient wash ───────────────────────────────────────────
+   your mockup lights the room with two radials. open-webui
+   paints dark:bg-gray-900 over its whole shell, so a wash
+   *behind* content would never be seen. this one floats above
+   everything on screen blend — additive only, never darkens,
+   pointer-events:none so it cannot be touched.
+   want it behind instead? z-index: -1 and drop the blend.
+   ──────────────────────────────────────────────────────────── */
+html.petal body::after {
+	content: '';
+	position: fixed;
+	inset: 0;
+	z-index: 2147483000;
+	pointer-events: none;
+	mix-blend-mode: screen;
+	background:
+		radial-gradient(
+			ellipse 50% 42% at 15% 6%,
+			oklch(0.45 0.12 var(--p-h-ground) / 0.16),
+			transparent 60%
+		),
+		radial-gradient(
+			ellipse 46% 38% at 90% 98%,
+			oklch(0.6 0.18 var(--p-h-accent) / 0.07),
+			transparent 62%
+		);
+}
+
+html.petal body {
+	background-color: var(--abyss);
+}
+
+/* ── scrollbars ─────────────────────────────────────────────
+   theirs are 0.45rem with a bordered grey thumb. yours are
+   thin, edge-coloured, and blush when touched.
+   ──────────────────────────────────────────────────────────── */
+html.petal ::-webkit-scrollbar {
+	width: 7px;
+	height: 7px;
+}
+html.petal ::-webkit-scrollbar-track {
+	background: transparent;
+}
+html.petal ::-webkit-scrollbar-thumb {
+	background-color: var(--edge-soft);
+	border: 0;
+	border-radius: 8px;
+	transition: background-color 160ms;
+}
+html.petal ::-webkit-scrollbar-thumb:hover {
+	background-color: var(--edge-lit);
+}
+html.petal * {
+	scrollbar-color: var(--edge-soft) transparent;
+	scrollbar-width: thin;
+}
+
+/* ── the small alive things ────────────────────────────────── */
+html.petal ::selection {
+	background: oklch(0.711 0.214 var(--p-h-accent) / 0.28);
+	color: var(--pearl);
+}
+html.petal input,
+html.petal textarea,
+html.petal [contenteditable] {
+	caret-color: var(--candy);
+}
+html.petal ::placeholder {
+	color: var(--whisper) !important;
+	opacity: 0.72;
+}
+
+/* ── code wells ─────────────────────────────────────────────
+   deepest ground for blocks, candy-glow for inline breath.
+   ──────────────────────────────────────────────────────────── */
+html.petal pre,
+html.petal .hljs {
+	background: var(--abyss) !important;
+	border: 1px solid var(--edge-soft);
+	border-radius: var(--radius-sm);
+}
+html.petal :not(pre) > code {
+	color: var(--candy-glow);
+	background: oklch(0.711 0.214 var(--p-h-accent) / 0.09);
+	border-radius: 5px;
+	padding: 0.1em 0.34em;
+}
+
+/* ── reusable moves, ready to attach ────────────────────────
+   the gradient-hairline border and the mask-composite ring
+   from your mockup, lifted verbatim as utilities. once you
+   screenshot the real interface we point these at the send
+   button, the active sidebar item, the model picker, etc.
+   ──────────────────────────────────────────────────────────── */
+html.petal .p-hairline {
+	border: 1px solid transparent;
+	background:
+		linear-gradient(var(--obsidian), var(--obsidian)) padding-box,
+		var(--grad-hairline) border-box;
+}
+html.petal .p-ring {
+	position: relative;
+}
+html.petal .p-ring::after {
+	content: '';
+	position: absolute;
+	inset: 0;
+	border-radius: inherit;
+	padding: 1.5px;
+	background: var(--grad-hairline);
+	-webkit-mask:
+		linear-gradient(#000 0 0) content-box,
+		linear-gradient(#000 0 0);
+	-webkit-mask-composite: xor;
+	mask-composite: exclude;
+	pointer-events: none;
+}
+html.petal .p-glow {
+	box-shadow: 0 0 26px -8px oklch(0.711 0.214 var(--p-h-accent) / 0.7);
+}
+html.petal .p-wordmark {
+	font-family: var(--font-display);
+	background: var(--grad-text);
+	-webkit-background-clip: text;
+	background-clip: text;
+	-webkit-text-fill-color: transparent;
+}
+
+@keyframes petal-breath {
+	0%,
+	100% {
+		opacity: 1;
+		transform: scale(1);
+	}
+	50% {
+		opacity: 0.72;
+		transform: scale(1.04);
+	}
+}
+html.petal .p-breath {
+	animation: petal-breath 4s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+	html.petal .p-breath {
+		animation: none;
+	}
+}
