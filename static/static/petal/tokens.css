@@ -1,0 +1,108 @@
+/* ═══════════════════════════════════════════════════════════
+   🌸 petal · tokens  ·  v0.2
+   the whole theme hangs off five numbers.
+   everything below is derived — turn a dial, the room turns.
+
+   v0.2 · the type ramp got its own chroma dial and defaults
+          near-neutral. tinted body text reads beautifully on
+          a mockup panel and badly across a full chat surface.
+   ═══════════════════════════════════════════════════════════ */
+
+html.petal {
+	/* ── the dials ──────────────────────────────────────────
+	   ground      : the violet floor (measured 299–309 in the mockup)
+	   text        : the hue the type *would* carry, if allowed
+	   accent      : candy. 352 is the reddest thing in the system —
+	                 walk it toward 316 and the whole room goes iris.
+	   chroma      : global saturation. 0 = graphite, 1 = mockup.
+	   chroma-text : how much blush survives into the type.
+	                 0 = pure neutral, 0.3 = a rumour, 1 = the mockup.
+	   ──────────────────────────────────────────────────────── */
+	--p-h-ground: 301;
+	--p-h-mid: 320;
+	--p-h-text: 338;
+	--p-h-accent: 352;
+	--p-chroma: 1;
+	--p-chroma-text: 0.3;
+
+	/* ── ground ramp ────────────────────────────────────────
+	   chroma rises with lightness, the way your mockup does it.
+	   the ground keeps its full colour — it is atmosphere, not
+	   information, so it can be as violet as it likes.
+	   ──────────────────────────────────────────────────────── */
+	--abyss: oklch(0.109 calc(0.021 * var(--p-chroma)) var(--p-h-ground));
+	--obsidian: oklch(0.138 calc(0.021 * var(--p-chroma)) var(--p-h-ground));
+	--obsidian-lit: oklch(0.17 calc(0.028 * var(--p-chroma)) var(--p-h-ground));
+	--edge-soft: oklch(0.207 calc(0.032 * var(--p-chroma)) var(--p-h-ground));
+	--edge: oklch(0.248 calc(0.043 * var(--p-chroma)) var(--p-h-ground));
+	--edge-lit: oklch(0.31 calc(0.05 * var(--p-chroma)) var(--p-h-ground));
+	--glass-sheen: oklch(1 0 0 / 0.03);
+
+	/* ── type ramp ──────────────────────────────────────────
+	   lightness lifted and chroma throttled vs v0.1. legibility
+	   first; the blush is a dial you can turn back up.
+	   ──────────────────────────────────────────────────────── */
+	--whisper: oklch(0.585 calc(0.054 * var(--p-chroma) * var(--p-chroma-text)) var(--p-h-mid));
+	--mist: oklch(0.795 calc(0.043 * var(--p-chroma) * var(--p-chroma-text)) var(--p-h-text));
+	--pearl: oklch(0.965 calc(0.02 * var(--p-chroma) * var(--p-chroma-text)) var(--p-h-text));
+
+	/* ── bloom ──────────────────────────────────────────────
+	   iris trails candy by 36° — one relationship, not two colours.
+	   accents keep full chroma. they are meant to be seen.
+	   ──────────────────────────────────────────────────────── */
+	--candy: oklch(0.711 calc(0.214 * var(--p-chroma)) var(--p-h-accent));
+	--candy-deep: oklch(0.607 calc(0.198 * var(--p-chroma)) var(--p-h-accent));
+	--candy-glow: oklch(0.815 calc(0.132 * var(--p-chroma)) var(--p-h-accent));
+	--candy-light: oklch(0.898 calc(0.068 * var(--p-chroma)) var(--p-h-accent));
+	--iris: oklch(0.622 calc(0.186 * var(--p-chroma)) calc(var(--p-h-accent) - 36));
+
+	--grad-hairline: linear-gradient(135deg, var(--candy-light), var(--candy) 45%, var(--iris));
+	--grad-text: linear-gradient(100deg, var(--candy-light) 0%, var(--candy) 46%, var(--iris) 100%);
+	--grad-fill: linear-gradient(135deg, var(--candy-light) 0%, var(--candy) 48%, var(--iris) 100%);
+
+	/* ── shape & type ───────────────────────────────────────── */
+	--radius: 14px;
+	--radius-sm: 8px;
+	--font-display: 'Fraunces', ui-serif, Georgia, serif;
+	--font-ui: 'Inter', 'Vazirmatn', ui-sans-serif, system-ui, sans-serif;
+	--font-mono: 'JetBrains Mono', ui-monospace, 'SF Mono', Menlo, monospace;
+	--font-emoji: 'SamsungColorEmoji', 'Noto Color Emoji', 'Segoe UI Emoji';
+
+	/* ═══════════════════════════════════════════════════════
+	   the lever: open-webui's entire neutral spine.
+	   tailwind v4 declares these on :root with zero chroma —
+	   html.petal is one specificity step above, so we win.
+	   in dark mode the LOW numbers are type and the HIGH
+	   numbers are surfaces. usage counts from their source:
+	   ═══════════════════════════════════════════════════════ */
+
+	/* surfaces — full violet */
+	--color-gray-950: var(--abyss); /*   5 bg · deepest wells     */
+	--color-gray-900: var(--obsidian); /*  65 bg · the app shell     */
+	--color-gray-850: var(--edge-soft); /* 112 bg · 132 border ← king */
+	--color-gray-800: var(--edge); /*  82 bg ·  78 border        */
+	--color-gray-700: var(--edge-lit); /*  58 bg ·  24 border        */
+
+	/* type — throttled, lifted, legible */
+	--color-gray-600: oklch(0.585 calc(0.045 * var(--p-chroma) * var(--p-chroma-text)) var(--p-h-mid)); /* 239 */
+	--color-gray-500: oklch(0.7 calc(0.05 * var(--p-chroma) * var(--p-chroma-text)) var(--p-h-mid)); /* 232 */
+	--color-gray-400: var(--mist); /* 392 ← workhorse muted */
+	--color-gray-300: oklch(0.875 calc(0.032 * var(--p-chroma) * var(--p-chroma-text)) var(--p-h-text)); /* 273 */
+	--color-gray-200: oklch(0.935 calc(0.024 * var(--p-chroma) * var(--p-chroma-text)) var(--p-h-text)); /* 122 */
+	--color-gray-100: var(--pearl); /* 134 ← primary body text */
+	--color-gray-50: oklch(0.985 calc(0.012 * var(--p-chroma) * var(--p-chroma-text)) var(--p-h-text));
+
+	/* ── the second lever: every focus ring in the app ──────
+	   border-blue-400/500 alone is 154 occurrences.
+	   ──────────────────────────────────────────────────────── */
+	--color-blue-200: var(--candy-light);
+	--color-blue-300: var(--candy-glow);
+	--color-blue-400: var(--candy);
+	--color-blue-500: var(--candy);
+	--color-blue-600: var(--candy-deep);
+	--color-blue-700: var(--candy-deep);
+	--color-blue-900: var(--edge);
+
+	/* red is deliberately left alone — destructive actions
+	   should keep saying destructive, not saying pretty. */
+}

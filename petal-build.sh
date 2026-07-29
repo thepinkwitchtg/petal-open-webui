@@ -1,7 +1,34 @@
 #!/bin/bash
 # petal-build — rebuild OWUI frontend and re-seat the editable install 🌸
+#   ./petal-build.sh          full build (svelte + editable re-seat)
+#   ./petal-build.sh --skin   css-only fast lane, no npm, ~instant
 set -e
 cd ~/Gardens/petal-open-webui
+
+SRC="static/static"
+BUILD="build/static"
+BACK="backend/open_webui/static"
+
+if [[ "$1" == "--skin" ]]; then
+	# 🌸 skin-only sync.
+	# writes to BOTH build/ and backend static, because config.py wipes
+	# every top-level file in backend static on boot and repopulates it
+	# from build/ — so build/ has to be truth or a restart eats the tweak.
+	if [[ ! -d "$BUILD" ]]; then
+		echo "💔 no build/ yet — run a full ./petal-build.sh first"
+		exit 1
+	fi
+
+	for dest in "$BUILD" "$BACK"; do
+		mkdir -p "$dest/petal"
+		cp -r "$SRC/petal/." "$dest/petal/"
+		cp "$SRC/custom.css" "$dest/custom.css"
+		cp "$SRC/loader.js" "$dest/loader.js"
+	done
+
+	echo "🌸 skin synced — hard-refresh Brave (ctrl+shift+r) 💅"
+	exit 0
+fi
 
 echo "🌸 building frontend..."
 npm run build
