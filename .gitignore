@@ -316,3 +316,10 @@ cypress/screenshots
 backend/open_webui/frontend
 backend/open_webui_data.zip
 backend/open_webui_data/
+
+# 🌸 petal theme — derived from build/, never source
+backend/open_webui/static/petal/
+backend/open_webui/static/custom.css
+static/static/custom.css
+static/static/loader.js
+static/static/petal
