@@ -1,0 +1,12 @@
+/* ═══════════════════════════════════════════════════════════
+   🌸 petal · theme  ·  v0.2
+   an abyssal-violet skin for open-webui, grown from
+   petal-gen-sequence-mockup-v0.4
+
+   lives entirely in untracked files. git cannot see it.
+   entry point is /static/custom.css → one @import line.
+   ═══════════════════════════════════════════════════════════ */
+
+@import url('/static/petal/tokens.css');
+@import url('/static/petal/surface.css');
+@import url('/static/petal/chat.css');
