@@ -318,12 +318,53 @@ async def add_memory_context(request, form_data: dict, user, model: dict | None 
 
     sections = {'user': [], 'neighborhood': [], 'context': []}
     seen_ids = set()
-    for memory in sorted(
-        [memory for memory in (all_memories or []) if memory.type == 'user'],
-        key=lambda item: (item.path or '', item.updated_at),
-    ):
+
+    # ── petal ──────────────────────────────────────────────────
+    # user-memory budget: config override, else 6000 (was 2000, raw-sliced below).
+    _mem_cfg = await Config.get_many('memories.user_char_limit', 'memories.context_char_limit')
+    try:
+        user_budget = max(250, int(_mem_cfg.get('memories.user_char_limit') or 6000))
+    except Exception:
+        user_budget = 6000
+    try:
+        context_limit = max(250, int(_mem_cfg.get('memories.context_char_limit') or 6000))
+    except Exception:
+        context_limit = 6000
+
+    # honor per-entry `enabled` (meta.enabled is not False) + manual `order`
+    # (meta.order asc), then drop WHOLE overflowing entries at the budget rather
+    # than guillotining one mid-content. stopping at the first overflow keeps the
+    # dropped set a clean suffix, so the Personalization bar can mark exactly which
+    # entries won't inject this turn. cost mirrors Scribe: len(label) + join-\n.
+    # a memory is disabled only when meta.enabled is explicitly False (missing = on).
+    # one set, obeyed by every path below — user, neighborhood, and vector alike.
+    disabled_ids = {
+        m.id
+        for m in (all_memories or [])
+        if (m.meta or {}).get('enabled', True) is False
+    }
+    user_rows = [
+        m
+        for m in (all_memories or [])
+        if m.type == 'user' and m.id not in disabled_ids
+    ]
+    user_rows.sort(
+        key=lambda m: (
+            (m.meta or {}).get('order', float('inf')),
+            m.path or '',
+            m.created_at or 0,
+        )
+    )
+    used = 0
+    for memory in user_rows:
+        label = memory_label(memory)
+        cost = len(label) + (1 if sections['user'] else 0)
+        if used + cost > user_budget:
+            break
+        used += cost
         seen_ids.add(memory.id)
-        sections['user'].append(memory_label(memory))
+        sections['user'].append(label)
+    # ──────────────────────────────────────────────────────────
 
     for hint in memory_path_hints(query, all_memories):
         for memory in search_memory_rows(
@@ -332,7 +373,7 @@ async def add_memory_context(request, form_data: dict, user, model: dict | None 
             memory_type='context',
             limit=4,
         ):
-            if memory.id in seen_ids:
+            if memory.id in seen_ids or memory.id in disabled_ids:  # ── petal: honor enabled
                 continue
             seen_ids.add(memory.id)
             sections['neighborhood'].append(memory_label(memory))
@@ -349,7 +390,7 @@ async def add_memory_context(request, form_data: dict, user, model: dict | None 
             memory_id = None
             if results.ids and results.ids[0] and len(results.ids[0]) > doc_idx:
                 memory_id = results.ids[0][doc_idx]
-            if memory_id and memory_id in seen_ids:
+            if memory_id and (memory_id in seen_ids or memory_id in disabled_ids):  # ── petal
                 continue
             if memory_id:
                 seen_ids.add(memory_id)
@@ -370,16 +411,6 @@ async def add_memory_context(request, form_data: dict, user, model: dict | None 
     if not parts:
         return form_data
 
-    config = await Config.get_many('memories.user_char_limit', 'memories.context_char_limit')
-    try:
-        user_limit = max(250, int(config.get('memories.user_char_limit') or 2000))
-    except Exception:
-        user_limit = 2000
-    try:
-        context_limit = max(250, int(config.get('memories.context_char_limit') or 2000))
-    except Exception:
-        context_limit = 2000
-
     messages = form_data['messages']
     if messages and messages[0].get('role') == 'system':
         content = messages[0].get('content', '')
@@ -393,7 +424,7 @@ async def add_memory_context(request, form_data: dict, user, model: dict | None 
     context_parts = [part for part in parts if not part.startswith('[User Memory]')]
     rendered = '\n\n'.join(
         [
-            '\n\n'.join(user_parts)[:user_limit],
+            '\n\n'.join(user_parts),  # ── petal: already budget-dropped per-entry above
             '\n\n'.join(context_parts)[:context_limit],
         ]
     ).strip()

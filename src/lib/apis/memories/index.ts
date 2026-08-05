@@ -28,7 +28,13 @@ export const getMemories = async (token: string) => {
 	return res;
 };
 
-export const addNewMemory = async (token: string, content: string, type = 'user', path = '') => {
+export const addNewMemory = async (
+	token: string,
+	content: string,
+	type = 'user',
+	path = '',
+	meta?: Record<string, any>
+) => {
 	let error = null;
 
 	const res = await fetch(`${WEBUI_API_BASE_URL}/memories/add`, {
@@ -41,7 +47,8 @@ export const addNewMemory = async (token: string, content: string, type = 'user'
 		body: JSON.stringify({
 			content: content,
 			type,
-			path
+			path,
+			...(meta ? { meta } : {})
 		})
 	})
 		.then(async (res) => {
@@ -64,12 +71,18 @@ export const addNewMemory = async (token: string, content: string, type = 'user'
 export const updateMemoryById = async (
 	token: string,
 	id: string,
-	content: string,
+	content?: string,
 	type?: string,
-	path?: string
+	path?: string,
+	meta?: Record<string, any>
 ) => {
 	let error = null;
-	const body = { content, ...(type ? { type } : {}), ...(path !== undefined ? { path } : {}) };
+	const body = {
+		...(content !== undefined ? { content } : {}),
+		...(type ? { type } : {}),
+		...(path !== undefined ? { path } : {}),
+		...(meta ? { meta } : {})
+	};
 
 	const res = await fetch(`${WEBUI_API_BASE_URL}/memories/${id}/update`, {
 		method: 'POST',
@@ -96,6 +109,10 @@ export const updateMemoryById = async (
 
 	return res;
 };
+
+// ── petal: reorder / enable-disable without rewriting content ──
+export const updateMemoryMeta = (token: string, id: string, meta: Record<string, any>) =>
+	updateMemoryById(token, id, undefined, undefined, undefined, meta);
 
 export const queryMemory = async (token: string, content: string) => {
 	let error = null;

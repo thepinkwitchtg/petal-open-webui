@@ -73,12 +73,14 @@ class AddMemoryForm(BaseModel):
     content: str
     type: Literal['user', 'context'] = 'context'
     path: str | None = None
+    meta: dict | None = None  # ── petal: carry {enabled, order} without a migration ──
 
 
 class MemoryUpdateModel(BaseModel):
     content: str | None = None
     type: Literal['user', 'context'] | None = None
     path: str | None = None
+    meta: dict | None = None  # ── petal ──
 
 
 class MemoryOperationModel(BaseModel):
@@ -145,7 +147,7 @@ async def add_memory(
         content,
         memory_type=form_data.type,
         path=path,
-        meta={'created_by': 'manual'},
+        meta={'created_by': 'manual', **(form_data.meta or {})},
     )
 
     vector = await request.app.state.EMBEDDING_FUNCTION(
@@ -493,7 +495,8 @@ async def update_memory_by_id(
 
     content = clean_memory_content(form_data.content) if form_data.content is not None else None
     path = clean_memory_path(form_data.path)
-    if content is None and form_data.type is None and form_data.path is None:
+    # ── petal: meta-only updates (enable/disable, reorder) are valid; content not required ──
+    if content is None and form_data.type is None and form_data.path is None and form_data.meta is None:
         raise HTTPException(status_code=400, detail='No memory update provided')
     memory = await Memories.update_memory_by_id_and_user_id(
         memory_id,
@@ -502,7 +505,7 @@ async def update_memory_by_id(
         memory_type=form_data.type,
         path=path,
         update_path=form_data.path is not None,
-        meta={'created_by': 'manual'},
+        meta={'created_by': 'manual', **(form_data.meta or {})},
     )
     if memory is None:
         raise HTTPException(status_code=404, detail=ERROR_MESSAGES.NOT_FOUND)

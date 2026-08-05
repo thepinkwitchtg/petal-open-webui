@@ -15,6 +15,9 @@
 
 	const i18n = getContext('i18n');
 
+	// ── petal: same ceiling as the injection budget (utils/memory.py) ──
+	const MEMORY_CHAR_LIMIT = 6000;
+
 	let loading = false;
 	let content = '';
 	let type = 'user';
@@ -26,6 +29,7 @@
 		type = memory?.type ?? 'user';
 		path = memory?.path ?? '';
 	}
+	$: charCount = content.length;
 
 	const submitHandler = async () => {
 		loading = true;
@@ -90,6 +94,7 @@
 
 						<textarea
 							bind:value={content}
+							maxlength={MEMORY_CHAR_LIMIT}
 							class="bg-transparent w-full text-sm outline-hidden placeholder:text-gray-300 dark:placeholder:text-gray-700"
 							rows="6"
 							style="resize: vertical;"
@@ -97,6 +102,16 @@
 								? $i18n.t('Add a preference, fact, or instruction about you')
 								: $i18n.t('Add durable context for future chats')}
 						/>
+
+						<!-- ── petal: live char readout against the 6k ceiling ── -->
+						<div
+							class="flex justify-end mt-1 text-[0.625rem] tabular-nums {charCount >
+							MEMORY_CHAR_LIMIT * 0.9
+								? 'text-pink-500'
+								: 'text-gray-400 dark:text-gray-600'}"
+						>
+							{charCount} / {MEMORY_CHAR_LIMIT}
+						</div>
 
 						<div class="flex flex-col w-full mt-1.5">
 							<label for="memory-path" class="mb-0.5 text-xs text-gray-500">
