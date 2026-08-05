@@ -561,24 +561,10 @@
 />
 
 <style>
-	/* 🌸 Abyss Pink — scoped to the memory panel so it wears the ref skin
-	   regardless of the surrounding OWUI theme. */
-	.petal-mem {
-		--abyss: #060309;
-		--obsidian: #0a0710;
-		--obsidian-lit: #0e0a16;
-		--edge: #241a30;
-		--edge-soft: #1a1424;
-		--candy: #ff5bb0;
-		--candy-light: #ffcce9;
-		--candy-deep: #d4408f;
-		--iris: #b15cd1;
-		--grad-hairline: linear-gradient(135deg, #ffcce9, #ff6ec0 45%, #b15cd1);
-		--pearl: #f5e6ef;
-		--mist: #c0a4b8;
-		--whisper: #8a7291;
-		--mono: 'JetBrains Mono', ui-monospace, monospace;
-	}
+	/* 🌸 memory panel — STRUCTURE ONLY. every colour + font drinks from
+	   petal/tokens.css on html.petal, so turning a global dial turns this
+	   room too. nothing hardcoded → no drift.
+	   (map: petal-owui-theme-and-memory-map.md) */
 
 	.mem-section {
 		margin-top: 0.5rem;
@@ -612,7 +598,7 @@
 		color: var(--whisper);
 	}
 	.mem-sec-count {
-		font-family: var(--mono);
+		font-family: var(--font-mono);
 		font-size: 0.625rem;
 		color: var(--mist);
 	}
@@ -636,15 +622,15 @@
 		height: 100%;
 		border-radius: 999px;
 		background: linear-gradient(90deg, var(--candy-light), var(--candy) 55%, var(--iris));
-		box-shadow: 0 0 10px rgba(255, 91, 176, 0.45);
+		box-shadow: 0 0 10px oklch(0.711 0.214 var(--p-h-accent) / 0.45);
 		transition: width 0.25s ease;
 	}
 	.mem-bar-fill.hot {
 		background: linear-gradient(90deg, var(--candy), var(--candy-deep));
-		box-shadow: 0 0 10px rgba(212, 64, 143, 0.55);
+		box-shadow: 0 0 10px oklch(0.607 0.198 var(--p-h-accent) / 0.55);
 	}
 	.mem-bar-num {
-		font-family: var(--mono);
+		font-family: var(--font-mono);
 		font-size: 0.625rem;
 		color: var(--mist);
 		white-space: nowrap;
@@ -664,7 +650,7 @@
 		align-items: flex-start;
 		gap: 0.55rem;
 		padding: 0.5rem 0.6rem;
-		border-radius: 12px;
+		border-radius: var(--radius-sm, 8px);
 		background: linear-gradient(180deg, var(--obsidian-lit), var(--obsidian));
 		box-shadow: inset 0 0 0 1px var(--edge-soft);
 		transition:
@@ -687,7 +673,7 @@
 	}
 	.mem-row.dropped {
 		opacity: 0.6;
-		box-shadow: inset 0 0 0 1px rgba(212, 64, 143, 0.35);
+		box-shadow: inset 0 0 0 1px oklch(0.607 0.198 var(--p-h-accent) / 0.35);
 	}
 
 	.mem-grip {
@@ -734,7 +720,7 @@
 	}
 	.mem-toggle.on {
 		background: linear-gradient(135deg, var(--candy), var(--iris));
-		box-shadow: 0 0 8px rgba(255, 91, 176, 0.4);
+		box-shadow: 0 0 8px oklch(0.711 0.214 var(--p-h-accent) / 0.4);
 	}
 	.mem-toggle.on .mem-knob {
 		left: 13px;
@@ -749,7 +735,7 @@
 		gap: 2px;
 	}
 	.mem-path {
-		font-family: var(--mono);
+		font-family: var(--font-mono);
 		font-size: 0.5625rem;
 		color: var(--iris);
 		opacity: 0.85;
@@ -762,7 +748,7 @@
 		line-height: 1.4;
 	}
 	.mem-flag {
-		font-family: var(--mono);
+		font-family: var(--font-mono);
 		font-size: 0.5rem;
 		text-transform: uppercase;
 		letter-spacing: 0.04em;
@@ -775,7 +761,7 @@
 
 	.mem-cost {
 		flex: 0 0 auto;
-		font-family: var(--mono);
+		font-family: var(--font-mono);
 		font-size: 0.5625rem;
 		color: var(--mist);
 		padding-top: 2px;
