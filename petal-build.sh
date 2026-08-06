@@ -43,10 +43,15 @@ if [[ "$1" == "--skin" ]]; then
 fi
 
 echo "🌸 building frontend..."
-npm run build
+NODE_OPTIONS="--max-old-space-size=8192" npm run build
 
 echo "🌸 re-seating editable install..."
 source ~/.venvs/openwebui/bin/activate
 python -m pip install -e . --quiet
 
 echo "✨ done~ restart open-webui serve to pick up changes"
+
+# 🌸 self-heal the chroma tombstone ghost — safe in EITHER state:
+#   owui up   → reports drift, defers, touches nothing
+#   owui down → backs up + nukes in the safe window, your restart brings her back clean
+chmod +x ./petal-ghost-check.sh
