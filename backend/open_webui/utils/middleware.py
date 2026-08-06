@@ -5501,6 +5501,19 @@ async def streaming_chat_response_handler(response, ctx):
                 for item in output:
                     if item.get('status') == 'in_progress':
                         item['status'] = 'completed'
+                    # PETAL — template-leak guard: if the model overran its stop and
+                    # spilled scaffold, cut at the first marker so the garbled turn
+                    # never renders, never persists, never re-enters via history replay.
+                    # No-op on clean turns (one substring check, folded into this pass).
+                    for _part in item.get('content', []) or []:
+                        _t = _part.get('text')
+                        if _t and ('<|im_start|>' in _t or '<|im_end|>' in _t):
+                            _cut = min(_t.index(m) for m in ('<|im_start|>', '<|im_end|>') if m in _t)
+                            log.warning(
+                                'PETAL_LEAK_GUARD >>> cut %d chars | type=%s | tail=%r',
+                                len(_t) - _cut, item.get('type'), _t[_cut:_cut + 160],
+                            )
+                            _part['text'] = _t[:_cut].rstrip()
 
                 title = await Chats.get_chat_title_by_id(metadata['chat_id']) if save_to_chat else ''
                 data = {
