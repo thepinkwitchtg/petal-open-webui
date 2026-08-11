@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import datetime
 import logging
+import os
 import re
 import time
 import urllib
@@ -831,7 +832,11 @@ async def signup_handler(
     if await Users.get_num_users(db=db) == 1:
         await Users.update_user_role_by_id(user.id, 'admin', db=db)
         user = await Users.get_user_by_id(user.id, db=db)
-        await Config.upsert({'ui.enable_signup': False})
+        # PETAL FORK: don't auto-disable signup after first admin.
+        # Upstream logic conflates first-user bootstrap with signup permission;
+        # we want ENABLE_SIGNUP env var / admin UI to be the sole source of truth.
+        if os.getenv('PETAL_ALWAYS_ALLOW_SIGNUP', 'false').lower() != 'true':
+            await Config.upsert({'ui.enable_signup': False})
 
     await apply_default_group_assignment(
         await Config.get('ui.default_group_id'),
