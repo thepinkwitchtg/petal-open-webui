@@ -12,6 +12,7 @@
 	import ExperimentalBadge from '$lib/components/common/ExperimentalBadge.svelte';
 	import MemoryModal from './Personalization/MemoryModal.svelte';
 	import {
+		addNewMemory,
 		deleteMemoriesByUserId,
 		deleteMemoryById,
 		getMemories,
@@ -219,6 +220,152 @@
 		showClearConfirmDialog = false;
 	};
 
+	// ── petal: export / import / copy — all ride existing endpoints ──
+	// import is client-side; /delete/user already drops the chroma collection
+	// (see memories.py), so a replace-restore is ghost-free. no new backend.
+	let importMode: 'replace' | 'merge' = 'replace';
+	let importing = false;
+	let fileInput: HTMLInputElement;
+
+	// clipboard that survives http on the phone (LAN IP:3000 = insecure context
+	// → navigator.clipboard is undefined). falls back to execCommand.
+	const petalCopy = async (text: string) => {
+		try {
+			if (window.isSecureContext && navigator?.clipboard?.writeText) {
+				await navigator.clipboard.writeText(text);
+			} else {
+				const ta = document.createElement('textarea');
+				ta.value = text;
+				ta.style.position = 'fixed';
+				ta.style.top = '-9999px';
+				document.body.appendChild(ta);
+				ta.focus();
+				ta.select();
+				document.execCommand('copy');
+				document.body.removeChild(ta);
+			}
+			toast.success($i18n.t('Copied to clipboard'));
+		} catch (error) {
+			toast.error(`${error}`);
+		}
+	};
+
+	// a full, faithful mirror — every entry, enabled or silenced, user + context,
+	// carrying meta (enabled / order / provenance) so a restore lands intact.
+	const buildSnapshot = () => ({
+		petal_memory_snapshot: 1,
+		exported_at: new Date().toISOString(),
+		count: memories.length,
+		memories: memories.map((m) => ({
+			content: m.content,
+			type: m.type ?? 'user',
+			path: m.path ?? null,
+			meta: m.meta ?? {},
+			created_at: m.created_at,
+			updated_at: m.updated_at
+		}))
+	});
+
+	const exportSnapshot = () => {
+		const blob = new Blob([JSON.stringify(buildSnapshot(), null, 2)], {
+			type: 'application/json'
+		});
+		const url = URL.createObjectURL(blob);
+		const a = document.createElement('a');
+		const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+		a.href = url;
+		a.download = `petal-memories-${stamp}.json`;
+		document.body.appendChild(a);
+		a.click();
+		document.body.removeChild(a);
+		URL.revokeObjectURL(url);
+	};
+
+	const copyAll = () => petalCopy(JSON.stringify(buildSnapshot(), null, 2));
+
+	const chooseImport = (mode: 'replace' | 'merge') => {
+		importMode = mode;
+		fileInput?.click();
+	};
+
+	const onImportFile = async (event: Event) => {
+		const input = event.target as HTMLInputElement;
+		const file = input.files?.[0];
+		input.value = ''; // let the same file be re-picked
+		if (!file) return;
+
+		let parsed: any;
+		try {
+			parsed = JSON.parse(await file.text());
+		} catch {
+			toast.error($i18n.t('That file is not valid JSON'));
+			return;
+		}
+		const items = Array.isArray(parsed) ? parsed : parsed?.memories;
+		if (!Array.isArray(items) || items.length === 0) {
+			toast.error($i18n.t('No memories found in that file'));
+			return;
+		}
+		await runImport(items, importMode);
+	};
+
+	const runImport = async (items: any[], mode: 'replace' | 'merge') => {
+		importing = true;
+		const tId = toast.loading(
+			mode === 'replace' ? $i18n.t('Restoring memories…') : $i18n.t('Merging memories…')
+		);
+		try {
+			if (mode === 'replace') {
+				// drops rows AND the vector collection in one move → ghost-free
+				await deleteMemoriesByUserId(localStorage.token);
+				memories = [];
+			}
+
+			// merge: skip entries already present (type + path + content)
+			const seen = new Set(
+				mode === 'merge'
+					? memories.map((m) => `${m.type ?? 'user'}\u0000${m.path ?? ''}\u0000${m.content}`)
+					: []
+			);
+
+			let added = 0;
+			let failed = 0;
+			for (const it of items) {
+				const content = (it?.content ?? '').trim();
+				if (!content) continue;
+				const type = it?.type === 'context' ? 'context' : 'user';
+				const path = it?.path ?? '';
+				const key = `${type}\u0000${path ?? ''}\u0000${content}`;
+				if (mode === 'merge' && seen.has(key)) continue;
+				try {
+					await addNewMemory(localStorage.token, content, type, path, it?.meta ?? undefined);
+					seen.add(key);
+					added += 1;
+				} catch {
+					failed += 1;
+				}
+			}
+
+			await loadMemories();
+			toast.dismiss(tId);
+			if (failed) {
+				toast.error($i18n.t('Restored {{added}}, {{failed}} failed', { added, failed }));
+			} else {
+				toast.success(
+					mode === 'replace'
+						? $i18n.t('Restored {{added}} memories', { added })
+						: $i18n.t('Merged {{added}} new memories', { added })
+				);
+			}
+		} catch (error) {
+			toast.dismiss(tId);
+			toast.error(`${error}`);
+			await loadMemories();
+		} finally {
+			importing = false;
+		}
+	};
+
 	onMount(async () => {
 		enableMemory = $settings?.memory ?? $config?.features?.enable_memories ?? false;
 		await loadMemories();
@@ -335,6 +482,91 @@
 											<div class="min-w-0 flex-1 truncate text-left">{$i18n.t('Add Memory')}</div>
 										</button>
 
+										<div class="my-1 border-t border-gray-100 dark:border-gray-800"></div>
+
+										<button
+											class="flex h-[1.6875rem] w-full cursor-pointer select-none items-center gap-2 rounded-lg bg-transparent px-2 text-xs hover:text-gray-900 disabled:cursor-default disabled:opacity-30 dark:hover:text-gray-100"
+											disabled={memories.length === 0}
+											type="button"
+											on:click={exportSnapshot}
+										>
+											<svg
+												class="size-3.5 shrink-0"
+												viewBox="0 0 24 24"
+												fill="none"
+												stroke="currentColor"
+												stroke-width="1.5"
+												stroke-linecap="round"
+												stroke-linejoin="round"
+												><path
+													d="M3 16.5v2.25A2.25 2.25 0 0 0 5.25 21h13.5A2.25 2.25 0 0 0 21 18.75V16.5"
+												/><path d="M12 3v12m4.5-4.5L12 15l-4.5-4.5" /></svg
+											>
+											<div class="min-w-0 flex-1 truncate text-left">
+												{$i18n.t('Export snapshot')}
+											</div>
+										</button>
+
+										<button
+											class="flex h-[1.6875rem] w-full cursor-pointer select-none items-center gap-2 rounded-lg bg-transparent px-2 text-xs hover:text-gray-900 disabled:cursor-default disabled:opacity-30 dark:hover:text-gray-100"
+											disabled={memories.length === 0}
+											type="button"
+											on:click={copyAll}
+										>
+											<svg
+												class="size-3.5 shrink-0"
+												viewBox="0 0 24 24"
+												fill="none"
+												stroke="currentColor"
+												stroke-width="1.5"
+												stroke-linecap="round"
+												stroke-linejoin="round"
+												><rect x="9" y="9" width="11" height="11" rx="1.5" /><path
+													d="M5 15H4.5A1.5 1.5 0 0 1 3 13.5v-9A1.5 1.5 0 0 1 4.5 3h9A1.5 1.5 0 0 1 15 4.5V5"
+												/></svg
+											>
+											<div class="min-w-0 flex-1 truncate text-left">
+												{$i18n.t('Copy all to clipboard')}
+											</div>
+										</button>
+
+										<button
+											class="flex h-[1.6875rem] w-full cursor-pointer select-none items-center gap-2 rounded-lg bg-transparent px-2 text-xs hover:text-gray-900 disabled:cursor-default disabled:opacity-30 dark:hover:text-gray-100"
+											disabled={importing}
+											type="button"
+											on:click={() => chooseImport('replace')}
+										>
+											<svg
+												class="size-3.5 shrink-0"
+												viewBox="0 0 24 24"
+												fill="none"
+												stroke="currentColor"
+												stroke-width="1.5"
+												stroke-linecap="round"
+												stroke-linejoin="round"
+												><path
+													d="M3 16.5v2.25A2.25 2.25 0 0 0 5.25 21h13.5A2.25 2.25 0 0 0 21 18.75V16.5"
+												/><path d="M12 15V3m4.5 4.5L12 3 7.5 7.5" /></svg
+											>
+											<div class="min-w-0 flex-1 truncate text-left">
+												{$i18n.t('Import — replace all')}
+											</div>
+										</button>
+
+										<button
+											class="flex h-[1.6875rem] w-full cursor-pointer select-none items-center gap-2 rounded-lg bg-transparent px-2 text-xs hover:text-gray-900 disabled:cursor-default disabled:opacity-30 dark:hover:text-gray-100"
+											disabled={importing}
+											type="button"
+											on:click={() => chooseImport('merge')}
+										>
+											<Plus className="size-3.5 shrink-0" strokeWidth="1.5" />
+											<div class="min-w-0 flex-1 truncate text-left">
+												{$i18n.t('Import — merge')}
+											</div>
+										</button>
+
+										<div class="my-1 border-t border-gray-100 dark:border-gray-800"></div>
+
 										<button
 											class="flex h-[1.6875rem] w-full cursor-pointer select-none items-center gap-2 rounded-lg bg-transparent px-2 text-xs hover:text-gray-900 disabled:cursor-default disabled:opacity-30 dark:hover:text-gray-100"
 											disabled={memories.length === 0}
@@ -434,6 +666,13 @@
 												<button
 													type="button"
 													class={actionButtonClass + ' hover:underline'}
+													on:click={() => petalCopy(memory.content)}
+												>
+													{$i18n.t('Copy')}
+												</button>
+												<button
+													type="button"
+													class={actionButtonClass + ' hover:underline'}
 													on:click={() => confirmDeleteMemory(memory)}
 												>
 													{$i18n.t('Remove')}
@@ -485,6 +724,20 @@
 												<button
 													type="button"
 													class={actionButtonClass + ' hover:underline'}
+													on:click={() => editMemory(memory)}
+												>
+													{$i18n.t('Edit')}
+												</button>
+												<button
+													type="button"
+													class={actionButtonClass + ' hover:underline'}
+													on:click={() => petalCopy(memory.content)}
+												>
+													{$i18n.t('Copy')}
+												</button>
+												<button
+													type="button"
+													class={actionButtonClass + ' hover:underline'}
 													on:click={() => confirmDeleteMemory(memory)}
 												>
 													{$i18n.t('Remove')}
@@ -510,6 +763,14 @@
 		</button>
 	</div>
 </form>
+
+<input
+	bind:this={fileInput}
+	type="file"
+	accept="application/json,.json"
+	class="hidden"
+	on:change={onImportFile}
+/>
 
 <ConfirmDialog
 	title={$i18n.t('Clear Memory')}
