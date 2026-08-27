@@ -572,22 +572,27 @@ async def update_memory_by_id(
         raise HTTPException(status_code=404, detail=ERROR_MESSAGES.NOT_FOUND)
 
     if form_data.content is not None or form_data.path is not None:
-        vector = await request.app.state.EMBEDDING_FUNCTION(
-            memory_vector_text(memory.content, memory.path), prefix=RAG_EMBEDDING_CONTENT_PREFIX, user=user
-        )
-
-        await upsert_memory_vectors_or_reindex(
-            request,
-            user,
-            [
-                {
-                    'id': memory.id,
-                    'text': memory_vector_text(memory.content, memory.path),
-                    'vector': vector,
-                    'metadata': _memory_metadata(memory),
-                }
-            ],
-        )
+        try:
+            vector = await request.app.state.EMBEDDING_FUNCTION(
+                memory_vector_text(memory.content, memory.path), prefix=RAG_EMBEDDING_CONTENT_PREFIX, user=user
+            )
+            await upsert_memory_vectors_or_reindex(
+                request,
+                user,
+                [
+                    {
+                        'id': memory.id,
+                        'text': memory_vector_text(memory.content, memory.path),
+                        'vector': vector,
+                        'metadata': _memory_metadata(memory),
+                    }
+                ],
+            )
+        except Exception as e:
+            # disk is truth — the row is already saved. a flaky embed shouldn't
+            # fail the whole update (that's what leaves the modal stuck open).
+            # the stale vector self-heals on the next /reset or next edit.
+            log.warning(f'memory re-embed failed for {memory.id}, row saved anyway: {e}')
 
     await publish_event(
         request,
