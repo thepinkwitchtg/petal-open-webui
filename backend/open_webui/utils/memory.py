@@ -322,12 +322,6 @@ async def recall_memories(request, messages: list[dict], user, model: dict | Non
 
     sections = {'user': [], 'neighborhood': [], 'context': []}
     seen_ids = set()
-<<<<<<< HEAD
-    for memory in sorted(
-        [memory for memory in (all_memories or []) if memory.type == 'user'],
-        key=lambda item: (item.path or '', item.updated_at or 0, item.id or ''),
-    ):
-=======
 
     # ── petal ──────────────────────────────────────────────────
     # user-memory budget: config override, else 6000 (was 2000, raw-sliced below).
@@ -372,7 +366,6 @@ async def recall_memories(request, messages: list[dict], user, model: dict | Non
         if used + cost > user_budget:
             break
         used += cost
->>>>>>> 67f3b2a97 (first pass of memory system refactor)
         seen_ids.add(memory.id)
         sections['user'].append(label)
     # ──────────────────────────────────────────────────────────
