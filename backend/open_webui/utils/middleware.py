@@ -6538,6 +6538,8 @@ async def streaming_chat_response_handler(response, ctx):
                             'done': True,
                             'meta': {'response_ended_at': time.time()},
                             'output': current_output,
+                            # Petal · resolved system (persona + two-room memory) → training capture
+                            **({'system': metadata['system_prompt']} if metadata.get('system_prompt') else {}),
                             **({'usage': usage} if usage else {}),
                         },
                     )
