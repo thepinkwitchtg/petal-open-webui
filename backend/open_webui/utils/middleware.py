@@ -2428,6 +2428,17 @@ async def process_chat_payload(request, form_data, user, metadata, model):
 
     # Captured before apply_params_to_form_data pops 'params'; populates metadata['system_prompt'] below
     model_system_prompt = (form_data.get('params') or {}).get('system')
+    if not model_system_prompt:
+        # Petal · a workspace model keeps its system on the model itself (info.params.system),
+        # which is stripped from the cached model dict and applied later in the router — so the
+        # capture below misses it. Re-fetch from the DB (same call the router uses) so
+        # metadata['system_prompt'] — and the training stamp — reflects the model's own persona.
+        try:
+            _pm = await Models.get_model_by_id(form_data.get('model') or model.get('id'))
+            if _pm and _pm.params:
+                model_system_prompt = (_pm.params.model_dump() or {}).get('system')
+        except Exception as _e:
+            log.debug(f'petal: model system prompt lookup skipped: {_e}')
 
     form_data = apply_params_to_form_data(form_data, model)
     log.debug('form_data: %s', form_data)
@@ -6571,6 +6582,8 @@ async def streaming_chat_response_handler(response, ctx):
                         {
                             'done': True,
                             'output': current_output,
+                            # Petal · resolved system (persona + two-room memory) → training capture
+                            **({'system': metadata['system_prompt']} if metadata.get('system_prompt') else {}),
                             **({'usage': usage} if usage else {}),
                         },
                     )
