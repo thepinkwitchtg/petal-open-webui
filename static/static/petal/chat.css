@@ -103,3 +103,17 @@ html.petal
 	border-color: oklch(0.711 0.214 var(--p-h-accent) / 0.55) !important;
 	color: var(--candy-light);
 }
+
+/* ── the empty-field whisper (v0.3) ─────────────────────────
+   the chat box is a tiptap/ProseMirror editor, and its
+   placeholder is painted by css: `content: attr(data-placeholder)`.
+   so we paint our own words instead — the dial lives in
+   tokens.css as --p-hush. scoped to #chat-input (the editor
+   itself) so notes and channels keep theirs, and the
+   ai-autocompletion ghost text is left alone.
+   ──────────────────────────────────────────────────────────── */
+html.petal #chat-input p.is-editor-empty:first-child:not(.ai-autocompletion)::before {
+	content: var(--p-hush);
+	color: var(--whisper);
+	opacity: 0.85;
+}
