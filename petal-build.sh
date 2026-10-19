@@ -49,6 +49,11 @@ echo "🌸 re-seating editable install..."
 source ~/.venvs/openwebui/bin/activate
 python -m pip install -e . --quiet
 
+# 🌸 hush graft — merges can eat the block in routers/tasks.py; this puts it back.
+#    swaps between markers, rolls itself back if it no longer fits upstream,
+#    and never stops the build (without it, hush just whispers from the pool).
+bash ./petal-hush-apply.sh || echo "⚠️  hush graft skipped — build continues, live whispers off until fixed"
+
 echo "✨ done~ restart open-webui serve to pick up changes"
 
 # 🌸 self-heal the chroma tombstone ghost — safe in EITHER state:
