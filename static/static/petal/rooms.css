@@ -1,0 +1,84 @@
+/* ═══════════════════════════════════════════════════════════
+   🌸 petal · rooms  ·  v0.3
+   whole screens open-webui grew since v0.2 — each gets a few
+   petal moves, scoped tight so nothing leaks into the rest.
+   ═══════════════════════════════════════════════════════════ */
+
+/* ── what's new · the changelog modal ───────────────────────
+   the only element in the app carrying `max-h-[58vh]`, so it
+   is our handle on the whole modal. (the release identifier
+   in the title is licence-protected — we only colour it, we
+   never hide, move or replace its text.)
+   ──────────────────────────────────────────────────────────── */
+html.petal [class*='max-h-[58vh]'] h2 {
+	background: var(--grad-text);
+	-webkit-background-clip: text;
+	background-clip: text;
+	-webkit-text-fill-color: transparent;
+}
+
+/* version headings in pearl, not pure white */
+html.petal [class*='max-h-[58vh]'] h3 {
+	color: var(--pearl) !important;
+}
+
+/* section labels: added already rides blue-300 → candy-glow.
+   fixed and changed were stock green / yellow; they become
+   the iris and candy-light ends of the same gradient.
+   removed stays red — destructive keeps saying destructive. */
+html.petal [class*='max-h-[58vh]'] [class~='dark:text-green-300'] {
+	color: var(--color-sky-300) !important;
+}
+html.petal [class*='max-h-[58vh]'] [class~='dark:text-yellow-300'] {
+	color: var(--candy-light) !important;
+}
+
+/* the little bullet dots */
+html.petal [class*='max-h-[58vh]'] span[class~='h-1'][class~='w-1'][class~='rounded-full'] {
+	background-color: var(--candy-deep) !important;
+}
+
+/* links inside release notes */
+html.petal [class*='max-h-[58vh]'] .markdown-prose-sm a {
+	color: var(--candy-glow);
+	text-decoration-color: oklch(0.711 0.214 var(--p-h-accent) / 0.4);
+}
+
+/* "Okay, Let's Go!" — 0.12 demoted it to bare grey text.
+   it's the one way out of the room, so it gets the fill. */
+html.petal [class*='max-h-[58vh]'] > div:last-child > button {
+	padding: 0.32rem 0.9rem;
+	border-radius: var(--radius-sm);
+	background-image: var(--grad-fill);
+	color: var(--abyss) !important;
+	box-shadow: 0 0 18px -8px var(--candy);
+	transition:
+		box-shadow 180ms,
+		filter 180ms;
+}
+html.petal [class*='max-h-[58vh]'] > div:last-child > button:hover {
+	filter: saturate(1.08) brightness(1.06);
+	box-shadow: 0 0 26px -6px var(--candy);
+}
+
+/* ── models page ────────────────────────────────────────────
+   0.12 rebuilt it as a dense list, every weight font-normal,
+   every colour grey — that mono look is their intent (the
+   changelog even forces `[&_b]:!font-normal`). we keep the
+   calm and only let the rows answer your touch.
+   each row carries id="model-item-<id>".
+   ──────────────────────────────────────────────────────────── */
+html.petal [id^='model-item-'] {
+	transition: background-color 140ms;
+}
+html.petal [id^='model-item-']:hover,
+html.petal [id^='model-item-']:focus-visible {
+	background-color: oklch(0.711 0.214 var(--p-h-accent) / 0.06);
+}
+html.petal [id^='model-item-']:hover [class~='group-hover:underline'] {
+	color: var(--candy-light) !important;
+	text-decoration-color: oklch(0.711 0.214 var(--p-h-accent) / 0.5);
+}
+html.petal [id^='model-item-'] img {
+	box-shadow: 0 0 0 1px var(--edge-soft);
+}
