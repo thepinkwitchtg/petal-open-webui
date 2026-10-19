@@ -120,6 +120,43 @@ html.petal ::placeholder {
 	opacity: 0.72;
 }
 
+/* ── focus rings (v0.3) ─────────────────────────────────────
+   open-webui writes these with `theme(--color-blue-500)`, and
+   tailwind v4 *inlines* theme() at build time — it compiles to
+   a literal oklch blue, not a var. so the blue lever never
+   reached them: every keyboard focus in the app was still
+   blue. we restate the two rules one specificity step higher.
+   ──────────────────────────────────────────────────────────── */
+html.petal
+	:focus-visible:not(.ProseMirror):not([contenteditable='true']):not(input):not(textarea),
+html.petal .focus-ring:focus-visible,
+html.petal.high-contrast
+	:is(input, textarea, [contenteditable='true'], .ProseMirror):focus-visible {
+	outline-color: var(--candy);
+}
+
+/* ── the thinking shimmer (v0.3) ────────────────────────────
+   "Thinking…", tool-call status, any loading label. theirs is
+   hard-coded hex grey sweeping darker. ours is mist with a
+   blush crest walking through it — same animation, theirs,
+   untouched; it only runs while something is generating.
+   ──────────────────────────────────────────────────────────── */
+html.petal .shimmer {
+	background: linear-gradient(
+		110deg,
+		var(--whisper) 0%,
+		var(--whisper) 40%,
+		var(--candy-light) 50%,
+		var(--whisper) 60%,
+		var(--whisper) 100%
+	);
+	background-size: 200% 100%;
+	-webkit-background-clip: text;
+	background-clip: text;
+	-webkit-text-fill-color: transparent;
+	color: var(--whisper);
+}
+
 /* ── code wells ─────────────────────────────────────────────
    deepest ground for blocks, candy-glow for inline breath.
    ──────────────────────────────────────────────────────────── */
