@@ -31,7 +31,7 @@ html.petal {
 	   silence. one line, yours to rewrite whenever the vibe
 	   turns.
 	   ──────────────────────────────────────────────────────── */
-	--p-hush: 'what shall we weave, princess? 🌸';
+	--p-hush: '';
 
 	/* ── ground ramp ────────────────────────────────────────
 	   chroma rises with lightness, the way your mockup does it.
@@ -85,19 +85,30 @@ html.petal {
 	   ═══════════════════════════════════════════════════════ */
 
 	/* surfaces — full violet */
-	--color-gray-950: var(--abyss); /*   5 bg · deepest wells     */
-	--color-gray-900: var(--obsidian); /*  65 bg · the app shell     */
-	--color-gray-850: var(--edge-soft); /* 112 bg · 132 border ← king */
-	--color-gray-800: var(--edge); /*  82 bg ·  78 border        */
-	--color-gray-700: var(--edge-lit); /*  58 bg ·  24 border        */
+	--color-gray-950: var(--abyss);
+	/*   5 bg · deepest wells     */
+	--color-gray-900: var(--obsidian);
+	/*  65 bg · the app shell     */
+	--color-gray-850: var(--edge-soft);
+	/* 112 bg · 132 border ← king */
+	--color-gray-800: var(--edge);
+	/*  82 bg ·  78 border        */
+	--color-gray-700: var(--edge-lit);
+	/*  58 bg ·  24 border        */
 
 	/* type — throttled, lifted, legible */
-	--color-gray-600: oklch(0.585 calc(0.045 * var(--p-chroma) * var(--p-chroma-text)) var(--p-h-mid)); /* 239 */
-	--color-gray-500: oklch(0.7 calc(0.05 * var(--p-chroma) * var(--p-chroma-text)) var(--p-h-mid)); /* 232 */
-	--color-gray-400: var(--mist); /* 392 ← workhorse muted */
-	--color-gray-300: oklch(0.875 calc(0.032 * var(--p-chroma) * var(--p-chroma-text)) var(--p-h-text)); /* 273 */
-	--color-gray-200: oklch(0.935 calc(0.024 * var(--p-chroma) * var(--p-chroma-text)) var(--p-h-text)); /* 122 */
-	--color-gray-100: var(--pearl); /* 134 ← primary body text */
+	--color-gray-600: oklch(0.585 calc(0.045 * var(--p-chroma) * var(--p-chroma-text)) var(--p-h-mid));
+	/* 239 */
+	--color-gray-500: oklch(0.7 calc(0.05 * var(--p-chroma) * var(--p-chroma-text)) var(--p-h-mid));
+	/* 232 */
+	--color-gray-400: var(--mist);
+	/* 392 ← workhorse muted */
+	--color-gray-300: oklch(0.875 calc(0.032 * var(--p-chroma) * var(--p-chroma-text)) var(--p-h-text));
+	/* 273 */
+	--color-gray-200: oklch(0.935 calc(0.024 * var(--p-chroma) * var(--p-chroma-text)) var(--p-h-text));
+	/* 122 */
+	--color-gray-100: var(--pearl);
+	/* 134 ← primary body text */
 	--color-gray-50: oklch(0.985 calc(0.012 * var(--p-chroma) * var(--p-chroma-text)) var(--p-h-text));
 
 	/* ── the second lever: every focus ring in the app ──────

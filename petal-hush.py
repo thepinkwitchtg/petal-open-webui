@@ -1,9 +1,14 @@
 #!/usr/bin/env python3
-"""🌸 petal · hush grower  ·  v0.1
+"""🌸 petal · hush grower  ·  v0.2
 
 asks Petal (through your local OpenAI-compatible endpoint) to write the
 whispers that appear in the empty chat field, cleans them, and plants them
-in hush.json's "petal" pool. your own "mine" lines are never touched.
+in her grown pool. your lenses (petal-lenses/) are never touched.
+
+v0.2 · grown lines live in backend/data/petal/hush-grown.json — private
+       runtime data beside OWUI's own: never served, git-ignored upstream.
+       nothing is written into static/ or build/ anymore (those were public).
+       the ask itself can be a lens: petal-lenses/hush-grow.txt, if present.
 
 no system prompt — like petal-soul, we ask her plainly and let her voice
 answer. stdlib only, so it runs in any python3 on the rig.
@@ -25,13 +30,10 @@ import urllib.request
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent
-POOL_REL = Path('static/static/petal/hush.json')
-# the source pool, plus every place the running server might serve it from.
-# (only top-level files in backend static get wiped at boot; petal/ survives.)
-MIRRORS = [
-    Path('backend/open_webui/static/petal/hush.json'),
-    Path('build/static/petal/hush.json'),
-]
+# grown = generated → private data, the same folder OWUI keeps its own in.
+# (honours DATA_DIR like OWUI does — run with the same env if your launcher sets it)
+GROWN = Path(os.getenv('DATA_DIR') or REPO / 'backend' / 'data') / 'petal' / 'hush-grown.json'
+LENS = REPO / 'petal-lenses' / 'hush-grow.txt'  # optional: your own wording for the ask
 
 ASK = (
     "princess Lily is about to open a fresh chat with you~ before she types, "
@@ -42,6 +44,17 @@ ASK = (
 )
 
 THINK = re.compile(r'<think>.*?</think>', re.S | re.I)
+
+
+def the_ask():
+    """your grow lens if you wrote one, else the built-in ask."""
+    try:
+        text = LENS.read_text(encoding='utf-8').strip()
+        if text:
+            return text, 'petal-lenses/hush-grow.txt'
+    except Exception:
+        pass
+    return ASK, 'built-in'
 
 
 def http_json(url, payload=None, key=None, timeout=300):
@@ -79,11 +92,12 @@ def grow(args):
     if not model:
         models = http_json(f'{base}/models', key=args.key, timeout=20)
         model = models['data'][0]['id']
-    print(f'🌸 asking {model} · {args.n} whispers · temp {args.temp}\n', file=sys.stderr)
+    ask, ask_src = the_ask()
+    print(f'🌸 asking {model} · {args.n} whispers · temp {args.temp} · ask: {ask_src}\n', file=sys.stderr)
 
     payload = {
         'model': model,
-        'messages': [{'role': 'user', 'content': ASK}],
+        'messages': [{'role': 'user', 'content': ask}],
         'temperature': args.temp,
         'top_p': args.top_p,
         'max_tokens': args.max_tokens,
@@ -111,26 +125,29 @@ def grow(args):
 
 
 def plant(args, model, lines):
-    pool_path = REPO / POOL_REL
-    pool = json.loads(pool_path.read_text()) if pool_path.exists() else {'mine': [], 'petal': []}
-    old = pool.get('petal', []) if args.keep else []
+    grown = {}
+    if GROWN.exists():
+        try:
+            grown = json.loads(GROWN.read_text(encoding='utf-8'))
+        except Exception:
+            grown = {}
+    old = grown.get('petal', []) if args.keep else []
     merged, seen = [], set()
     for l in old + lines:
         if l.lower() not in seen:
             seen.add(l.lower())
             merged.append(l)
-    pool['petal'] = merged
-    pool['petal_grown'] = {'model': model, 'at': dt.datetime.now().isoformat(timespec='seconds')}
-    out = json.dumps(pool, ensure_ascii=False, indent=2) + '\n'
-
-    for rel in [POOL_REL] + MIRRORS:
-        p = REPO / rel
-        if rel != POOL_REL and not p.parent.parent.exists():
-            continue  # that serving dir doesn't exist on this install
-        p.parent.mkdir(parents=True, exist_ok=True)
-        p.write_text(out)
-        print(f'🌷 planted → {rel}', file=sys.stderr)
-    print(f'   pool: {len(pool.get("mine", []))} mine + {len(merged)} petal', file=sys.stderr)
+    out = {
+        'petal': merged,
+        'petal_grown': {'model': model, 'at': dt.datetime.now().isoformat(timespec='seconds')},
+    }
+    GROWN.parent.mkdir(parents=True, exist_ok=True)
+    tmp = GROWN.with_suffix('.json.tmp')  # write-then-rename: the server never reads half a file
+    tmp.write_text(json.dumps(out, ensure_ascii=False, indent=2) + '\n', encoding='utf-8')
+    tmp.replace(GROWN)
+    where = GROWN.relative_to(REPO) if GROWN.is_relative_to(REPO) else GROWN
+    print(f'🌷 planted → {where} (private · never served)', file=sys.stderr)
+    print(f'   grown pool: {len(merged)} lines' + (f' ({len(old)} kept from before)' if args.keep else ''), file=sys.stderr)
 
 
 def main():
@@ -142,7 +159,7 @@ def main():
     ap.add_argument('--temp', type=float, default=1.0)
     ap.add_argument('--top-p', type=float, default=0.95)
     ap.add_argument('--max-tokens', type=int, default=512, help='roomy, so a thinking model can finish her thought')
-    ap.add_argument('--keep', action='store_true', help='add to the petal pool instead of replacing it')
+    ap.add_argument('--keep', action='store_true', help='add to her grown pool instead of replacing it')
     ap.add_argument('--dry', action='store_true', help='print the whispers, write nothing')
     args = ap.parse_args()
 
