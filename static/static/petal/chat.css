@@ -1,20 +1,32 @@
 /* ═══════════════════════════════════════════════════════════
-   🌸 petal · chat
+   🌸 petal · chat  ·  v0.3
    pinning the mockup's signature moves onto real elements.
    grows as we look at more of the interface together.
    ═══════════════════════════════════════════════════════════ */
 
 /* ── primary buttons ────────────────────────────────────────
-   open-webui's send / stop / call buttons all carry
-   `bg-black text-white ... dark:bg-white dark:text-black`.
+   open-webui speaks two dialects of "solid primary" now:
 
-   [class~="dark:bg-white"] is an *exact word* match on the
-   class list, so it catches the solid white buttons and
-   deliberately misses `dark:bg-white/20` and `dark:bg-white/8`
-   (the attachment chip and the progress rail) — those are
-   meant to stay quiet.
+   the old one  · `dark:bg-white dark:text-black`
+                  send / stop / call, regenerate, file nav,
+                  the floating ask-buttons, the on-switch,
+                  the sidebar active rail.
+   the new one  · `dark:bg-gray-100 dark:text-gray-900
+                  dark:hover:bg-white` — 0.12 moved EVERY save /
+                  confirm / create button to this (~87 of them):
+                  the feedback Save, settings Save, modal
+                  confirms, workspace editors. our lever only
+                  knew the old dialect, which is the whole drift
+                  you've been feeling. gray-100 is pearl, so they
+                  rendered as bare pearl slabs.
+
+   both are *exact word* matches on the class list, so
+   `dark:bg-white/20` and `dark:bg-gray-100/5` (quiet chips and
+   rails) stay quiet. the new dialect also needs the text word
+   so the sync-stats progress rail isn't mistaken for a button.
    ──────────────────────────────────────────────────────────── */
-html.petal [class~='dark:bg-white'] {
+html.petal [class~='dark:bg-white'],
+html.petal [class~='dark:bg-gray-100'][class~='dark:text-gray-900'] {
 	background-color: transparent !important;
 	background-image: var(--grad-fill) !important;
 	color: var(--abyss) !important;
@@ -22,35 +34,72 @@ html.petal [class~='dark:bg-white'] {
 	transition:
 		box-shadow 180ms,
 		filter 180ms,
-		transform 180ms;
+		transform 180ms,
+		opacity 180ms;
 }
 
-html.petal [class~='dark:bg-white']:hover {
+html.petal [class~='dark:bg-white']:hover,
+html.petal [class~='dark:bg-gray-100'][class~='dark:text-gray-900']:hover {
 	background-image: var(--grad-fill) !important;
 	filter: saturate(1.08) brightness(1.06);
 	box-shadow: 0 0 26px -6px var(--candy);
 	transform: scale(1.04);
 }
 
-html.petal [class~='dark:bg-white']:active {
+html.petal [class~='dark:bg-white']:active,
+html.petal [class~='dark:bg-gray-100'][class~='dark:text-gray-900']:active {
 	transform: scale(0.97);
 }
 
-html.petal [class~='dark:bg-white']:disabled {
+html.petal [class~='dark:bg-white']:disabled,
+html.petal [class~='dark:bg-gray-100'][class~='dark:text-gray-900']:disabled {
 	filter: saturate(0.35) brightness(0.7);
 	box-shadow: none;
 	transform: none;
 }
 
 /* the glyph inside rides on currentColor */
-html.petal [class~='dark:bg-white'] svg {
+html.petal [class~='dark:bg-white'] svg,
+html.petal [class~='dark:bg-gray-100'][class~='dark:text-gray-900'] svg {
 	color: var(--abyss);
+}
+
+/* the thin progress rail in sync-stats wore the new dialect
+   without the text word — give it the fill, not the button. */
+html.petal [class~='dark:bg-gray-100'][class~='h-1.5'][class~='rounded-full'] {
+	background-color: transparent !important;
+	background-image: var(--grad-fill) !important;
 }
 
 @media (prefers-reduced-motion: reduce) {
 	html.petal [class~='dark:bg-white'],
 	html.petal [class~='dark:bg-white']:hover,
-	html.petal [class~='dark:bg-white']:active {
+	html.petal [class~='dark:bg-white']:active,
+	html.petal [class~='dark:bg-gray-100'][class~='dark:text-gray-900'],
+	html.petal [class~='dark:bg-gray-100'][class~='dark:text-gray-900']:hover,
+	html.petal [class~='dark:bg-gray-100'][class~='dark:text-gray-900']:active {
 		transform: none;
 	}
+}
+
+/* ── the thumbs feedback card (v0.3) ────────────────────────
+   the "how would you rate this response?" panel that opens
+   under a message. its Save is caught by the new dialect
+   above; here we give the card a breath of candy and make the
+   chosen 1–10 pill and "why?" chips look *chosen* — they only
+   went from obsidian to edge, which is a whisper on violet.
+   the card is the only thing wearing this exact five-word set.
+   ──────────────────────────────────────────────────────────── */
+html.petal
+	[class~='my-2.5'][class~='rounded-xl'][class~='px-4'][class~='py-3'][class~='dark:border-gray-850/30'] {
+	border-color: oklch(0.711 0.214 var(--p-h-accent) / 0.22) !important;
+	background: oklch(0.711 0.214 var(--p-h-accent) / 0.025);
+}
+
+html.petal
+	[class~='my-2.5'][class~='rounded-xl'][class~='dark:border-gray-850/30']
+	button[class~='dark:bg-gray-800'] {
+	background-color: oklch(0.711 0.214 var(--p-h-accent) / 0.16) !important;
+	border-color: oklch(0.711 0.214 var(--p-h-accent) / 0.55) !important;
+	color: var(--candy-light);
 }
