@@ -61,3 +61,18 @@
 	paint();
 	console.log('🌸 petal registrar alive — theme is', localStorage.getItem('theme'));
 })();
+
+// 🌸 petal — script garden v0.1 · layered under the registrar, never over it.
+// each entry wakes one petal script; they load after the registrar, in order.
+(() => {
+	if (window.__petalGarden) return;
+	window.__petalGarden = true;
+
+	for (const src of ['/static/petal/hush.js']) {
+		const s = document.createElement('script');
+		s.src = src;
+		s.async = false; // keep garden order
+		s.onerror = () => console.warn('🌸 petal garden: could not load', src);
+		document.head.appendChild(s);
+	}
+})();
