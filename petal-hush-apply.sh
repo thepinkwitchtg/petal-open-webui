@@ -3,11 +3,14 @@
 # replaces any earlier hush graft in place; safe to run as often as you like.
 # v2 · checks the graft still FITS upstream (every name it leans on still exists);
 #      if not, any old block is taken out so OWUI still boots — a merge can't break her.
+# v3 · the fit check reads the PATCH itself: every name it borrows from tasks.py
+#      and every `from open_webui… import …` it makes — so a new patch never
+#      needs this script edited.
 # undo entirely: git checkout backend/open_webui/routers/tasks.py
 set -e
 cd "$(dirname "$0")"
 exec python3 - <<'PY'
-import ast, py_compile, re, sys
+import ast, builtins, py_compile, re, sys
 from pathlib import Path
 
 ROOT = Path('backend/open_webui')
@@ -55,20 +58,40 @@ for node in tree.body:
         for t in (node.targets if isinstance(node, ast.Assign) else [node.target]):
             host.update(n.id for n in ast.walk(t) if isinstance(n, ast.Name))
 
-# names the graft borrows from tasks.py itself
-for name in ['router', 'Request', 'Depends', 'get_verified_user', 'Config', 'HTTPException',
-             'status', 'JSONResponse', 'process_pipeline_inlet_filter', 'generate_chat_completion',
-             'log', 're', 'Optional']:
+# what the patch itself borrows — read from the patch, never hand-listed
+patch = ast.parse(block)
+own = set()
+for n in ast.walk(patch):
+    if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+        own.add(n.name)
+    elif isinstance(n, ast.Name) and isinstance(n.ctx, (ast.Store, ast.Del)):
+        own.add(n.id)
+    elif isinstance(n, ast.arg):
+        own.add(n.arg)
+    elif isinstance(n, ast.ExceptHandler) and n.name:
+        own.add(n.name)
+    elif isinstance(n, (ast.Import, ast.ImportFrom)):
+        own.update((a.asname or a.name).split('.')[0] for a in n.names)
+used = {n.id for n in ast.walk(patch) if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Load)}
+module_globals = {'__file__', '__name__', '__doc__'}
+for name in sorted(used - own - set(dir(builtins)) - module_globals):
     if name not in host:
         missing.append(f'tasks.py no longer has `{name}`')
 
-# names the graft imports from elsewhere in open_webui
-for mod, name in [('env.py', 'STATIC_DIR'), ('utils/models.py', 'get_all_models'), ('utils/task.py', 'prompt_template')]:
-    path = ROOT / mod
-    if not path.exists():
-        missing.append(f'{mod} is gone')
-    elif name not in top_names(path):
-        missing.append(f'{mod} no longer has `{name}`')
+# every `from open_webui.x.y import z` in the patch must still exist upstream
+for n in ast.walk(patch):
+    if isinstance(n, ast.ImportFrom) and (n.module or '').startswith('open_webui.'):
+        parts = n.module.split('.')[1:]
+        path = ROOT.joinpath(*parts).with_suffix('.py')
+        if not path.exists():
+            path = ROOT.joinpath(*parts, '__init__.py')
+        if not path.exists():
+            missing.append(f'{n.module} is gone')
+            continue
+        names = top_names(path)
+        for a in n.names:
+            if a.name not in names:
+                missing.append(f'{n.module} no longer has `{a.name}`')
 
 if missing:
     # an old graft that no longer fits would break boot — take it out, keep upstream pure
