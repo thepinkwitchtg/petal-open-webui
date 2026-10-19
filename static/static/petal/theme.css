@@ -1,5 +1,5 @@
 /* ═══════════════════════════════════════════════════════════
-   🌸 petal · theme  ·  v0.2
+   🌸 petal · theme  ·  v0.3
    an abyssal-violet skin for open-webui, grown from
    petal-gen-sequence-mockup-v0.4
 
@@ -10,3 +10,4 @@
 @import url('/static/petal/tokens.css');
 @import url('/static/petal/surface.css');
 @import url('/static/petal/chat.css');
+@import url('/static/petal/rooms.css');
