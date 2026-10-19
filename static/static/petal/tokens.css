@@ -1,5 +1,5 @@
 /* ═══════════════════════════════════════════════════════════
-   🌸 petal · tokens  ·  v0.2
+   🌸 petal · tokens  ·  v0.3
    the whole theme hangs off five numbers.
    everything below is derived — turn a dial, the room turns.
 
@@ -102,6 +102,29 @@ html.petal {
 	--color-blue-600: var(--candy-deep);
 	--color-blue-700: var(--candy-deep);
 	--color-blue-900: var(--edge);
+	/* v0.3 · stragglers the 0.12 build started emitting */
+	--color-blue-50: oklch(0.965 calc(0.02 * var(--p-chroma)) var(--p-h-accent));
+	--color-blue-100: oklch(0.935 calc(0.035 * var(--p-chroma)) var(--p-h-accent));
+	--color-blue-950: var(--obsidian-lit);
+
+	/* ── the third lever (v0.3): sky ────────────────────────
+	   open-webui 0.12 made sky its "this is ON" colour — the
+	   web-search / image / code-interpreter / tool pills in the
+	   message bar, the unread dot in the sidebar, the unread
+	   badges, @mentions. ~53 uses, every one of them an accent,
+	   none of them semantic. so sky becomes iris: candy's
+	   shadow, 36° cooler, the same family as the focus rings.
+	   ──────────────────────────────────────────────────────── */
+	--p-h-iris: calc(var(--p-h-accent) - 36);
+	--color-sky-50: oklch(0.97 calc(0.014 * var(--p-chroma)) var(--p-h-iris));
+	--color-sky-100: oklch(0.94 calc(0.03 * var(--p-chroma)) var(--p-h-iris));
+	--color-sky-200: oklch(0.9 calc(0.065 * var(--p-chroma)) var(--p-h-iris));
+	--color-sky-300: oklch(0.83 calc(0.11 * var(--p-chroma)) var(--p-h-iris));
+	--color-sky-400: oklch(0.75 calc(0.15 * var(--p-chroma)) var(--p-h-iris));
+	--color-sky-500: oklch(0.68 calc(0.175 * var(--p-chroma)) var(--p-h-iris));
+	--color-sky-600: oklch(0.6 calc(0.18 * var(--p-chroma)) var(--p-h-iris));
+	--color-sky-700: oklch(0.52 calc(0.16 * var(--p-chroma)) var(--p-h-iris));
+	--color-sky-800: oklch(0.44 calc(0.13 * var(--p-chroma)) var(--p-h-iris));
 
 	/* red is deliberately left alone — destructive actions
 	   should keep saying destructive, not saying pretty. */
