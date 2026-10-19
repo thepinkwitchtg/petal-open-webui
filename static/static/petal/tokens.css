@@ -25,6 +25,14 @@ html.petal {
 	--p-chroma: 1;
 	--p-chroma-text: 0.3;
 
+	/* ── the whisper in the empty field (v0.3) ──────────────
+	   replaces "How can I help you today?" / "Send a Message".
+	   any quoted string; emoji welcome. set it to '' for
+	   silence. one line, yours to rewrite whenever the vibe
+	   turns.
+	   ──────────────────────────────────────────────────────── */
+	--p-hush: 'what shall we weave, princess? 🌸';
+
 	/* ── ground ramp ────────────────────────────────────────
 	   chroma rises with lightness, the way your mockup does it.
 	   the ground keeps its full colour — it is atmosphere, not
