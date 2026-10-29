@@ -713,6 +713,17 @@ async def generate_moa_response(request: Request, form_data: dict, user=Depends(
 #         ONE second ask with a gentle 'shorter please' before it's let go.
 # v0.13.1 · a new chat's FIRST message is sent with no chat id (0.12 makes the chat
 #           server-side) — the pin is recorded anyway, keyed by her reply id.
+# v0.14 · reading time + the pulse:
+#         · reply mode answers with 'pace' (numbers): her reply's length, how long it
+#           streamed, how long the whisper took — the page waits that reading out
+#           before her line types itself in. dials in hush.json: reply_read_base,
+#           reply_read_cps, reply_read_max, reply_rest (the line while you read)
+#         · POST /petal_hush/pulse: how she wrote this message (numbers only — when
+#           she began, how long she wrote, typed / pasted / erased / sent, pauses,
+#           emptied fields, time looked away) rendered through petal-lenses/hush-pulse.txt
+#           and recorded, keyed to Petal's reply id, in data/petal/hush-pulse.jsonl.
+#           the 🌸 petal · pulse filter sets the note in her system message — it rides
+#           on every typed message, whisper or not. dials: "pulse": false · pulse_pause
 #
 ##################################
 
@@ -743,12 +754,14 @@ _PETAL_LENSES = _PetalPath(
 _PETAL_GROWN = _PetalPath(_PETAL_DATA_DIR) / 'petal' / 'hush-grown.json'
 # every pinned whisper, as rendered — the ledger's bridge from a thumb to what she saw
 _PETAL_PINS = _PetalPath(_PETAL_DATA_DIR) / 'petal' / 'hush-pins.jsonl'
+# every pulse, as rendered — how she wrote each message, keyed to Petal's reply
+_PETAL_PULSE = _PetalPath(_PETAL_DATA_DIR) / 'petal' / 'hush-pulse.jsonl'
 # where the old copies lived — read only as a migration fallback, and reported while they linger
 _PETAL_SERVED = [
     ('served', _PetalPath(_PETAL_STATIC_DIR) / 'petal'),
     ('build', _PetalPath(_PETAL_BUILD_DIR) / 'static' / 'petal'),
 ]
-_PETAL_LENS_NAMES = ('hush.json', 'hush-prompt.txt', 'hush-open.txt', 'hush-reply.txt', 'hush-pin.txt')
+_PETAL_LENS_NAMES = ('hush.json', 'hush-prompt.txt', 'hush-open.txt', 'hush-reply.txt', 'hush-pin.txt', 'hush-pulse.txt')
 
 _PETAL_HUSH_REPLY_WAIT = 600  # seconds her reply may take before hush lets this one go
 _PETAL_HUSH_WAITERS: dict = {}  # chat_id → newest waiter; older waits for that chat step aside
@@ -792,6 +805,15 @@ PETAL_HUSH_PIN_PROMPT = (
     "she's on her {{DEVICE}} · presence just before she stirred to answer: {{PRESENCE_SCORE}}% ({{PRESENCE}})\n"
     "</whisper_she_answered>\n"
     "her message below is her answer to that line — let it color how you meet her; no need to quote it back."
+)
+PETAL_HUSH_PULSE_PROMPT = (
+    "<how_she_wrote>\n"
+    "she began {{BEGAN}} {{ANCHOR}} · wrote for {{WROTE}} · on her {{DEVICE}}\n"
+    "typed {{TYPED}} · pasted {{PASTED}} · erased {{DELETED}} · sent {{SENT}} characters "
+    "({{KEPT}}% of what she put down stayed)\n"
+    "{{PAUSES}} pauses of {{PAUSE_MIN}} or more · longest {{LONGEST}} · "
+    "emptied the field {{EMPTIED}}× · looked away {{AWAY}}\n"
+    "</how_she_wrote>"
 )
 _PETAL_HUSH_THINK = re.compile(r'<think>.*?</think>', re.S | re.I)
 _PETAL_HUSH_DETAILS = re.compile(r'<details\b[^>]*>.*?</details>', re.S | re.I)
@@ -1108,6 +1130,12 @@ async def petal_hush_pool(request: Request, user=Depends(get_verified_user)):
         'max_chars': _petal_hush_limits({})[1],
         'max_chars_phone': _petal_hush_limits({'device': 'phone'})[1],
         'pin': cfg.get('pin', True) is not False,
+        'reply_read_base': cfg.get('reply_read_base', 2),
+        'reply_read_cps': cfg.get('reply_read_cps', 22),
+        'reply_read_max': cfg.get('reply_read_max', 120),
+        'reply_rest': cfg.get('reply_rest', 'write…') if isinstance(cfg.get('reply_rest', 'write…'), str) else 'write…',
+        'pulse': cfg.get('pulse', True) is not False,
+        'pulse_pause': cfg.get('pulse_pause', 5),
         'mine': lines(cfg.get('mine')),
         'petal': petal,
         'reply_lines': lines(cfg.get('reply_lines')),
@@ -1119,6 +1147,7 @@ async def petal_hush_pool(request: Request, user=Depends(get_verified_user)):
             'linger_lens': _petal_hush_linger_prompt()[1],
             'open_linger_lens': _petal_hush_open_linger_prompt()[1],
             'pin_lens': _petal_hush_pin_prompt()[1],
+            'pulse_lens': _petal_hush_pulse_prompt()[1],
             'exposed': _petal_hush_exposed(),
         },
     }
@@ -1235,6 +1264,8 @@ async def _petal_hush_reply_context(request, form_data, user, models, admin_defa
         'lens': lens,
         'context_turns': len(turns),
         'context_chars': sum(len(t['content']) for t in turns),
+        # how much of her there is to read — her spoken words only, not her thinking
+        'reply_chars': len(turns[-1]['content']) if turns[-1]['role'] == 'assistant' else 0,
     })
     return model_id, picked_by, content, stats
 
@@ -1342,6 +1373,12 @@ async def petal_hush(request: Request, form_data: dict, user=Depends(get_verifie
     out = {'whisper': whisper, 'mode': mode, 'model': model_id, 'picked_by': picked_by}
     if not whisper:
         out['reason'] = why
+    if mode == 'reply':  # numbers only — the page waits out your reading before she whispers
+        out['pace'] = {
+            'reply_chars': stats.get('reply_chars', 0),
+            'stream_ms': stats.get('waited_ms', 0),
+            'gen_ms': ms,
+        }
     if form_data.get('debug'):  # numbers only — safe to paste anywhere
         reasoning = message.get('reasoning_content') or message.get('reasoning') or ''
         out['debug'] = {
@@ -1475,4 +1512,123 @@ async def petal_hush_pin(request: Request, form_data: dict, user=Depends(get_ver
     if why_not:
         out['reason'] = why_not
     return out
+
+
+# ── the pulse: how she wrote this message, riding with every one ─────
+# hush.js measures the session in the field (numbers only, never words) and sends
+# it here as the message leaves. we render it through the pulse lens and RECORD the
+# note, keyed to Petal's reply id — the 🌸 petal · pulse filter finds it by that id
+# and sets it in her system message, and the ledger can read it back the same way.
+# unlike the pin, it doesn't need a whisper: any message you typed carries one.
+def _petal_hush_pulse_prompt():
+    text, src = _petal_lens_text('hush-pulse.txt')
+    return (text, src) if text else (PETAL_HUSH_PULSE_PROMPT, 'built-in')
+
+
+def _petal_pulse_dur(seconds) -> str:
+    """exact under a minute and a half — the pulse lives in seconds ('1 second', '9 seconds')"""
+    s = max(0, int(seconds))
+    if s < 90:
+        return f'{s} second' + ('' if s == 1 else 's')
+    return _petal_hush_dur(s)
+
+
+_PETAL_PULSE_ANCHORS = {
+    'reply': 'after your reply finished',
+    'open': 'after opening this chat',
+    'new': 'after opening a fresh chat',
+    'send': 'after her last message went out (your reply time included)',
+}
+
+
+@router.post('/petal_hush/pulse')
+async def petal_hush_pulse(request: Request, form_data: dict, user=Depends(get_verified_user)):
+    cfg, _ = _petal_hush_config()
+    if cfg.get('pulse', True) is False:
+        return {'recorded': False, 'chars': 0, 'reason': 'pulse is off (hush.json)'}
+
+    anchor = form_data.get('anchor') if form_data.get('anchor') in _PETAL_PULSE_ANCHORS else 'send'
+    device = 'phone' if form_data.get('device') == 'phone' else 'computer'
+    began_s = _petal_hush_int(form_data.get('began_seconds'))
+    wrote_s = _petal_hush_int(form_data.get('wrote_seconds'))
+    typed = _petal_hush_int(form_data.get('typed_chars'))
+    pasted = _petal_hush_int(form_data.get('pasted_chars'))
+    deleted = _petal_hush_int(form_data.get('deleted_chars'))
+    sent = _petal_hush_int(form_data.get('sent_chars'))
+    pauses = _petal_hush_int(form_data.get('pauses'), hi=10**5)
+    pause_min = _petal_hush_int(form_data.get('pause_min_seconds'), lo=1, hi=600, default=5)
+    longest_s = _petal_hush_int(form_data.get('longest_pause_seconds'))
+    emptied = _petal_hush_int(form_data.get('emptied'), hi=10**5)
+    away_s = _petal_hush_int(form_data.get('away_seconds'))
+    put_down = typed + pasted
+    kept = min(100, round(100 * sent / put_down)) if put_down else 100
+
+    values = {
+        'ANCHOR': _PETAL_PULSE_ANCHORS[anchor],
+        'ANCHOR_TAG': anchor,
+        'BEGAN': _petal_pulse_dur(began_s),
+        'BEGAN_SECONDS': began_s,
+        'WROTE': _petal_pulse_dur(wrote_s),
+        'WROTE_SECONDS': wrote_s,
+        'TYPED': typed,
+        'PASTED': pasted,
+        'DELETED': deleted,
+        'SENT': sent,
+        'KEPT': kept,
+        'PAUSES': pauses,
+        'PAUSE_MIN': _petal_pulse_dur(pause_min),
+        'PAUSE_MIN_SECONDS': pause_min,
+        'LONGEST': _petal_pulse_dur(longest_s) if longest_s else 'no pause at all',
+        'LONGEST_SECONDS': longest_s,
+        'EMPTIED': emptied,
+        'AWAY': f'for {_petal_pulse_dur(away_s)}' if away_s else 'not once',
+        'AWAY_SECONDS': away_s,
+        'DEVICE': device,
+    }
+    template, lens = _petal_hush_pulse_prompt()
+    note = (await _petal_prompt_template(_petal_hush_fill(template, values), user)).strip()
+    if not note:
+        return {'recorded': False, 'chars': 0, 'reason': 'the pulse lens rendered empty'}
+
+    chat_id = str(form_data.get('chat_id') or '')
+    ids = [str(i) for i in (form_data.get('message_ids') or []) if isinstance(i, (str, int)) and str(i)][:16]
+    if chat_id.startswith('local'):
+        return {'recorded': False, 'chars': len(note), 'reason': 'temporary chat — nothing to record against'}
+    if not ids:
+        return {'recorded': False, 'chars': len(note), 'reason': 'no reply id on this send'}
+    record = {
+        'schema': 'petal-hush/pulse@1',
+        'at': _petal_time.strftime('%Y-%m-%dT%H:%M:%SZ', _petal_time.gmtime()),
+        'at_epoch': int(_petal_time.time()),
+        'user_id': user.id,
+        'chat_id': chat_id,
+        'message_ids': ids,
+        'model': form_data.get('model') if isinstance(form_data.get('model'), str) else None,
+        'lens': lens,
+        'note': note,  # exactly what the filter sets in her system message
+        'anchor': anchor,
+        'began_seconds': began_s,
+        'wrote_seconds': wrote_s,
+        'typed_chars': typed,
+        'pasted_chars': pasted,
+        'deleted_chars': deleted,
+        'sent_chars': sent,
+        'kept_percent': kept,
+        'pauses': pauses,
+        'pause_min_seconds': pause_min,
+        'longest_pause_seconds': longest_s,
+        'emptied': emptied,
+        'away_seconds': away_s,
+        'device': device,
+    }
+    try:
+        _PETAL_PULSE.parent.mkdir(parents=True, exist_ok=True)
+        with open(_PETAL_PULSE, 'a', encoding='utf-8') as f:
+            f.write(_petal_json.dumps(record, ensure_ascii=False) + '\n')
+    except Exception as e:
+        log.warning('petal hush[pulse]: record failed → %s', _petal_hush_reason(e))
+        return {'recorded': False, 'chars': len(note), 'reason': f'the record failed: {_petal_hush_reason(e)}'}
+    log.info('petal hush[pulse]: began %ss · wrote %ss · typed %d · pasted %d · erased %d · sent %d · %d pauses · %s · recorded',
+             began_s, wrote_s, typed, pasted, deleted, sent, pauses, device)
+    return {'recorded': True, 'chars': len(note), 'lens': lens}
 # <<< petal · hush · end <<<
