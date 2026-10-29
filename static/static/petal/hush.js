@@ -1,6 +1,20 @@
 /* ═══════════════════════════════════════════════════════════
-   🌸 petal · hush  ·  v0.11 · open + reply + linger + pin · she writes it in
+   🌸 petal · hush  ·  v0.12 · open + reply + linger + pin + pulse · she writes it in
    the empty chat field whispers — and Petal writes the words.
+
+   v0.12 · reading time: after her reply, the field rests on a quiet line
+          (hush.json "reply_rest", default "write…") while you read her —
+          her whisper waits about as long as her reply takes to read
+          (what you couldn't already read while it streamed), then types
+          itself in. the wait only counts while you're on the page; begin
+          writing first and she stays out of your way.
+          dials: reply_read_base (s) · reply_read_cps · reply_read_max (s).
+   v0.12 · the pulse: every message you type carries how you wrote it —
+          when you began, how long you wrote, typed / pasted / erased / sent,
+          pauses, emptied fields, time looked away. numbers only, recorded
+          privately against her reply (data/petal/hush-pulse.jsonl); the
+          🌸 petal · pulse filter sets it in her system message. it rides
+          with or without a whisper. dials: "pulse": false · pulse_pause (s).
 
    open  · on a new chat: a line from her queue (written earlier,
            so it's instant), refilled live in the background.
@@ -61,6 +75,7 @@
 	const LEGACY_POOL_URL = '/static/petal/hush.json'; // only if the server has no pool yet
 	const LIVE_URL = '/api/v1/tasks/petal_hush/completions';
 	const PIN_URL = '/api/v1/tasks/petal_hush/pin';
+	const PULSE_URL = '/api/v1/tasks/petal_hush/pulse';
 	const K = { queue: 'petal.hush.queue', recent: 'petal.hush.recent', debug: 'petal.hush.debug' };
 	const rawFetch = window.fetch.bind(window); // hush's own requests never pass the send-watcher
 
@@ -84,6 +99,12 @@
 	let presenceFade = 60; // seconds for a mouse/key stir to fade by ~2/3 (computer)
 	let pinOn = true; // the whisper you answered rides with your message
 	let maxChars = matchMedia('(pointer: coarse)').matches ? 44 : 72; // filled from the pool's dials
+	let readBase = 2; // seconds — a beat after her reply, even a short one
+	let readCps = 22; // characters you read per second (≈ 240 words a minute)
+	let readMax = 120; // seconds — the longest she'll wait before whispering
+	let restLine = 'write…'; // what the field says while she writes, and while you read her
+	let pulseOn = true; // how you wrote rides with every message
+	let pulsePause = 5; // seconds without a keystroke that count as a pause
 
 	/* open mode */
 	let inflight = false;
@@ -102,6 +123,10 @@
 	let held = null; // the whisper you began answering — taken by the next send
 	let lastPin = null; // { at, kind, chars, ms, status } — numbers only
 	let lastAsk = null; // { at, mode, ms, status, body }
+	let lastPulse = null; // { at, status, recorded, chars, ms, reason } — numbers only
+	/* the moment the room became yours to answer — her reply done, a chat opened,
+	   or (when hush can't know when she finished) the moment your last message left */
+	let anchor = { at: Date.now(), kind: 'open' };
 	let leaving = false; // a reload cuts requests off — that's not a miss
 	addEventListener('pagehide', () => (leaving = true));
 
@@ -344,6 +369,15 @@
 	};
 
 	/* ── reply mode: inside a chat ────────────────────────── */
+	/* how long her reply takes to read, minus what you read while it streamed,
+	   minus the time she already spent writing the whisper */
+	const readWait = (pace) => {
+		if (!pace || !Number.isFinite(+pace.reply_chars)) return 0;
+		const left = Math.max(0, (pace.reply_chars / readCps) * 1000 - (+pace.stream_ms || 0));
+		const need = Math.min(readMax * 1000, readBase * 1000 + left);
+		return Math.max(0, need - (+pace.gen_ms || 0));
+	};
+
 	const askReply = async (chatId, messageId, why) => {
 		if (!replyLive) return;
 		replyCtrl?.abort(); // one reply ask at a time — the newest message wins
@@ -362,13 +396,21 @@
 		if (res.aborted) return;
 		const { ok, status, data } = res;
 		const line = data?.whisper;
+		const fresh = why === 'after your message';
+		if (fresh && data?.pace && chatIdOf() === chatId)
+			anchor = { at: Date.now() - (+data.pace.gen_ms || 0), kind: 'reply' }; // when she finished, near enough
 		if (line) {
 			misses = 0;
 			replyCache.set(chatId, line);
 			replyRecent.set(chatId, [line, ...(replyRecent.get(chatId) ?? []).filter((l) => l !== line)].slice(0, 6));
 			if (chatIdOf() === chatId) {
-				paint(line, 'reply (petal, just now)', 'reply');
-				lingerArm(chatId, 0);
+				const wait = fresh ? readWait(data?.pace) : 0;
+				if (wait > 0 && fieldIsEmpty() && !pulse) readStart(chatId, line, wait, data.pace);
+				else if (fresh && !fieldIsEmpty()) note('you were already answering — her line waits in the cache');
+				else {
+					paint(line, 'reply (petal, just now)', 'reply');
+					lingerArm(chatId, 0);
+				}
 			} else note('reply kept for later', { chat: short(chatId), chars: line.length });
 		} else if (status > 0 && !ok) {
 			miss(`${status} ${data?.detail ?? ''}`.trim(), data?.tried);
@@ -382,12 +424,14 @@
 	const enterChat = (chatId) => {
 		const cached = replyCache.get(chatId);
 		lingerStop('a different page');
+		readStop('a different page');
+		anchor = { at: Date.now(), kind: 'open' };
 		if (cached) {
 			paint(cached, 'reply (petal, earlier in this chat)', 'reply');
 			lingerArm(chatId, 0);
 		}
 		else if (replyLines.length) paint(pick(replyLines, shown.line), 'reply pool', 'reply');
-		else paint('', 'silence (until she speaks here)', 'reply');
+		else paint(restLine, 'rest (until she speaks here)', 'rest');
 		clearTimeout(openTimer);
 		if (!replyLive || !replyOnOpen) return;
 		/* a brand-new chat arrives here right as its first message is sent —
@@ -404,9 +448,53 @@
 		note('send seen', { chat: short(chatId) });
 		clearTimeout(openTimer);
 		lingerStop('you sent a message');
+		readStop('you sent a message');
+		anchor = { at: Date.now(), kind: 'send' }; // until she's done and hush hears when
 		if (replyLines.length) paint(pick(replyLines, shown.line), 'reply pool (while she writes)', 'reply');
-		else paint('', 'silence (while she writes)', 'reply');
+		else paint(restLine, 'rest (while she writes)', 'rest');
 		askReply(chatId, messageId, 'after your message');
+	};
+
+	/* ── reading: her whisper waits while you read her ──────
+	   the same focused clock as linger — time behind other windows
+	   doesn't count as reading. one timeout, no polling. */
+	let rd = null; // { chatId, line, needMs, bankedMs, resumedAt, timer }
+	const readStop = (why) => {
+		if (!rd) return;
+		clearTimeout(rd.timer);
+		note('reading let go', { why });
+		rd = null;
+	};
+	const readClock = () => {
+		if (!rd) return;
+		clearTimeout(rd.timer);
+		if (present()) {
+			rd.resumedAt = rd.resumedAt ?? Date.now();
+			const left = rd.needMs - rd.bankedMs - (Date.now() - rd.resumedAt);
+			rd.timer = setTimeout(readDone, Math.max(0, left));
+		} else if (rd.resumedAt) {
+			rd.bankedMs += Date.now() - rd.resumedAt;
+			rd.resumedAt = null;
+		}
+	};
+	const readStart = (chatId, line, needMs, pace) => {
+		readStop('a newer whisper');
+		rd = { chatId, line, needMs, bankedMs: 0, resumedAt: null, timer: null };
+		note('she waits while you read', {
+			seconds: Math.round(needMs / 1000),
+			reply_chars: pace?.reply_chars,
+			streamed_s: Math.round((+pace?.stream_ms || 0) / 1000),
+			wrote_whisper_s: Math.round((+pace?.gen_ms || 0) / 1000)
+		});
+		readClock();
+	};
+	const readDone = () => {
+		const r = rd;
+		rd = null;
+		if (!r || chatIdOf() !== r.chatId) return;
+		if (!fieldIsEmpty() || pulse) return note('you began first — her line stays in the cache');
+		paint(r.line, 'reply (petal, after you read her)', 'reply');
+		lingerArm(r.chatId, 0);
 	};
 
 	/* ── linger: you're quiet, she notices ───────────────────
@@ -536,15 +624,20 @@
 		}
 	};
 
-	addEventListener('focus', lingerClock);
-	addEventListener('blur', lingerClock);
-	document.addEventListener('visibilitychange', lingerClock);
+	const clocks = () => {
+		lingerClock();
+		readClock();
+		pulseAway();
+	};
+	addEventListener('focus', clocks);
+	addEventListener('blur', clocks);
+	document.addEventListener('visibilitychange', clocks);
 	/* some window managers swallow the window 'focus' when you come back from
 	   another app — so any sign of you in the page also re-checks presence:
 	   element focus, a click, a key, the wheel, or the mouse (at most every 2s). */
-	addEventListener('focusin', lingerClock, true);
+	addEventListener('focusin', clocks, true);
 	addEventListener('focus', () => (lastStir = Date.now()));
-	addEventListener('pageshow', lingerClock);
+	addEventListener('pageshow', clocks);
 	let lastNudge = 0;
 	const youreHere = () => {
 		const now0 = Date.now();
@@ -554,11 +647,14 @@
 			if (shown.line) stillest = Math.max(stillest, now0 - Math.max(lastStir, shown.at));
 		}
 		lastStir = now0; // the presence signal
-		if (!lw || lw.resumedAt || lw.ctrl) return; // already counting (or asking) — nothing to do
+		const lingerIdle = lw && !lw.resumedAt && !lw.ctrl;
+		const readIdle = rd && !rd.resumedAt;
+		const awayOpen = pulse && pulse.awayAt;
+		if (!lingerIdle && !readIdle && !awayOpen) return; // every clock already counting — nothing to do
 		const now = Date.now();
 		if (now - lastNudge < 2000) return;
 		lastNudge = now;
-		lingerClock();
+		clocks();
 	};
 	for (const ev of ['pointerdown', 'keydown', 'wheel', 'pointermove', 'touchstart'])
 		addEventListener(ev, youreHere, { capture: true, passive: true });
@@ -584,7 +680,8 @@
 		'beforeinput',
 		(e) => {
 			if (!e.target?.closest?.('#chat-input') || !fieldIsEmpty()) return;
-			if (!shown.line) return void (held = null);
+			readStop('you began answering'); // she won't type over you
+			if (!shown.line || shown.mode === 'rest') return void (held = null); // the rest line isn't her whisper
 			const now = Date.now();
 			// she came back to answer: the stillness that just ended, if it ended while her line glowed
 			const back = lastStill && lastStill.at >= shown.at ? lastStill.ms : 0;
@@ -604,6 +701,153 @@
 		},
 		true
 	);
+
+	/* ── the pulse: how you wrote this message ───────────────
+	   numbers only, never your words. a session begins with the first
+	   letter in the field and ends when the message leaves. ProseMirror
+	   swallows some edits (paste, selection deletes, Enter) before the
+	   browser's input event, so every change is read as a length change,
+	   settled on input, keyup, paste and cut — the hint says what kind. */
+	let pulse = null;
+	const cpLen = (s) => {
+		let n = 0;
+		for (const _ of s) n++;
+		return n;
+	};
+	const fieldLen = () => {
+		const field = document.querySelector('#chat-input');
+		if (!field || fieldIsEmpty()) return 0;
+		return cpLen((field.innerText ?? '').replace(/\n+$/, ''));
+	};
+	const pulseSettle = (hint = '') => {
+		if (!pulseOn) return;
+		const now = Date.now();
+		const len = fieldLen();
+		if (!pulse) {
+			if (len === 0) return;
+			pulse = {
+				began: now, typed: 0, pasted: 0, deleted: 0, emptied: 0,
+				pauses: 0, longestMs: 0, lastLen: 0, lastAt: now,
+				awayMs: 0, awayAt: present() ? null : now, sendKeyAt: 0
+			};
+			note('pulse begins', { device: phone ? 'phone' : 'computer' });
+		}
+		const d = len - pulse.lastLen;
+		if (d === 0) return;
+		// Enter sends and the field is cleared for you — that's not erasing
+		if (len === 0 && now - pulse.sendKeyAt < 2000) return;
+		const gap = now - pulse.lastAt;
+		if (pulse.lastLen > 0 || pulse.typed + pulse.pasted > 0) {
+			if (gap >= pulsePause * 1000) pulse.pauses++;
+			pulse.longestMs = Math.max(pulse.longestMs, gap);
+		}
+		if (d > 0) {
+			if (hint === 'paste') pulse.pasted += d;
+			else pulse.typed += d;
+		} else pulse.deleted += -d;
+		if (len === 0 && pulse.lastLen > 0) pulse.emptied++;
+		pulse.lastLen = len;
+		pulse.lastAt = now;
+	};
+	/* time looked away while writing: the page hidden or another window in front */
+	const pulseAway = () => {
+		if (!pulse) return;
+		if (!present()) pulse.awayAt = pulse.awayAt ?? Date.now();
+		else if (pulse.awayAt) {
+			pulse.awayMs += Date.now() - pulse.awayAt;
+			pulse.awayAt = null;
+		}
+	};
+	const inField = (e) => !!e.target?.closest?.('#chat-input');
+	document.addEventListener('input', (e) => inField(e) && pulseSettle(/FromPaste|FromDrop/.test(e.inputType ?? '') ? 'paste' : ''), true);
+	document.addEventListener('keyup', (e) => inField(e) && pulseSettle(), true);
+	document.addEventListener('cut', (e) => inField(e) && setTimeout(() => pulseSettle(), 0), true);
+	document.addEventListener('paste', (e) => inField(e) && setTimeout(() => pulseSettle('paste'), 0), true);
+	document.addEventListener('drop', (e) => inField(e) && setTimeout(() => pulseSettle('paste'), 0), true);
+	document.addEventListener(
+		'keydown',
+		(e) => {
+			if (!pulse || !inField(e) || e.key !== 'Enter' || e.shiftKey || e.isComposing) return;
+			pulseSettle(); // the last letters, before the field is cleared
+			pulse.sendKeyAt = Date.now();
+		},
+		true
+	);
+
+	/* the message is leaving — fold the session into numbers */
+	const pulseTake = (b) => {
+		const p = pulse;
+		if (!p || !pulseOn) return null;
+		// (no settle here: by now the field may already be cleared for you, and that isn't erasing)
+		const now = Date.now();
+		// what actually went out: your last message in the request, else the field's last length
+		let sent = p.lastLen;
+		const last = Array.isArray(b?.messages) ? [...b.messages].reverse().find((m) => m?.role === 'user') : null;
+		const c = last?.content;
+		const text = typeof c === 'string' ? c : Array.isArray(c) ? c.filter((i) => i?.type === 'text').map((i) => i.text ?? '').join(' ') : null;
+		if (typeof text === 'string') sent = cpLen(text.trim());
+		// a regenerate or an edit sends while your draft still sits in the field — that send
+		// isn't this session's. ours is the one that just pressed Enter, or carries the field's words.
+		const ours = now - p.sendKeyAt < 3000 || Math.abs(sent - p.lastLen) <= Math.max(2, p.lastLen * 0.05);
+		if (!ours) return null;
+		pulse = null;
+		if (p.awayAt) p.awayMs += now - p.awayAt;
+		// her reply may have finished after you began (you read while it streamed) — the anchor
+		// is whichever moment came last before your first letter
+		const a = anchor.at <= p.began ? anchor : { at: p.began, kind: anchor.kind };
+		return {
+			anchor: a.kind,
+			began_seconds: Math.round((p.began - a.at) / 1000),
+			wrote_seconds: Math.round((now - p.began) / 1000),
+			typed_chars: p.typed,
+			pasted_chars: p.pasted,
+			deleted_chars: p.deleted,
+			sent_chars: sent,
+			pauses: p.pauses,
+			pause_min_seconds: pulsePause,
+			longest_pause_seconds: Math.round(p.longestMs / 1000),
+			emptied: p.emptied,
+			away_seconds: Math.round(p.awayMs / 1000),
+			device: phone ? 'phone' : 'computer'
+		};
+	};
+
+	const pulseRecord = async (stats, chatId, messageIds, model) => {
+		const t = token();
+		if (!t) return;
+		const ctrl = new AbortController();
+		const cut = setTimeout(() => ctrl.abort(), 1500); // never hold your message hostage
+		const t0 = performance.now();
+		try {
+			const r = await rawFetch(PULSE_URL, {
+				method: 'POST',
+				signal: ctrl.signal,
+				headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${t}` },
+				body: JSON.stringify({ chat_id: chatId, message_ids: messageIds, model, ...stats })
+			});
+			const data = await r.json().catch(() => null);
+			lastPulse = {
+				at: new Date().toLocaleTimeString(),
+				status: r.status,
+				recorded: !!data?.recorded,
+				chars: data?.chars ?? 0,
+				ms: Math.round(performance.now() - t0),
+				reason: data?.reason ?? data?.detail ?? null
+			};
+		} catch (e) {
+			lastPulse = {
+				at: new Date().toLocaleTimeString(),
+				status: 0,
+				recorded: false,
+				chars: 0,
+				ms: Math.round(performance.now() - t0),
+				reason: e?.name === 'AbortError' ? 'took too long — sent without it' : e?.message ?? 'offline'
+			};
+		} finally {
+			clearTimeout(cut);
+		}
+		note(lastPulse.recorded ? 'pulse recorded' : 'no pulse', { ...stats, ms: lastPulse.ms, reason: lastPulse.reason });
+	};
 
 	/* the held whisper, rendered by the server through your pin lens and recorded
 	   privately against her reply — so what she saw is what the ledger trains on */
@@ -699,13 +943,23 @@
 		// a held whisper belongs to this send only if you began it in this chat (or on the new-chat page that became it)
 		const h = held && (held.chatId === chatId || held.chatId === null) ? held : null;
 		held = null;
+		let ps = null;
+		try {
+			ps = pulseTake(b);
+		} catch (_) {}
 		try {
 			if (chatId && ids[0] && !String(chatId).startsWith('local')) onSend(chatId, ids[0]);
 		} catch (_) {}
-		if (!h || !pinOn) return rawFetch(input, init);
+		const pinning = !!(h && pinOn);
+		if (!pinning && !ps) return rawFetch(input, init);
 
-		return pinNote(h, chatId, ids, b.model ?? null).then(
-			(noteText) => {
+		/* both land before your message does (each capped at 1.5s): the pin rides in
+		   the request, the pulse waits in its record for the 🌸 petal · pulse filter */
+		return Promise.all([
+			pinning ? pinNote(h, chatId, ids, b.model ?? null) : Promise.resolve(null),
+			ps ? pulseRecord(ps, chatId, ids, b.model ?? null).catch(() => null) : Promise.resolve(null)
+		]).then(
+			([noteText]) => {
 				if (!noteText) return rawFetch(input, init);
 				let pinned = null;
 				try {
@@ -724,6 +978,8 @@
 		else {
 			clearTimeout(openTimer);
 			lingerStop('left the chat');
+			readStop('left the chat');
+			anchor = { at: Date.now(), kind: 'new' };
 			show();
 		}
 	};
@@ -788,6 +1044,17 @@
 			'open-linger lens': sources?.open_linger_lens ?? null,
 			pin: !pinOn ? 'off' : held ? `holding a ${held.kind} whisper (${held.whisper.length} chars, glowed ${held.waited_seconds}s)` : 'ready — begin writing over her line',
 			'pin lens': sources?.pin_lens ?? null,
+			reading: rd
+				? `${Math.round((rd.bankedMs + (rd.resumedAt ? Date.now() - rd.resumedAt : 0)) / 1000)}s / ${Math.round(rd.needMs / 1000)}s · ${present() ? 'you are here' : 'away (clock paused)'}`
+				: `resting · ${readBase}s + reply ÷ ${readCps} chars/s, ≤${readMax}s`,
+			pulse: !pulseOn
+				? 'off'
+				: pulse
+					? `writing · ${Math.round((Date.now() - pulse.began) / 1000)}s · typed ${pulse.typed} · pasted ${pulse.pasted} · erased ${pulse.deleted} · ${pulse.pauses} pauses`
+					: 'ready — begins with your first letter',
+			'pulse lens': sources?.pulse_lens ?? null,
+			'last pulse': lastPulse ? `${lastPulse.at} · ${lastPulse.status} · ${lastPulse.recorded ? 'recorded' : 'not recorded'} · ${lastPulse.chars} chars · ${lastPulse.ms}ms${lastPulse.reason ? ' · ' + lastPulse.reason : ''}` : '(none yet)',
+			anchor: `${anchor.kind} · ${Math.round((Date.now() - anchor.at) / 1000)}s ago`,
 			'last pin': lastPin ? `${lastPin.at} · ${lastPin.kind} · ${lastPin.status} · ${lastPin.chars} chars · ${lastPin.recorded ? 'recorded' : 'not recorded'} · ${lastPin.ms}ms${lastPin.reason ? ' · ' + lastPin.reason : ''}` : '(none yet)',
 			'queue fresh for': `${Math.round(freshMs / 60000)} min`,
 			misses,
@@ -891,6 +1158,8 @@
 			replyCache.clear();
 			replyRecent.clear();
 			lingerStop('reset');
+			readStop('reset');
+			pulse = null;
 			held = null;
 			misses = 0;
 			restingAt = -1;
@@ -947,6 +1216,12 @@
 			presenceFade = num(data.presence_fade, presenceFade, 10, 3600);
 			pinOn = data.pin !== false;
 			maxChars = num(phone ? data.max_chars_phone : data.max_chars, maxChars, 8, 200);
+			readBase = num(data.reply_read_base, readBase, 0, 60);
+			readCps = num(data.reply_read_cps, readCps, 2, 200);
+			readMax = num(data.reply_read_max, readMax, 0, 600);
+			if (typeof data.reply_rest === 'string') restLine = data.reply_rest.trim();
+			pulseOn = data.pulse !== false;
+			pulsePause = num(data.pulse_pause, pulsePause, 1, 600);
 			mine = lines(data.mine);
 			petal = lines(data.petal);
 			replyLines = lines(data.reply_lines);
