@@ -72,11 +72,35 @@
 				</button>
 			</div>
 
-			{#if (valves[property] ?? null) !== null}
+			{#if (valves[property] ?? null) !== null || displaySpec.properties[property]?.input?.type === 'slider'}
 				<!-- {valves[property]} -->
 				<div class="flex mt-0.5 mb-0.5 space-x-2">
 					<div class=" flex-1 min-w-0">
-						{#if displaySpec.properties[property]?.enum ?? null}
+						{#if displaySpec.properties[property]?.input?.type === 'slider'}
+							<!-- 🌸 petal: a real slider (♡ Heartstrings' strings and strength) — always shown, saved on release -->
+							<div class="flex items-center gap-3">
+								<input
+									type="range"
+									class="flex-1 min-w-0 cursor-pointer"
+									style="accent-color: var(--candy, #ff6fae)"
+									min={displaySpec.properties[property].input.min ?? 0}
+									max={displaySpec.properties[property].input.max ?? 1}
+									step={displaySpec.properties[property].input.step ?? 0.01}
+									value={valves[property] ?? displaySpec.properties[property]?.default ?? 0}
+									on:input={(e) => {
+										valves[property] = Number(e.currentTarget.value);
+									}}
+									on:change={() => {
+										dispatch('change');
+									}}
+								/>
+								<span class="w-12 shrink-0 text-right text-xs tabular-nums text-gray-500 dark:text-gray-400"
+									>{Number(valves[property] ?? displaySpec.properties[property]?.default ?? 0) > 0 ? '+' : ''}{Number(
+										valves[property] ?? displaySpec.properties[property]?.default ?? 0
+									).toFixed(2)}</span
+								>
+							</div>
+						{:else if displaySpec.properties[property]?.enum ?? null}
 							<select
 								class="w-full rounded-lg py-2 px-4 text-sm dark:text-gray-300 dark:bg-gray-850 outline-hidden border border-gray-100/30 dark:border-gray-850/30"
 								bind:value={valves[property]}

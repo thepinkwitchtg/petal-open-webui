@@ -894,6 +894,27 @@
 		.map((id) => ($models.find((model) => model.id === id) || {})?.filters ?? [])
 		.reduce((acc, filters) => acc.filter((f1) => filters.some((f2) => f2.id === f1.id)));
 
+	// 🌸 petal: a filter whose icon carries "#petal-pinned:<emoji>" lives on the bar always — no ✕ to lose it by,
+	// lit when on, dim when a chat turned it off (one click lights it again) — and its emoji is drawn as text, in
+	// her own emoji font, never as an inverted <img>
+	const petalEmojiOf = (filter) => {
+		const icon = filter?.icon ?? '';
+		const at = icon.indexOf('#petal-pinned:');
+		if (at < 0) return '';
+		try {
+			return decodeURIComponent(icon.slice(at + '#petal-pinned:'.length));
+		} catch {
+			return '';
+		}
+	};
+	let petalPinnedIds: string[] = [];
+	$: petalPinnedIds = (toggleFilters ?? []).filter((f) => petalEmojiOf(f)).map((f) => f.id);
+	let petalChipIds: string[] = [];
+	$: petalChipIds = [
+		...petalPinnedIds,
+		...(selectedFilterIds ?? []).filter((id) => !petalPinnedIds.includes(id))
+	];
+
 	let showToolsButton = false;
 	$: showToolsButton = ($tools ?? []).length > 0 || ($toolServers ?? []).length > 0;
 
@@ -2556,7 +2577,8 @@
 
 								<div class="flex flex-1 items-center min-w-0 overflow-x-auto scrollbar-none">
 									{#if selectedModelIds.length === 1 && $models.find((m) => m.id === selectedModelIds[0])?.has_user_valves && ($_user?.role === 'admin' || ($_user?.permissions?.chat?.valves ?? true))}
-										<div class="ml-1 flex gap-1.5 shrink-0">
+										<!-- 🌸 petal: with a pinned chip, this knob steps behind it (flex order — her 💗 leads the row) -->
+										<div class="ml-1 flex gap-1.5 shrink-0 {petalPinnedIds.length ? 'order-last' : ''}">
 											<Tooltip content={$i18n.t('Valves')} placement="top">
 												<button
 													type="button"
@@ -2622,20 +2644,25 @@
 											</Tooltip>
 										{/if}
 
-										{#each selectedFilterIds as filterId (filterId)}
+										{#each petalChipIds as filterId (filterId)}
 											{@const filter = toggleFilters.find((f) => f.id === filterId)}
+											{@const petalEmoji = petalEmojiOf(filter)}
+											{@const filterOn = selectedFilterIds.includes(filterId)}
 											{#if filter && $visibleControls['chat.selected_filters']}
 												<Tooltip
+													className={petalEmoji ? 'flex order-first' : 'flex'}
 													content={resolveLocalizedFunction(
 														filter,
 														$localizedFunctions,
 														$i18n.language
-													)}
+													) + (petalEmoji && !filterOn ? ' · off in this chat — click to wake' : '')}
 													placement="top"
 												>
 													<button
 														on:click|preventDefault={() => {
-															if (
+															if (petalEmoji && !filterOn) {
+																selectedFilterIds = [...selectedFilterIds, filterId]; // 🌸 a dim pinned chip lights again
+															} else if (
 																filter?.has_user_valves &&
 																($_user?.role === 'admin' ||
 																	($_user?.permissions?.chat?.valves ?? true))
@@ -2643,20 +2670,31 @@
 																selectedValvesType = 'function';
 																selectedValvesItemId = filterId;
 																showValvesModal = true;
-															} else {
+															} else if (!petalEmoji) {
 																selectedFilterIds = selectedFilterIds.filter(
 																	(id) => id !== filterId
 																);
 															}
 														}}
 														type="button"
-														class="group p-[0.375rem] flex gap-1.5 items-center text-sm rounded-full transition-colors duration-300 focus:outline-hidden max-w-full overflow-hidden {selectedFilterIds.includes(
-															filterId
-														)
-															? 'text-sky-500 dark:text-sky-300 bg-sky-50 hover:bg-sky-100 dark:bg-sky-400/10 dark:hover:bg-sky-600/10 border border-sky-200/40 dark:border-sky-500/20'
-															: 'bg-transparent text-gray-600 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-800 '} capitalize"
+														class="group p-[0.375rem] flex gap-1.5 items-center text-sm rounded-full transition-colors duration-300 focus:outline-hidden max-w-full overflow-hidden {petalEmoji
+															? filterOn
+																? 'bg-pink-400/10 hover:bg-pink-400/20 border border-pink-400/30'
+																: 'opacity-45 grayscale hover:opacity-80 border border-transparent'
+															: filterOn
+																? 'text-sky-500 dark:text-sky-300 bg-sky-50 hover:bg-sky-100 dark:bg-sky-400/10 dark:hover:bg-sky-600/10 border border-sky-200/40 dark:border-sky-500/20'
+																: 'bg-transparent text-gray-600 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-800 '} capitalize"
 													>
-														{#if filter?.icon}
+														{#if petalEmoji}
+															<!-- 🌸 petal: her emoji as text, in her own emoji font — never inverted -->
+															<div
+																class="size-4 items-center flex justify-center text-[0.95rem] leading-none select-none"
+																style="font-family: var(--font-emoji, 'SamsungColorEmoji'), sans-serif;"
+																aria-hidden="true"
+															>
+																{petalEmoji}
+															</div>
+														{:else if filter?.icon}
 															<div class="size-4 items-center flex justify-center">
 																<img
 																	src={filter.icon}
@@ -2674,20 +2712,22 @@
 														{:else}
 															<Sparkles className="size-4" strokeWidth="1.75" />
 														{/if}
-														<!-- svelte-ignore a11y-click-events-have-key-events -->
-														<!-- svelte-ignore a11y-no-static-element-interactions -->
-														<div
-															class="hidden group-hover:block"
-															on:click={(e) => {
-																e.stopPropagation();
-																e.preventDefault();
-																selectedFilterIds = selectedFilterIds.filter(
-																	(id) => id !== filterId
-																);
-															}}
-														>
-															<XMark className="size-4" strokeWidth="1.75" />
-														</div>
+														{#if !petalEmoji}
+															<!-- svelte-ignore a11y-click-events-have-key-events -->
+															<!-- svelte-ignore a11y-no-static-element-interactions -->
+															<div
+																class="hidden group-hover:block"
+																on:click={(e) => {
+																	e.stopPropagation();
+																	e.preventDefault();
+																	selectedFilterIds = selectedFilterIds.filter(
+																		(id) => id !== filterId
+																	);
+																}}
+															>
+																<XMark className="size-4" strokeWidth="1.75" />
+															</div>
+														{/if}
 													</button>
 												</Tooltip>
 											{/if}
