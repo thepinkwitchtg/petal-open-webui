@@ -565,3 +565,9 @@ async def realtime_call(ws: WebSocket):
             await upstream.close()
         with contextlib.suppress(Exception):
             await ws.close()
+
+
+# 🌸📻 petal stream rides on this router's mount (/api/v1/audio), so main.py stays untouched
+from open_webui.routers.audio.petal_stream import router as _petal_stream_router  # noqa: E402
+
+router.include_router(_petal_stream_router)

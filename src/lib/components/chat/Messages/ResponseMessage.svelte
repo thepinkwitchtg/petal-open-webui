@@ -33,6 +33,12 @@
 		visibleControls
 	} from '$lib/stores';
 	import { synthesizeOpenAISpeech } from '$lib/apis/audio';
+	import {
+		petalStreamEnabled,
+		petalStreamParts,
+		playPetalStream,
+		stopPetalStream
+	} from '$lib/utils/petalStream';
 	import { imageGenerations } from '$lib/apis/images';
 	import {
 		copyToClipboard as _copyToClipboard,
@@ -243,6 +249,7 @@
 		try {
 			speechSynthesis.cancel();
 			$audioQueue?.stop();
+			stopPetalStream(); // 🌸📻 any station still speaking (hers or another message's)
 		} catch {}
 
 		speaking = false;
@@ -257,7 +264,8 @@
 			? ($settings?.audio?.tts?.voice ?? $config?.audio?.tts?.voice)
 			: $config?.audio?.tts?.voice);
 
-	const speak = async () => {
+	// legacy: true → the old one-clip-per-sentence path (petal stream's fallback)
+	const speak = async ({ legacy = false }: { legacy?: boolean } = {}) => {
 		const content = visibleResponseContent;
 		if (!content.trim().length) {
 			toast.info($i18n.t('No content to speak'));
@@ -312,6 +320,35 @@
 			};
 
 			loadingSpeech = true;
+
+			// 🌸📻 petal stream: the whole reply as one live stream, so she survives a locked screen
+			if (!legacy && $settings.audio?.tts?.engine !== 'browser-kokoro' && petalStreamEnabled()) {
+				const parts = petalStreamParts(content, getMessageContentParts);
+				if (parts.length) {
+					const opened = await playPetalStream({
+						token: localStorage.token,
+						voice: getVoiceId(),
+						parts,
+						title: model?.name ? `${model.name} 💗` : 'Petal 💗',
+						artwork: model?.info?.meta?.profile_image_url,
+						playbackRate: $settings.audio?.tts?.playbackRate ?? 1,
+						onPlaying: () => {
+							loadingSpeech = false;
+						},
+						onEnded: () => {
+							speaking = false;
+							speakingIdx = undefined;
+							loadingSpeech = false;
+						},
+						onError: () => {
+							if (!signal.aborted) speak({ legacy: true });
+						}
+					});
+					if (signal.aborted) return;
+					if (opened) return;
+				}
+			}
+
 			const messageContentParts: string[] = getMessageContentParts(
 				content,
 				$config?.audio?.tts?.split_on ?? 'punctuation'
