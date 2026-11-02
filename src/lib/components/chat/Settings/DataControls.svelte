@@ -16,6 +16,7 @@
 	import ConfirmDialog from '$lib/components/common/ConfirmDialog.svelte';
 	import UserSettingRow from './UserSettingRow.svelte';
 	import UserSettingSection from './UserSettingSection.svelte';
+	import PetalHarvest from './PetalHarvest.svelte'; // 🌷 garden harvest
 
 	const i18n = getContext('i18n');
 
@@ -196,6 +197,10 @@
 						{$i18n.t('Export')}
 					</button>
 				</UserSettingRow>
+			{/if}
+
+			{#if canManageChats({ user: $user, config: null }, 'export')}
+				<PetalHarvest />
 			{/if}
 
 			<UserSettingRow
