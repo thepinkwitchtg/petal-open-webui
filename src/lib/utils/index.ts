@@ -20,6 +20,7 @@ dayjs.extend(isYesterday);
 dayjs.extend(localizedFormat);
 
 import { TTS_RESPONSE_SPLIT } from '$lib/types';
+import { speakTables } from '$lib/utils/petal-table-voice'; // 🌸 tables read aloud
 
 import pdfWorkerUrl from 'pdfjs-dist/build/pdf.worker.mjs?url';
 
@@ -1179,6 +1180,8 @@ export const extractSentencesForAudio = (text: string) => {
 export const getMessageContentParts = (content: string, splitOn: string = 'punctuation') => {
 	// Strip details before splitting code fences, which can separate their tags and leak reasoning into TTS (#22197).
 	content = content.replace(/<details[^>]*>[\s\S]*?<\/details>/gi, '');
+	// 🌸 petal-table-voice: turn md tables into spoken lines before the line split erases them
+	content = speakTables(content);
 
 	const messageContentParts: string[] = [];
 
