@@ -68,7 +68,7 @@
 	if (window.__petalGarden) return;
 	window.__petalGarden = true;
 
-	for (const src of ['/static/petal/hush.js']) {
+	for (const src of ['/static/petal/hush.js', '/static/petal/probe.js']) {
 		const s = document.createElement('script');
 		s.src = src;
 		s.async = false; // keep garden order
