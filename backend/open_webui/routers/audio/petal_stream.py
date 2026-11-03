@@ -40,6 +40,11 @@ from pathlib import Path
 
 import numpy as np
 
+try:  # 🎀 the tts sieve, inside OWUI or when this file is tasted on its own
+    from open_webui.routers.audio.tts_sieve import sieve
+except ImportError:
+    from tts_sieve import sieve
+
 log = logging.getLogger(__name__)
 
 try:
@@ -176,7 +181,12 @@ async def produce(session, parts: list[dict], voice: str, q: asyncio.Queue, c: d
     timeout = aiohttp.ClientTimeout(total=180, sock_read=45)
     try:
         for i, part in enumerate(parts):
-            text, last = part["text"], i == len(parts) - 1
+            text, last = sieve(part["text"]), i == len(parts) - 1
+            if not text.strip():  # 🎀 only emoji: nothing for her to say, the line just moves on
+                if shaped and last:
+                    await q.put(silence(gap_ms(part["text"], part.get("para_end", False), last, c)))
+                await q.put(BOUNDARY)
+                continue
             payload = {"model": OMNI_MODEL, "input": text, "voice": voice or OMNI_MODEL,
                        "response_format": "pcm", "stream": True, "stream_format": "audio"}
             spoke = False
