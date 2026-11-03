@@ -27,7 +27,7 @@ from fastapi import (
     UploadFile,
     status,
 )
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 from open_webui.config import (
     CACHE_DIR,
     DEFAULT_REALTIME_TTS_PROMPT_TEMPLATE,
@@ -54,6 +54,7 @@ from open_webui.env import (
 from open_webui.events import EVENTS, publish_event
 from open_webui.models.config import Config
 from open_webui.routers.audio import realtime
+from open_webui.routers.audio.tts_sieve import sieve_speech_body, silent_mp3
 from open_webui.utils.access_control import has_permission
 from open_webui.utils.auth import get_admin_user, get_verified_user
 from open_webui.utils.headers import include_user_info_headers
@@ -777,6 +778,12 @@ async def speech(request: Request, user=Depends(get_verified_user)):
         )
 
     body = await request.body()
+    # 🎀 tts sieve: what the voice eats, never what the chat shows (tts_sieve.json toggles it live)
+    body, sieved_empty = sieve_speech_body(body)
+    if sieved_empty:
+        quiet = silent_mp3()
+        if quiet is not None:
+            return Response(content=quiet, media_type='audio/mpeg')
     payload = None
     if engine == 'openai-realtime':
         try:
