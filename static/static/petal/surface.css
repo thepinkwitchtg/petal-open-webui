@@ -76,6 +76,13 @@ html.petal body::after {
 		);
 }
 
+/* A/B switch for the paint probe — petalPaint('wash-off') mutes the
+   wash so we can tell whether the full-screen blend layer is what
+   makes buttons lose their gradient until a refresh. */
+html.petal.petal-no-wash body::after {
+	display: none;
+}
+
 html.petal body {
 	background-color: var(--abyss);
 }
