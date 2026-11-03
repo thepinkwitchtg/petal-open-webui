@@ -27,7 +27,11 @@
    ──────────────────────────────────────────────────────────── */
 html.petal [class~='dark:bg-white'],
 html.petal [class~='dark:bg-gray-100'][class~='dark:text-gray-900'] {
-	background-color: transparent !important;
+	/* v0.3.1 · candy under the gradient, not transparent — if the
+	   image layer ever drops (the "needs a refresh" ghost), the
+	   button falls back to solid candy instead of an abyss void
+	   with abyss text on it. the gradient covers it fully otherwise. */
+	background-color: var(--candy) !important;
 	background-image: var(--grad-fill) !important;
 	color: var(--abyss) !important;
 	box-shadow: 0 0 18px -8px var(--candy);
