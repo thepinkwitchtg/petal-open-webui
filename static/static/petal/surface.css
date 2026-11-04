@@ -112,6 +112,18 @@ html.petal * {
 	scrollbar-width: thin;
 }
 
+/* ── native pickers (v0.4) ──────────────────────────────────
+   the browser draws date/time/colour popups and checkboxes
+   itself — css can't reach inside them. color-scheme turns
+   them dark and accent-color tints what it can. the harvest
+   has its own abyssal calendar (PetalWindow); this is only
+   the floor for every other native control in the app.
+   ──────────────────────────────────────────────────────────── */
+html.petal {
+	color-scheme: dark;
+	accent-color: var(--candy);
+}
+
 /* ── the small alive things ────────────────────────────────── */
 html.petal ::selection {
 	background: oklch(0.711 0.214 var(--p-h-accent) / 0.28);
