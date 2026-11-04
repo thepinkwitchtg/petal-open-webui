@@ -34,9 +34,11 @@
 	} from '$lib/stores';
 	import { synthesizeOpenAISpeech } from '$lib/apis/audio';
 	import {
+		flagPetalVoice,
 		petalStreamEnabled,
 		petalStreamParts,
 		playPetalStream,
+		spokenMessages,
 		stopPetalStream
 	} from '$lib/utils/petalStream';
 	import { imageGenerations } from '$lib/apis/images';
@@ -239,6 +241,18 @@
 
 	let showRateComment = false;
 
+	// 🚩 flag the voice: plants this reply's stream as an incident on the rig
+	let flaggingVoice = false;
+	const flagVoice = async () => {
+		if (flaggingVoice) return;
+		flaggingVoice = true;
+		const r = await flagPetalVoice({ token: localStorage.token, message_id: message.id, via: 'button' });
+		flaggingVoice = false;
+		if (!r.ok) toast.error(`🚩 ${r.error ?? 'could not flag the voice'}`);
+		else if (r.planted) toast.success(`🚩 voice incident kept · ${r.incident}`);
+		else toast.success('🚩 flagged~ she\'ll be kept once she finishes speaking');
+	};
+
 	const copyToClipboard = async (text) => {
 		text = removeAllDetails(text);
 
@@ -339,6 +353,7 @@
 						token: localStorage.token,
 						voice: getVoiceId(),
 						parts,
+						meta: { chat_id: chatId, message_id: message.id, model: message.model, source: content },
 						title: model?.name ? `${model.name} 💗` : 'Petal 💗',
 						artwork: model?.info?.meta?.profile_image_url,
 						playbackRate: $settings.audio?.tts?.playbackRate ?? 1,
@@ -1262,6 +1277,36 @@
 													/>
 												</svg>
 											{/if}
+										</button>
+									</Tooltip>
+								{/if}
+
+								{#if $spokenMessages.has(message.id)}
+									<Tooltip content={$i18n.t('Flag voice')} placement="bottom">
+										<button
+											aria-label={$i18n.t('Flag voice')}
+											class="{isLastMessage || ($settings?.highContrastMode ?? false)
+												? 'visible'
+												: 'hover-reveal'} inline-flex size-7 shrink-0 items-center justify-center p-1.5 hover:bg-black/5 dark:hover:bg-white/5 rounded-lg dark:hover:text-gray-400 hover:text-gray-600 transition {flaggingVoice
+												? 'opacity-50'
+												: ''}"
+											on:click={flagVoice}
+										>
+											<svg
+												class="size-4"
+												aria-hidden="true"
+												viewBox="0 0 24 24"
+												stroke-width="1.5"
+												fill="none"
+												xmlns="http://www.w3.org/2000/svg"
+											>
+												<path d="M5 21V4" stroke="currentColor" stroke-linecap="round" />
+												<path
+													d="M5 4.5C8 2.5 10.5 6 13.5 4.5C15.5 3.5 17.5 3.5 19 4.5V13.5C17.5 12.5 15.5 12.5 13.5 13.5C10.5 15 8 11.5 5 13.5"
+													stroke="currentColor"
+													stroke-linejoin="round"
+												/>
+											</svg>
 										</button>
 									</Tooltip>
 								{/if}
