@@ -3,14 +3,18 @@
 // her cadence inside it; here we only open it, play it, and let the phone treat her like music
 // (lock-screen card, earbud play/pause) through the Media Session API.
 
+import { writable } from 'svelte/store';
 import { AUDIO_API_BASE_URL } from '$lib/constants';
 
 export type PetalPart = { text: string; para_end: boolean };
+// 🚩 who she was speaking for: kept beside the stream on the rig (memory only) until flagged
+export type PetalMeta = { chat_id?: string; message_id?: string; model?: string; source?: string };
 
 type Play = {
 	token: string;
 	voice: string;
 	parts: PetalPart[];
+	meta?: PetalMeta;
 	title?: string;
 	artwork?: string;
 	playbackRate?: number;
@@ -20,7 +24,20 @@ type Play = {
 };
 
 let audio: HTMLAudioElement | null = null;
-let current: { id: string; started: boolean; onEnded?: () => void; onError?: () => void } | null = null;
+let current: {
+	id: string;
+	trace?: string;
+	token: string;
+	message_id?: string;
+	title: string;
+	started: boolean;
+	onEnded?: () => void;
+	onError?: () => void;
+} | null = null;
+
+// 🚩 the voice black box: the rig keeps her last few streams; these let you flag one
+let last: { trace?: string; token: string; message_id?: string; at: number | null } | null = null;
+export const spokenMessages = writable<Set<string>>(new Set()); // messages that have a stream to flag
 
 // on unless she turns it off: localStorage.petalStream = 'off'
 export const petalStreamEnabled = () => {
@@ -71,6 +88,10 @@ const setState = (s: MediaSessionPlaybackState) => {
 
 const finish = (broken: boolean) => {
 	const was = current;
+	if (was) {
+		const ended = !!audio?.ended;
+		last = { trace: was.trace, token: was.token, message_id: was.message_id, at: ended ? null : (audio?.currentTime ?? null) };
+	}
 	current = null;
 	if (audio) {
 		audio.pause();
@@ -97,7 +118,58 @@ const mediaSession = (title: string, artwork?: string) => {
 		navigator.mediaSession.setActionHandler('play', () => audio?.play().catch(() => {}));
 		navigator.mediaSession.setActionHandler('pause', () => audio?.pause());
 		navigator.mediaSession.setActionHandler('stop', () => stopPetalStream());
+		// 🚩 earbuds' "next track" (double press) / the lock screen's ⏭ = flag what she's saying right now
+		navigator.mediaSession.setActionHandler('nexttrack', () => {
+			flagPetalVoice({ via: 'earbud' }).catch(() => {});
+		});
 	} catch {}
+};
+
+const markLockScreen = (text: string) => {
+	if (!current || !('mediaSession' in navigator)) return;
+	try {
+		const m = navigator.mediaSession.metadata;
+		navigator.mediaSession.metadata = new MediaMetadata({
+			title: `${text} · ${current.title}`,
+			artist: m?.artist ?? 'Petal',
+			album: m?.album ?? 'Petal Rig',
+			artwork: m?.artwork ? [...m.artwork] : []
+		});
+	} catch {}
+	try {
+		navigator.vibrate?.([40, 60, 40]);
+	} catch {}
+};
+
+export type FlagResult = { ok: boolean; planted?: boolean; pending?: boolean; incident?: string; part?: number | null; error?: string };
+
+// 🚩 flag the stream that's playing, or the last one (for message_id when given). where you were
+// listening goes with it, so the rig knows which sentence it was.
+export const flagPetalVoice = async (
+	o: { token?: string; message_id?: string; note?: string; via?: string } = {}
+): Promise<FlagResult> => {
+	let trace: string | undefined, at: number | null = null, token = o.token;
+	if (current && (!o.message_id || current.message_id === o.message_id)) {
+		trace = current.trace;
+		at = audio?.currentTime ?? null;
+		token = token ?? current.token;
+	} else if (last && (!o.message_id || last.message_id === o.message_id)) {
+		trace = last.trace;
+		at = last.at;
+		token = token ?? last.token;
+	}
+	token = token ?? localStorage.token;
+	const res = await fetch(`${AUDIO_API_BASE_URL}/petal-stream/flag`, {
+		method: 'POST',
+		headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+		body: JSON.stringify({ trace, message_id: o.message_id, at_s: at, note: o.note, via: o.via ?? 'button' })
+	}).catch(() => null);
+	if (!res) return { ok: false, error: 'the rig is out of reach' };
+	const j = await res.json().catch(() => ({}));
+	if (!res.ok) return { ok: false, error: j?.detail ?? `flag failed (${res.status})` };
+	const mm = at != null ? `${Math.floor(at / 60)}:${String(Math.floor(at % 60)).padStart(2, '0')}` : '';
+	markLockScreen(`🚩 flagged${mm ? ' at ' + mm : ''}`);
+	return j as FlagResult;
 };
 
 // → true when the stream was opened and handed to the player; false means use sentence clips now
@@ -105,20 +177,35 @@ export const playPetalStream = async (p: Play): Promise<boolean> => {
 	const res = await fetch(`${AUDIO_API_BASE_URL}/petal-stream`, {
 		method: 'POST',
 		headers: { Authorization: `Bearer ${p.token}`, 'Content-Type': 'application/json' },
-		body: JSON.stringify({ voice: p.voice, parts: p.parts })
+		body: JSON.stringify({ voice: p.voice, parts: p.parts, meta: p.meta })
 	}).catch(() => null);
 	if (!res || !res.ok) return false;
-	const id = (await res.json().catch(() => ({})))?.id;
+	const opened = await res.json().catch(() => ({}));
+	const id = opened?.id;
 	if (!id) return false;
 
 	stopPetalStream(); // only one station at a time
 	const a = element();
-	current = { id, started: false, onEnded: p.onEnded, onError: p.onError };
+	const title = p.title || 'Petal 💗';
+	current = {
+		id,
+		trace: opened?.trace,
+		token: p.token,
+		message_id: p.meta?.message_id,
+		title,
+		started: false,
+		onEnded: p.onEnded,
+		onError: p.onError
+	};
+	if (p.meta?.message_id && opened?.trace) {
+		const mid = p.meta.message_id;
+		spokenMessages.update((s) => new Set(s).add(mid));
+	}
 	const mine = current;
 	a.addEventListener('playing', () => current === mine && p.onPlaying?.(), { once: true });
 	a.src = `${AUDIO_API_BASE_URL}/petal-stream/${encodeURIComponent(id)}`;
 	a.playbackRate = p.playbackRate ?? 1;
-	mediaSession(p.title || 'Petal 💗', p.artwork);
+	mediaSession(title, p.artwork);
 	try {
 		await a.play();
 	} catch (e) {
