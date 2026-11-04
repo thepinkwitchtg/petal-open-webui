@@ -40,10 +40,12 @@ from pathlib import Path
 
 import numpy as np
 
-try:  # 🎀 the tts sieve, inside OWUI or when this file is tasted on its own
-    from open_webui.routers.audio.tts_sieve import sieve
+try:  # 🎀 the tts sieve + 🚩 the voice trace, inside OWUI or when this file is tasted on its own
+    from open_webui.routers.audio.tts_sieve import load_config as sieve_config, sieve
+    from open_webui.routers.audio import voice_trace
 except ImportError:
-    from tts_sieve import sieve
+    from tts_sieve import load_config as sieve_config, sieve
+    import voice_trace
 
 log = logging.getLogger(__name__)
 
@@ -170,9 +172,9 @@ def _rate_of(headers) -> int:
 
 
 # ── the voice: sentence after sentence, faded and spaced, into one queue ─────
-async def produce(session, parts: list[dict], voice: str, q: asyncio.Queue, c: dict) -> None:
+async def produce(session, parts: list[dict], voice: str, q: asyncio.Queue, c: dict, tr=None) -> None:
     """asks the omni voice for each sentence (streaming pcm) and puts 24 kHz int16 bytes on q.
-    None on q means she's done."""
+    None on q means she's done. tr (a voice trace) quietly keeps each take as she made it."""
     import aiohttp
 
     shaped = c["pacing"] == "shaped"
@@ -182,6 +184,9 @@ async def produce(session, parts: list[dict], voice: str, q: asyncio.Queue, c: d
     try:
         for i, part in enumerate(parts):
             text, last = sieve(part["text"]), i == len(parts) - 1
+            take = tr.takes[i] if tr and i < len(tr.takes) else None
+            if take:
+                take.fed = text
             if not text.strip():  # 🎀 only emoji: nothing for her to say, the line just moves on
                 if shaped and last:
                     await q.put(silence(gap_ms(part["text"], part.get("para_end", False), last, c)))
@@ -190,8 +195,12 @@ async def produce(session, parts: list[dict], voice: str, q: asyncio.Queue, c: d
             payload = {"model": OMNI_MODEL, "input": text, "voice": voice or OMNI_MODEL,
                        "response_format": "pcm", "stream": True, "stream_format": "audio"}
             spoke = False
+            if take:
+                take.t_req = tr.rel()
             try:
                 async with session.post(f"{OMNI_URL}/audio/speech", json=payload, timeout=timeout) as r:
+                    if take:
+                        take.status = r.status
                     if r.status != 200:
                         log.warning("petal stream: omni said %s for part %d", r.status, i)
                     else:
@@ -202,6 +211,11 @@ async def produce(session, parts: list[dict], voice: str, q: asyncio.Queue, c: d
                             odd = chunk[-1:] if len(chunk) % 2 else b""
                             chunk = chunk[: len(chunk) - len(odd)]
                             pcm = to_rate(np.frombuffer(chunk, dtype=np.int16), rate)
+                            if take and len(pcm):
+                                if take.t_first is None:
+                                    take.t_first = tr.rel()
+                                if tr.room():
+                                    take.pcm += pcm.tobytes()  # 🚩 her take, untouched
                             pending += pcm.tobytes()
                             if len(pending) > hold:
                                 cut = len(pending) - hold
@@ -221,6 +235,10 @@ async def produce(session, parts: list[dict], voice: str, q: asyncio.Queue, c: d
                             spoke = True
             except (aiohttp.ClientError, asyncio.TimeoutError) as e:
                 log.warning("petal stream: part %d lost (%s)", i, e.__class__.__name__)
+                if take:
+                    take.error = e.__class__.__name__
+            if take:
+                take.t_done = tr.rel()
             if shaped and (spoke or last):
                 await q.put(silence(gap_ms(text, part.get("para_end", False), last, c)))
             await q.put(BOUNDARY)
@@ -245,22 +263,35 @@ class Encoder:
         return bytes(self.e.flush())
 
 
-async def station(session, parts: list[dict], voice: str):
+async def station(session, parts: list[dict], voice: str, tr=None):
     """yields mp3 bytes. keeps a clock of how much audio the listener already has; when the voice
     is late *between* sentences and that cushion runs low, a little quiet goes out so the player
     never starves. inside a sentence it only ever waits."""
     c = cadence()
     enc = Encoder(c["bitrate_kbps"])
     q: asyncio.Queue = asyncio.Queue()
-    voice_task = asyncio.create_task(produce(session, parts, voice, q, c))
+    if tr:
+        tr.pacing, tr.started = c["pacing"], True
+        try:
+            tr.sieve_mode = str(sieve_config().get("mode", "?"))
+        except Exception:
+            pass
+    voice_task = asyncio.create_task(produce(session, parts, voice, q, c, tr))
     guard = c["underrun_guard_ms"] / 1000
+    pi, completed = 0, False  # 🚩 which sentence is on air, and whether she got to the end
+
+    def heard(b: bytes) -> bytes:
+        if tr and b and tr.room():
+            tr.heard += b
+        return b
+
     try:
         lead = silence(c["lead_in_ms"])
         sent = len(lead) / (2 * RATE)
         t0 = time.monotonic()
         out = enc.encode(lead)
         if out:
-            yield out
+            yield heard(out)
         between = True  # at the start, and after each sentence
         while True:
             filler = False
@@ -277,20 +308,29 @@ async def station(session, parts: list[dict], voice: str):
             else:
                 pcm = await q.get()  # mid-sentence: never insert anything, just wait for her
             if pcm is None:
+                completed = True
                 break
             if pcm is BOUNDARY:
                 between = True
+                pi += 1
                 continue
+            take = tr.takes[pi] if tr and not filler and pi < len(tr.takes) else None
+            if take and take.start_s is None:
+                take.start_s = round(sent, 3)
             if not filler:
                 between = False
             sent += len(pcm) / (2 * RATE)
+            if take:
+                take.end_s = round(sent, 3)
             out = enc.encode(pcm)
             if out:
-                yield out
+                yield heard(out)
         out = enc.flush()
         if out:
-            yield out
+            yield heard(out)
     finally:
+        if tr:
+            voice_trace.finish(tr, cut_short=not completed)
         voice_task.cancel()
         try:
             await voice_task
@@ -350,8 +390,27 @@ if __name__ != "__main__":
         voice = body.get("voice") if isinstance(body.get("voice"), str) else OMNI_MODEL
         _sweep()
         ticket = secrets.token_urlsafe(16)
-        _tickets[ticket] = {"t": time.monotonic(), "user": user.id, "parts": parts, "voice": voice[:128]}
-        return {"id": ticket}
+        tr = voice_trace.open_trace(user.id, parts, voice[:128], body.get("meta"))  # 🚩 memory only, until flagged
+        _tickets[ticket] = {"t": time.monotonic(), "user": user.id, "parts": parts, "voice": voice[:128], "trace": tr}
+        return {"id": ticket, "trace": tr.id}
+
+    @router.post("/petal-stream/flag")
+    async def petal_stream_flag(request: Request, user=Depends(get_verified_user)):
+        """🚩 keep this one: the reply she's speaking (or spoke) becomes an incident on the rig."""
+        try:
+            body = await request.json()
+        except ValueError:
+            body = {}
+        body = body if isinstance(body, dict) else {}
+        tr = voice_trace.find(user.id, body.get("trace"), body.get("message_id"))
+        if not tr:
+            raise HTTPException(404, "no recent petal stream to flag (only the last few replies are kept, and only since OWUI started)")
+        f = voice_trace.flag(tr, body.get("at_s"), body.get("note"), body.get("via"))
+        if tr.done:  # she's already finished: plant it now
+            folder = await asyncio.to_thread(voice_trace.plant, tr)
+            return {"ok": bool(folder), "planted": bool(folder), "incident": folder.name if folder else None,
+                    "part": f["part"], "flags": len(tr.flags)}
+        return {"ok": True, "planted": False, "pending": True, "part": f["part"], "flags": len(tr.flags)}
 
     @router.get("/petal-stream/{ticket}")
     async def petal_stream_play(ticket: str):
@@ -361,7 +420,7 @@ if __name__ != "__main__":
             raise HTTPException(404, "this stream is gone")
         session = await get_session()
         return StreamingResponse(
-            station(session, entry["parts"], entry["voice"]),
+            station(session, entry["parts"], entry["voice"], entry.get("trace")),
             media_type="audio/mpeg",
             headers={"Cache-Control": "no-store", "Accept-Ranges": "none", "X-Accel-Buffering": "no"},
         )
