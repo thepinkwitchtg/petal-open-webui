@@ -23,6 +23,8 @@ export interface HarvestBundle {
 	chats: number;
 	messages: number;
 	combined: string; // one long md, for the clipboard
+	ids: string[]; // the picked chats, oldest first (for gathering into an OWUI folder)
+	range: { start: number; end: number; mode: HarvestMode };
 }
 
 // ── time ────────────────────────────────────────────────────────────────
@@ -232,6 +234,8 @@ export const harvest = (chats: any[], o: HarvestOptions): HarvestBundle => {
 		files,
 		chats: picked.length,
 		messages,
-		combined: combined.join('\n\n---\n\n')
+		combined: combined.join('\n\n---\n\n'),
+		ids: picked.map((c) => String(c?.id ?? '')).filter(Boolean),
+		range: { start: o.start, end: o.end, mode: o.mode }
 	};
 };

@@ -9,6 +9,10 @@
 	import { user } from '$lib/stores';
 	import { getAllChats } from '$lib/apis/chats';
 	import { plantHarvest, getHarvestInfo } from '$lib/apis/petal-harvest';
+	import { getFolders, createNewFolder, deleteFolderById } from '$lib/apis/folders';
+	import { updateChatFolderIdById } from '$lib/apis/chats';
+	import { refreshSidebar } from '$lib/stores/chatList';
+	import PetalWindow from './PetalWindow.svelte';
 	import { copyToClipboard } from '$lib/utils';
 	import { harvest, type HarvestMode, type HarvestBundle } from '$lib/utils/petal-harvest';
 
@@ -29,6 +33,13 @@
 	let bundle: HarvestBundle | null = null;
 	let lastPlanted = '';
 	let gardenRoot = '';
+
+	// 🗂 gathering into an OWUI folder. A chat lives in exactly one folder, so this
+	// MOVES the chats (cloning would hand the ledger + Anamnesis duplicate chats).
+	const HARVEST_PARENT = '🌷 harvests';
+	let pullPlaced = false; // also pull chats already filed elsewhere / pinned
+	let lastGather: { folderId: string; name: string; moved: { id: string; prev: string | null }[] } | null =
+		null;
 
 	const pad = (n: number) => String(n).padStart(2, '0');
 	const toLocalInput = (d: Date) =>
@@ -115,6 +126,88 @@
 		}
 	};
 
+	// chats already filed in another folder, or pinned (moving unpins them)
+	$: placed = bundle?.ids
+		? (chats ?? []).filter((c) => bundle!.ids.includes(c.id) && (c.folder_id || c.pinned))
+		: [];
+	$: toGather = bundle?.ids
+		? bundle.ids.filter((id) => pullPlaced || !placed.some((c) => c.id === id))
+		: [];
+
+	const gatherFolder = async () => {
+		if (!bundle?.chats || !toGather.length) return;
+		busy = true;
+		const token = localStorage.token;
+		try {
+			const all: any[] = (await getFolders(token)) ?? [];
+			let parent = all.find((f) => f.name === HARVEST_PARENT && !f.parent_id);
+			if (!parent) parent = await createNewFolder(token, { name: HARVEST_PARENT });
+
+			const siblings = new Set(all.filter((f) => f.parent_id === parent.id).map((f) => f.name));
+			let name = bundle.folder;
+			for (let i = 2; siblings.has(name); i++) name = `${bundle.folder} (${i})`;
+
+			const moved: { id: string; prev: string | null }[] = [];
+			for (const id of toGather) {
+				const c = chats?.find((x) => x.id === id);
+				moved.push({ id, prev: c?.folder_id ?? null });
+			}
+
+			const folder = await createNewFolder(token, {
+				name,
+				parent_id: parent.id,
+				meta: {
+					petal_harvest: {
+						range: bundle.range,
+						trim_to_range: trimToRange,
+						gathered_at: Math.floor(Date.now() / 1000),
+						moved // where each chat lived before, so the gather can be undone
+					}
+				}
+			});
+
+			for (const m of moved) {
+				await updateChatFolderIdById(token, m.id, folder.id);
+				const c = chats?.find((x) => x.id === m.id);
+				if (c) {
+					c.folder_id = folder.id;
+					c.pinned = false;
+				}
+			}
+			chats = chats; // let the counts notice
+			lastGather = { folderId: folder.id, name, moved };
+			remember();
+			await refreshSidebar(token).catch(() => {});
+			toast.success(`🗂 ${moved.length} chats gathered into ${name}`);
+		} catch (e) {
+			toast.error(`${e}`);
+		} finally {
+			busy = false;
+		}
+	};
+
+	const undoGather = async () => {
+		if (!lastGather) return;
+		busy = true;
+		const token = localStorage.token;
+		try {
+			for (const m of lastGather.moved) {
+				await updateChatFolderIdById(token, m.id, m.prev ?? undefined);
+				const c = chats?.find((x) => x.id === m.id);
+				if (c) c.folder_id = m.prev;
+			}
+			await deleteFolderById(token, lastGather.folderId, false);
+			chats = chats;
+			toast.success(`chats returned to where they lived`);
+			lastGather = null;
+			await refreshSidebar(token).catch(() => {});
+		} catch (e) {
+			toast.error(`${e}`);
+		} finally {
+			busy = false;
+		}
+	};
+
 	const zip = async () => {
 		if (!bundle?.chats) return;
 		busy = true;
@@ -170,26 +263,7 @@
 		{/each}
 	</div>
 
-	<div class="flex flex-wrap items-center gap-2 text-xs">
-		<label class="flex items-center gap-1.5">
-			<span class="text-gray-500">from</span>
-			<input
-				type="datetime-local"
-				bind:value={from}
-				on:change={gather}
-				class="bg-transparent rounded-lg px-1.5 py-1 border border-gray-100 dark:border-gray-850"
-			/>
-		</label>
-		<label class="flex items-center gap-1.5">
-			<span class="text-gray-500">to</span>
-			<input
-				type="datetime-local"
-				bind:value={to}
-				on:change={gather}
-				class="bg-transparent rounded-lg px-1.5 py-1 border border-gray-100 dark:border-gray-850"
-			/>
-		</label>
-	</div>
+	<PetalWindow bind:from bind:to on:change={gather} />
 
 	<div class="flex flex-wrap items-center gap-1.5 text-xs">
 		{#each modes as m}
@@ -230,6 +304,13 @@
 		<button
 			type="button"
 			class="{actionClass} bg-gray-50 dark:bg-gray-850 hover:bg-gray-100 dark:hover:bg-gray-800"
+			disabled={!toGather.length || busy}
+			title="move these chats into {HARVEST_PARENT} / {bundle?.folder ?? '…'}"
+			on:click={gatherFolder}>🗂 gather in OWUI</button
+		>
+		<button
+			type="button"
+			class="{actionClass} bg-gray-50 dark:bg-gray-850 hover:bg-gray-100 dark:hover:bg-gray-800"
 			disabled={!bundle?.chats || busy}
 			on:click={zip}>zip</button
 		>
@@ -240,6 +321,25 @@
 			on:click={copy}>copy</button
 		>
 	</div>
+
+	{#if placed.length}
+		<label
+			class="flex items-center gap-1.5 text-xs text-gray-500"
+			title="moving a chat out of its folder takes it out of that folder; moving a pinned chat unpins it"
+		>
+			<input type="checkbox" bind:checked={pullPlaced} />
+			{placed.length} already filed or pinned — pull them into the folder too
+		</label>
+	{/if}
+
+	{#if lastGather}
+		<div class="flex items-center gap-2 text-xs text-gray-500 break-all">
+			<span>gathered → {HARVEST_PARENT} / {lastGather.name}</span>
+			<button type="button" class="underline opacity-80 hover:opacity-100" disabled={busy} on:click={undoGather}
+				>undo</button
+			>
+		</div>
+	{/if}
 
 	{#if lastPlanted}
 		<div class="text-xs text-gray-500 break-all">planted → {lastPlanted}</div>
