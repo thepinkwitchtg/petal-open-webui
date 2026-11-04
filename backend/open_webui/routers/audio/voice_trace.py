@@ -367,6 +367,7 @@ def text_stats(raw: str, fed: str, source: str | None) -> dict:
            "ending_fed": _ending(fed), "md": _md_context(raw, source)}
     for k, rx in _TEXT_CUES.items():
         out[k] = len(rx.findall(fed))
+    out["wordless"] = int(bool(raw.strip()) and not re.search(r"[^\W_]", raw) and not _EMOJI_RE.search(raw))  # "---", "***"
     return out
 
 
@@ -425,7 +426,7 @@ def analyse_incident(folder: Path) -> dict | None:
 
 
 # ── the report you can share: numbers and categories, never her words ───────
-_NUM_CUES = ["emoji_raw", "emoji_fed"] + list(_TEXT_CUES)
+_NUM_CUES = ["wordless", "emoji_raw", "emoji_fed"] + list(_TEXT_CUES)
 
 
 def report() -> str:
