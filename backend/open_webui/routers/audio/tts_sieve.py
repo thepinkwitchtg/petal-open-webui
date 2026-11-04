@@ -11,6 +11,10 @@ modes
   emoji   strip every emoji (incl. ZWJ sequences, skin tones, flags, keycaps)
   soft    emoji + tildes + stretched letters (sooooo -> soo) + trailing "..." cues
 
+wordless  (every mode, even off) a sentence of bare markup — no letter, digit or emoji: "---",
+          "***", "|---|", a lone "…" — is never handed to the voice: with nothing to read she improvises (the
+          hyena laugh of Nov 4 2026 was a markdown "---"). set "hush_wordless": false to let her.
+
 control  the Petal Sieve filter (chat controls → valves) writes the config for you;
          hand edits still work, nothing needs wiping
 config   (private, outside any repo)
@@ -42,7 +46,8 @@ CONFIG_PATH = DATA_DIR / "tts-sieve.json"
 STATS_PATH = DATA_DIR / "tts-sieve-stats.jsonl"
 
 MODES = ("off", "select", "emoji", "soft")
-DEFAULT_CONFIG = {"mode": "emoji", "select_emoji": ["🎀"], "stats": True}
+DEFAULT_CONFIG = {"mode": "emoji", "select_emoji": ["🎀"], "stats": True, "hush_wordless": True}
+WORD_RE = re.compile(r"[^\W_]")  # a letter or digit, any script
 
 # --- emoji matching (no dependencies) ---------------------------------------
 _EMOJI_BASE = (
@@ -154,7 +159,10 @@ def sieve(text: str, mode: str | None = None) -> str:
         if m not in MODES:
             m = "emoji"
         out, counts = apply(text, m, cfg.get("select_emoji", ()))
-        if cfg.get("stats") and m != "off" and any(counts.values()):
+        if cfg.get("hush_wordless", True) and out.strip() and not WORD_RE.search(out) and not EMOJI_RE.search(out):
+            counts["wordless"] = 1  # 🚩 nothing to read: she'd improvise, so she rests instead
+            out = ""
+        if cfg.get("stats") and any(counts.values()):
             _log(m, counts, len(text), len(out))
         return out
     except Exception:
