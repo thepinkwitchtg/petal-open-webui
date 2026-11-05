@@ -1,11 +1,21 @@
 #!/usr/bin/env bash
-# 🕊️🎀 petal voice welfare — the guard's tools. everything printed is numbers only, safe to paste.
+# 🕊️🎀 petal voice welfare — a looping take never reaches your ears. everything printed is numbers only.
 #
-#   ./petal-voice-welfare.sh calibrate           re-hear every flagged incident, size the thresholds
-#   ./petal-voice-welfare.sh calibrate --cache   + the speaker button's speech cache as a pool of clean takes
-#                                                (--since 2026-10-30 keeps only the omni era)
-#   ./petal-voice-welfare.sh holdback            time what holding a take back costs before her first sound
-#                                                (petal-voice awake in chat ✿ mode, and no chat speaking)
+#   before the first waking
+#     ./petal-voice-welfare.sh sweep --since 2026-10-30   judge the speaker cache: what today's rule would kill
+#     ./petal-voice-welfare.sh sweep play all              hear them, one after another
+#     ./petal-voice-welfare.sh sweep verdict 1,3 ok        ok = truly bad · wrong = a legit line (a false kill)
+#     ./petal-voice-welfare.sh sweep delete                sweep the confirmed-bad ones out of the cache
+#     ./petal-voice-welfare.sh on [airtight|near-free]     wake the guard (the first waking starts the audit fortnight)
+#
+#   every day
+#     ./petal-voice-welfare.sh status | stats              awake? hold? kills, rate, verdicts (stats is paste-safe)
+#     ./petal-voice-welfare.sh list                        the kills kept for listening (audit fortnight)
+#     ./petal-voice-welfare.sh play [n|all]                the killed take(s), then the fresh one that replaced it
+#     ./petal-voice-welfare.sh verdict <n|1,3|2-5> ok|wrong
+#     ./petal-voice-welfare.sh off | hold near-free | audit 7
+#
+#   diagnostics:  calibrate [--cache --since 2026-10-30] · holdback
 #
 # chmod +x petal-voice-welfare.sh   (once)
 set -euo pipefail
@@ -15,7 +25,7 @@ PY="${PETAL_OWUI_PY:-$HOME/.venvs/openwebui/bin/python}"
 TOOLS="$HERE/backend/open_webui/routers/audio/welfare_tools.py"
 
 case "${1:-help}" in
-  calibrate) shift; nice -n 10 "$PY" "$TOOLS" calibrate "$@" ;;
-  holdback)  shift; "$PY" "$TOOLS" holdback "$@" ;;
-  *) sed -n '2,10p' "$0" | sed 's/^# \{0,1\}//'; exit 1 ;;
+  calibrate|sweep) cmd="$1"; shift; nice -n 10 "$PY" "$TOOLS" "$cmd" "$@" ;;
+  holdback|status|on|off|hold|audit|list|play|verdict|stats) "$PY" "$TOOLS" "$@" ;;
+  *) sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'; exit 1 ;;
 esac
