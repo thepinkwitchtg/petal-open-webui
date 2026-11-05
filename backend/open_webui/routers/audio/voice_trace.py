@@ -77,6 +77,8 @@ class Take:
     start_s: float | None = None  # where it sits on the heard timeline
     end_s: float | None = None
     pcm: bytearray = field(default_factory=bytearray)
+    tries: int = 1  # 🕊️ takes asked of the voice for this sentence (welfare resamples a bad one)
+    kills: list = field(default_factory=list)  # why each dropped take was dropped ("loop", "stretch"…)
 
 
 @dataclass
@@ -221,6 +223,7 @@ def plant(tr: Trace) -> Path | None:
                 "start_s": t.start_s, "end_s": t.end_s,
                 "audio_s": round(len(t.pcm) / (2 * RATE), 3),
                 "wav": f"takes/{t.idx:02d}.wav" if t.pcm else None,
+                "tries": t.tries, "welfare_kills": t.kills,
             } for t in tr.takes],
             "source": tr.meta.get("source"),
         }
