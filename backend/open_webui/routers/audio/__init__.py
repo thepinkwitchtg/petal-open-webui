@@ -55,6 +55,7 @@ from open_webui.events import EVENTS, publish_event
 from open_webui.models.config import Config
 from open_webui.routers.audio import realtime
 from open_webui.routers.audio.tts_sieve import sieve_speech_body, silent_mp3
+from open_webui.routers.audio import voice_welfare
 from open_webui.utils.access_control import has_permission
 from open_webui.utils.auth import get_admin_user, get_verified_user
 from open_webui.utils.headers import include_user_info_headers
@@ -451,19 +452,36 @@ async def _tts_openai(request, payload, file_path, file_body_path, user):
     if ENABLE_FORWARD_USER_INFO_HEADERS:
         headers = include_user_info_headers(headers, user)
 
+    # 🕊️ voice welfare: her whole clip is judged before it's returned. a looping take is asked again
+    # with a fresh seed and never reaches the speech cache (which would replay it every time this line
+    # is spoken); after max_tries the line is a clean silence, uncached
+    care = voice_welfare.load()
+    sent = None
+    if care['enabled'] and voice_welfare.is_her_voice(api_base_url) and isinstance(payload.get('input'), str):
+        sent = voice_welfare.Sentence(care, path='speech', text=payload['input'])
+
     r = None
     try:
         session = await get_session()
-        r = await session.post(
-            url=f'{api_base_url}/audio/speech',
-            json=payload,
-            headers=headers,
-            ssl=AIOHTTP_CLIENT_SESSION_SSL,
-        )
-        r.raise_for_status()
+        while True:
+            r = await session.post(
+                url=f'{api_base_url}/audio/speech',
+                json={**payload, 'seed': sent.seed()} if sent else payload,
+                headers=headers,
+                ssl=AIOHTTP_CLIENT_SESSION_SSL,
+            )
+            r.raise_for_status()
 
-        audio_data = await r.read()
-        content_type = r.headers.get('Content-Type', 'audio/mpeg')
+            audio_data = await r.read()
+            content_type = r.headers.get('Content-Type', 'audio/mpeg')
+            if sent is None or await asyncio.to_thread(voice_welfare.judge_clip, sent, audio_data, content_type):
+                break
+            if sent.spent:
+                await asyncio.to_thread(sent.close)
+                quiet, mime = voice_welfare.skip_clip(care['skip_silence_ms'])
+                return Response(content=quiet, media_type=mime)
+        if sent:
+            await asyncio.to_thread(sent.close)
 
         if USE_SLIM:
             await _write_tts_cache(file_path, audio_data, file_body_path, payload, content_type)
