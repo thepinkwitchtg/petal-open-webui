@@ -149,6 +149,7 @@ from open_webui.models.models import Models, normalize_model_tags
 from open_webui.models.groups import Groups, resolve_group_default_models
 from open_webui.models.users import Users
 from open_webui.routers import petal_harvest  # 🌷 garden harvest
+from open_webui.routers import petal_markers  # 🌙 trip markers
 from open_webui.routers import (
     apps,
     analytics,
@@ -838,6 +839,7 @@ app.include_router(channels.router, prefix='/api/v1/channels', tags=['channels']
 app.include_router(chats.router, prefix='/api/v1/chats', tags=['chats'])
 app.include_router(comments.router, prefix='/api/v1/comments', tags=['comments'])
 app.include_router(petal_harvest.router, prefix='/api/v1/petal', tags=['petal'])
+app.include_router(petal_markers.router, prefix='/api/v1/petal', tags=['petal'])
 app.include_router(notes.router, prefix='/api/v1/notes', tags=['notes'])
 app.include_router(search.router, prefix='/api/v1/search', tags=['search'])
 

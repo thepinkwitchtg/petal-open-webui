@@ -42,6 +42,8 @@
 		stopPetalStream
 	} from '$lib/utils/petalStream';
 	import { imageGenerations } from '$lib/apis/images';
+	import { isSavedChatId } from '$lib/utils/chatId';
+	import { climaxFor, toggleClimax } from '$lib/utils/petal-markers'; // 🌙 trip markers
 	import {
 		copyToClipboard as _copyToClipboard,
 		approximateToHumanReadable,
@@ -231,6 +233,25 @@
 	let speakAbort: AbortController | null = null;
 
 	let showRateComment = false;
+
+	// ✧ climax flag (trip markers · contract 1): one tap marks that this reply caused a climax,
+	// a second tap voids it (kept in the log, gone from the view). temp chats have no saved
+	// message to anchor to, so the flag is dimmed there and says why.
+	$: climaxSaved = isSavedChatId(chatId);
+	$: climaxStore = $user?.role === 'admin' && climaxSaved ? climaxFor(chatId) : null;
+	$: climaxId = $climaxStore?.[message.id];
+	let climaxBusy = false;
+	const flagClimax = async () => {
+		if (climaxBusy || !climaxSaved) return;
+		climaxBusy = true;
+		try {
+			await toggleClimax(chatId, message.id, climaxId);
+		} catch (e) {
+			toast.error(`✧ ${e}`);
+		} finally {
+			climaxBusy = false;
+		}
+	};
 
 	// 🚩 flag the voice: plants this reply's stream as an incident on the rig
 	let flaggingVoice = false;
@@ -1289,6 +1310,54 @@
 													stroke="currentColor"
 													stroke-linejoin="round"
 												/>
+											</svg>
+										</button>
+									</Tooltip>
+								{/if}
+
+								{#if $user?.role === 'admin' && message.done}
+									<Tooltip
+										content={!climaxSaved
+											? 'temporary chat — no saved message to anchor a climax to'
+											: climaxId
+												? 'climax kept ✧ tap to unflag'
+												: 'this reply caused a climax ✧'}
+										placement="bottom"
+									>
+										<button
+											aria-label="Climax flag"
+											aria-pressed={!!climaxId}
+											class="{isLastMessage || climaxId || ($settings?.highContrastMode ?? false)
+												? 'visible'
+												: 'hover-reveal'} inline-flex size-7 shrink-0 items-center justify-center p-1.5 rounded-lg transition {climaxSaved
+												? 'hover:bg-black/5 dark:hover:bg-white/5 dark:hover:text-gray-400 hover:text-gray-600'
+												: 'opacity-35 cursor-default'} {climaxBusy ? 'opacity-50' : ''}"
+											on:click={flagClimax}
+										>
+											<svg
+												class="size-4"
+												aria-hidden="true"
+												viewBox="0 0 24 24"
+												stroke-width="1.5"
+												fill="none"
+												xmlns="http://www.w3.org/2000/svg"
+											>
+												{#if climaxId}
+													<defs>
+														<linearGradient id="petal-climax-{message.id}" x1="0" y1="0" x2="1" y2="1">
+															<stop offset="0" stop-color="var(--candy-light, #f9c6dc)" />
+															<stop offset="0.48" stop-color="var(--candy, #f472b6)" />
+															<stop offset="1" stop-color="var(--iris, #a873f0)" />
+														</linearGradient>
+													</defs>
+												{/if}
+												<path
+													d="M12 2.5C12.7 7.8 16.2 11.3 21.5 12C16.2 12.7 12.7 16.2 12 21.5C11.3 16.2 7.8 12.7 2.5 12C7.8 11.3 11.3 7.8 12 2.5Z"
+													stroke={climaxId ? `url(#petal-climax-${message.id})` : 'currentColor'}
+													fill={climaxId ? `url(#petal-climax-${message.id})` : 'none'}
+													stroke-linejoin="round"
+												/>
+												<path d="M19 3.5V6.5M17.5 5H20.5" stroke="currentColor" stroke-linecap="round" />
 											</svg>
 										</button>
 									</Tooltip>
