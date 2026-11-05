@@ -12,6 +12,7 @@ a flag (the 🚩 on a message, or your earbuds' "next track" while she speaks) p
       takes/NN.wav     each sentence's own take, 24 kHz mono, untouched
       trace.json       private: chat id, message id, timestamps, the text she was given, flags
       analysis.json    numbers: loop runs, hiss floor, how long each take ran for its text
+                       (heard by voice_measure.py, the same ear the live welfare guard listens with)
 
 the incidents folder is private data (her words live in trace.json). what you share is the report:
 
@@ -38,9 +39,21 @@ from pathlib import Path
 
 import numpy as np
 
+# 🔎 the one ear (shared with the live welfare guard) + welfare's thresholds and her baseline
+if __package__:  # inside OWUI (open_webui.routers.audio)
+    from open_webui.routers.audio import voice_measure as vm
+    from open_webui.routers.audio import voice_welfare
+    from open_webui.utils.chat_id import is_saved_chat_id
+else:  # on its own (./petal-voice-incidents.sh): siblings only, so OWUI's config (and its DB
+    import voice_measure as vm  # migrations) never wakes up for a report
+    import voice_welfare
+
+    def is_saved_chat_id(chat_id: str | None) -> bool:  # same rule as open_webui.utils.chat_id
+        return bool(chat_id) and not chat_id.startswith(("temporary:", "local:", "channel:"))
+
 log = logging.getLogger(__name__)
 
-RATE = 24000
+RATE = vm.RATE
 APP = Path(os.environ.get("PETAL_APP_DATA", Path.home() / "Gardens/Documents/Petal-App-Data")).expanduser()
 INCIDENTS = APP / "petal-voice" / "incidents"
 
@@ -169,10 +182,13 @@ def _write_wav(path: Path, pcm: bytes) -> None:
 
 
 def plant(tr: Trace) -> Path | None:
+    # 🧪 contract 0: a flag is her choice, so it's honored in a temp chat too, but kept with no
+    # chat/message link and "temp": true
+    saved = is_saved_chat_id(tr.meta.get("chat_id"))
     try:
         with _lock:
             if tr.folder is None:
-                msg = re.sub(r"[^A-Za-z0-9]", "", tr.meta.get("message_id", ""))[:8] or tr.id[:8]
+                msg = (re.sub(r"[^A-Za-z0-9]", "", tr.meta.get("message_id", ""))[:8] if saved else "") or tr.id[:8]
                 stamp = time.strftime("%Y-%m-%d_%Hh%Mm%S", time.localtime(tr.wall))
                 tr.folder = INCIDENTS / f"{stamp}_{msg}"
             folder = tr.folder
@@ -185,9 +201,10 @@ def plant(tr: Trace) -> Path | None:
             "trace": tr.id,
             "when": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(tr.wall)),
             "wall": tr.wall,
-            "chat_id": tr.meta.get("chat_id"),
-            "message_id": tr.meta.get("message_id"),
-            "chat_url": f"/c/{tr.meta['chat_id']}" if tr.meta.get("chat_id") else None,
+            "chat_id": tr.meta.get("chat_id") if saved else None,
+            "message_id": tr.meta.get("message_id") if saved else None,
+            "chat_url": f"/c/{tr.meta['chat_id']}" if saved else None,
+            "temp": not saved,
             "model": tr.meta.get("model"),
             "voice": tr.voice,
             "pacing": tr.pacing,
@@ -216,18 +233,8 @@ def plant(tr: Trace) -> Path | None:
         return None
 
 
-# ── listening for the wrongness ──────────────────────────────────────────────
-WIN, HOP = 1024, 480  # 43 ms window, 20 ms hop
-_BANDS = None
-
-
-def _bands():
-    global _BANDS
-    if _BANDS is None:
-        freqs = np.fft.rfftfreq(WIN, 1 / RATE)
-        edges = np.geomspace(80, RATE / 2, 33)
-        _BANDS = [b for b in ((freqs >= lo) & (freqs < hi) for lo, hi in zip(edges[:-1], edges[1:])) if b.any()]
-    return _BANDS
+# ── listening for the wrongness: the shared ear lives in voice_measure.py ────
+audio_stats = vm.audio_stats  # the very numbers this file always wrote, now shared with the live guard
 
 
 def _read_wav(path: Path) -> np.ndarray:
@@ -235,64 +242,14 @@ def _read_wav(path: Path) -> np.ndarray:
         return np.frombuffer(w.readframes(w.getnframes()), dtype=np.int16).astype(np.float32) / 32768.0
 
 
-def audio_stats(x: np.ndarray) -> dict:
-    """numbers only. repeat_run_s: the longest stretch where the voice keeps matching itself at
-    one fixed delay (a loop). floor_db + quiet_flatness: the noise under her (hiss is flat and high)."""
-    dur = len(x) / RATE
-    out = {"audio_s": round(dur, 3)}
-    if len(x) < WIN * 4:
-        return out
-    n = 1 + (len(x) - WIN) // HOP
-    idx = np.arange(WIN)[None, :] + HOP * np.arange(n)[:, None]
-    fr = x[idx] * np.hanning(WIN)[None, :]
-    spec = np.abs(np.fft.rfft(fr, axis=1)) ** 2 + 1e-12
-    rms = np.sqrt(np.mean(x[idx] ** 2, axis=1)) + 1e-9
-    db = 20 * np.log10(rms)
-    voiced = db > max(db.max() - 35, -60)
-
-    feats = np.log(np.stack([spec[:, b].sum(axis=1) for b in _bands()], axis=1) + 1e-10)
-    feats -= feats.mean(axis=0, keepdims=True)
-    feats /= np.linalg.norm(feats, axis=1, keepdims=True) + 1e-9
-
-    best_run, best_lag, cover = 0, 0.0, np.zeros(n, bool)
-    for lag in range(8, min(160, n // 2)):  # 0.16 s … 3.2 s
-        sim = np.einsum("ij,ij->i", feats[:-lag], feats[lag:])
-        both = voiced[:-lag] & voiced[lag:]
-        hit = (sim > 0.9) & both
-        cover[:-lag] |= hit
-        if hit.any():  # longest run where her voice keeps matching (little quiet gaps don't break it)
-            ok = hit | ~(voiced[:-lag] | voiced[lag:])
-            d = np.diff(np.concatenate(([0], ok.astype(np.int8), [0])))
-            starts, ends = np.flatnonzero(d == 1), np.flatnonzero(d == -1)
-            ch = np.concatenate(([0], np.cumsum(hit)))
-            r = int((ch[ends] - ch[starts]).max())  # matched voiced frames inside the best run
-            if r > best_run:
-                best_run, best_lag = r, lag * HOP / RATE
-    out["repeat_run_s"] = round(best_run * HOP / RATE, 2)
-    out["repeat_lag_s"] = round(best_lag, 2)
-    out["repeat_cover"] = round(float(cover[voiced].mean()) if voiced.any() else 0.0, 3)
-
-    q = db <= np.percentile(db, 15)
-    hf = np.fft.rfftfreq(WIN, 1 / RATE) >= 4000
-    p = spec[q][:, hf]
-    out["floor_db"] = round(float(np.percentile(db, 10)), 1)
-    out["quiet_flatness"] = round(float(np.mean(np.exp(np.log(p).mean(axis=1)) / p.mean(axis=1))), 3)
-    vs = spec[voiced]
-    out["hf_ratio"] = round(float(vs[:, hf].sum() / vs.sum()), 4) if voiced.any() else 0.0
-    out["peak_db"] = round(float(20 * np.log10(np.abs(x).max() + 1e-9)), 1)
-    out["clip_frac"] = round(float(np.mean(np.abs(x) > 0.99)), 5)
-    out["voiced_frac"] = round(float(voiced.mean()), 3)
-    return out
-
-
 # ── what was in the words ────────────────────────────────────────────────────
 try:
-    from open_webui.routers.audio.tts_sieve import EMOJI_RE as _EMOJI_RE
-except ImportError:
-    try:
+    if __package__:
+        from open_webui.routers.audio.tts_sieve import EMOJI_RE as _EMOJI_RE
+    else:
         from tts_sieve import EMOJI_RE as _EMOJI_RE
-    except ImportError:
-        _EMOJI_RE = re.compile("[\U0001F000-\U0001FAFF☀-➿️‍]+")
+except ImportError:
+    _EMOJI_RE = re.compile("[\U0001F000-\U0001FAFF☀-➿️‍]+")
 
 _TEXT_CUES = {
     "tilde": re.compile(r"~"),
@@ -372,10 +329,9 @@ def text_stats(raw: str, fed: str, source: str | None) -> dict:
 
 
 # ── the analysis that lives beside each incident ─────────────────────────────
-LOOP_RUN_S = 1.2  # a self-match this long at one delay is not ordinary speech
-LOOP_COVER = 0.6  # or most of a take's voice is a copy of itself somewhere
-STRETCH_X = 2.2  # a take this many times longer than her usual seconds-per-character
-HISS_DB = 9.0  # a noise floor this far above the reply's own median
+# the rule is voice_measure.judge() with welfare.json's thresholds: whatever the live guard would
+# call a loop, a stretch or a hiss, this report calls the same. her pace and floor come from
+# welfare.json's baseline once calibrated; until then each reply is measured against its own median.
 
 
 def analyse_incident(folder: Path) -> dict | None:
@@ -402,25 +358,24 @@ def analyse_incident(folder: Path) -> dict | None:
     med_spc = float(np.median(spc)) if spc else None
     floors = [r["floor_db"] for r in rows if "floor_db" in r]
     med_floor = float(np.median(floors)) if floors else None
+    cfg = voice_welfare.load()
+    t, base = cfg["thresholds"], cfg["baseline"]
+    pace = vm.pace(base, med_spc)  # her calibrated pace, else this reply's own median
+    floor_ref = base["floor_db"] if base.get("floor_db") is not None else med_floor
     flagged = {f["part"] for f in tr.get("flags", []) if f.get("part") is not None}
     for r in rows:
-        why = []
-        if r.get("repeat_run_s", 0) >= LOOP_RUN_S or (r.get("repeat_cover", 0) >= LOOP_COVER and r.get("audio_s", 0) >= 2):
-            why.append("loop")
-        if med_spc and r.get("audio_s") and r["chars_fed"] >= 4:
-            r["stretch"] = round(r["audio_s"] / max(1, r["chars_fed"]) / med_spc, 2)
-            if r["stretch"] >= STRETCH_X:
-                why.append("stretch")
-        if med_floor is not None and "floor_db" in r and r["floor_db"] - med_floor >= HISS_DB:
-            why.append("hiss")
+        why = vm.judge(r, r["chars_fed"], t=t, s_per_char=pace, floor_ref=floor_ref) if r.get("audio_s") else []
+        if pace and r.get("audio_s") and r["chars_fed"] >= t["stretch_min_chars"]:
+            r["stretch"] = vm.stretch_of(r["audio_s"], r["chars_fed"], pace)
         if r["lost"]:
             why.append("lost")
         r["suspect"] = why
         r["flagged"] = r["idx"] in flagged
-    out = {"analysed": time.strftime("%Y-%m-%d %H:%M:%S"), "thresholds": {
-        "loop_run_s": LOOP_RUN_S, "loop_cover": LOOP_COVER, "stretch_x": STRETCH_X, "hiss_db": HISS_DB},
-        "median_s_per_char": round(med_spc, 4) if med_spc else None, "median_floor_db": med_floor,
-        "flagged_parts": sorted(flagged), "takes": rows}
+    out = {"analysed": time.strftime("%Y-%m-%d %H:%M:%S"), "thresholds": t,
+           "pace_from": "welfare baseline" if base.get("s_per_char") else "this reply's median",
+           "s_per_char": round(pace, 4) if pace else None, "floor_ref_db": floor_ref,
+           "median_s_per_char": round(med_spc, 4) if med_spc else None, "median_floor_db": med_floor,
+           "flagged_parts": sorted(flagged), "takes": rows}
     (folder / "analysis.json").write_text(json.dumps(out, indent=2) + "\n", encoding="utf-8")
     return out
 
@@ -437,6 +392,12 @@ def report() -> str:
     lines.append(f"# 🚩 petal voice incidents · {time.strftime('%Y-%m-%d %H:%M')}")
     lines.append("")
     lines.append("stats only: numbers and categories, no text. a take is *bad* when flagged or auto-suspect.")
+    cfg = voice_welfare.load()
+    t = cfg["thresholds"]
+    lines.append(f"auto-suspect = the live welfare rule: loop ≥ {t['loop_run_s']} s (or cover ≥ {t['loop_cover']} "
+                 f"over ≥ {t['loop_cover_min_s']} s) · stretch > {t['stretch_x']}× her pace (never under "
+                 f"{t['stretch_min_s']} s) · hiss ≥ {t['hiss_db']} dB · pace: "
+                 + ("her welfare baseline" if cfg["baseline"].get("s_per_char") else "each reply's own median (not calibrated yet)"))
     lines.append("")
     lines.append("| incident | when | sieve | takes | flagged | auto-suspect (idx:why) | worst loop s | heard s |")
     lines.append("|---|---|---|---|---|---|---|---|")
