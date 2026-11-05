@@ -11,10 +11,12 @@ so the incident report and the live guard can never disagree about what a loop i
 what she's listened for
   loop     repeat_run_s   the longest stretch where her voice keeps matching itself at one fixed
                           delay (0.16 … 3.2 s): the luvluvluv, a wet loop, a stuck syllable
-           repeat_cover   how much of her voice is a copy of itself somewhere in the take
            repeat_steady  how much of that best run is a *held* sound (still matching itself 80 ms
                           later: a moan, a hum, a hiss) instead of a pattern coming round again.
                           measured for calibration; it only judges once loop_steady_max is set
+  cover    repeat_cover   how much of her voice is a copy of itself somewhere in the take. its own
+                          reason since nov 5 2026: at 0.6 it would have killed 9 of 663 cached takes
+                          and every one was her normal voice, so welfare only watches it (≥ 0.8)
   stretch  the take runs far past what its text deserves at her own pace (s_per_char)
   hiss     her noise floor sits far above her usual floor (floor_db)
 
@@ -36,7 +38,7 @@ STEADY_LAG = 4  # 80 ms: a sound that still matches itself this soon is held, no
 
 DEFAULT_THRESHOLDS = {
     "loop_run_s": 1.2,  # a self-match this long at one delay is not ordinary speech
-    "loop_cover": 0.6,  # or most of a take's voice is a copy of itself somewhere…
+    "loop_cover": 0.8,  # cover: most of a take's voice is a copy of itself somewhere (0.6 → 9/663 false)…
     "loop_cover_min_s": 2.0,  # …in a take at least this long
     "loop_steady_max": None,  # set (e.g. 0.8) to spare runs that are mostly one held sound
     "stretch_x": 2.2,  # a take this many times longer than her pace says its text needs…
@@ -166,15 +168,17 @@ def allowed_s(chars: int, s_per_char: float | None, t: dict) -> float | None:
 
 
 def judge(stats: dict, chars: int, *, t: dict, s_per_char: float | None, floor_ref: float | None) -> list[str]:
-    """why a take is wrong: [] · ["loop"] · ["stretch"] · ["loop", "stretch", "hiss"] …"""
+    """why a take is wrong: [] · ["loop"] · ["stretch"] · ["loop", "cover", "stretch", "hiss"] …"""
     why = []
     dur = stats.get("audio_s") or 0
     run, cover = stats.get("repeat_run_s") or 0, stats.get("repeat_cover") or 0
-    looped = run >= t["loop_run_s"] or (cover >= t["loop_cover"] and dur >= t["loop_cover_min_s"])
+    looped = run >= t["loop_run_s"]
     if looped and t.get("loop_steady_max") is not None and (stats.get("repeat_steady") or 0) > t["loop_steady_max"]:
         looped = False  # one held sound, not a pattern coming round again
     if looped:
         why.append("loop")
+    if cover >= t["loop_cover"] and dur >= t["loop_cover_min_s"]:
+        why.append("cover")
     lim = allowed_s(chars, s_per_char, t)
     if lim is not None and dur > lim:
         why.append("stretch")
