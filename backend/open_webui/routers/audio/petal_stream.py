@@ -18,6 +18,10 @@ the cadence file (parked for a later session, when the pacing gets its own care)
 if the voice is ever late *between* two sentences, a little quiet holds the line so the phone
 never decides she stopped. inside a sentence nothing is ever inserted: the player just waits.
 
+🕊️ voice welfare (voice_welfare.py, asleep until she wakes it): each take is judged by the shared
+ear before she hears it. a take that loops or runs far past its text is dropped whole and the
+sentence is asked again with a fresh seed; a kept take goes out exactly as she made it.
+
 the id is a one-time capability (128 random bits, minted for a signed-in user, valid 2 min,
 spent on the first GET) — so the <audio> element can open it without headers or cookies.
 
@@ -40,12 +44,13 @@ from pathlib import Path
 
 import numpy as np
 
-try:  # 🎀 the tts sieve + 🚩 the voice trace, inside OWUI or when this file is tasted on its own
+try:  # 🎀 the tts sieve + 🚩 the voice trace + 🕊️ voice welfare, inside OWUI or tasted on its own
     from open_webui.routers.audio.tts_sieve import load_config as sieve_config, sieve
-    from open_webui.routers.audio import voice_trace
+    from open_webui.routers.audio import voice_trace, voice_welfare
 except ImportError:
     from tts_sieve import load_config as sieve_config, sieve
     import voice_trace
+    import voice_welfare
 
 log = logging.getLogger(__name__)
 
@@ -172,15 +177,47 @@ def _rate_of(headers) -> int:
 
 
 # ── the voice: sentence after sentence, faded and spaced, into one queue ─────
-async def produce(session, parts: list[dict], voice: str, q: asyncio.Queue, c: dict, tr=None) -> None:
+class Flow:
+    """how far ahead of her ears the stream runs: what the phone already has (the station's clock)
+    plus what still waits in the queue. near-free welfare only lets audio out early when this is low."""
+
+    def __init__(self):
+        self.sent, self.t0, self.queued = 0.0, None, 0
+
+    def lead_s(self) -> float:
+        ahead = 0.0 if self.t0 is None else max(0.0, self.sent - (time.monotonic() - self.t0))
+        return ahead + self.queued / (2 * RATE)
+
+
+RUSH_S = 0.35  # near-free: below this much audio ahead of her ears, she's waiting, so a take may start early
+
+
+async def produce(session, parts: list[dict], voice: str, q: asyncio.Queue, c: dict, tr=None, flow: Flow | None = None) -> None:
     """asks the omni voice for each sentence (streaming pcm) and puts 24 kHz int16 bytes on q.
-    None on q means she's done. tr (a voice trace) quietly keeps each take as she made it."""
+    None on q means she's done. tr (a voice trace) quietly keeps each take as she made it.
+
+    🕊️ with voice welfare awake, each take is judged by the shared ear before it's heard: a take
+    that loops or runs far past its text is dropped (the request is closed, so omni stops making
+    it) and the sentence is asked again with a fresh seed, up to max_tries, then skipped with a
+    clean silence. a kept take goes out exactly as she made it."""
     import aiohttp
 
     shaped = c["pacing"] == "shaped"
-    hold = 2 * int(RATE * c["tail_fade_ms"] / 1000) if shaped else 0  # bytes held back so the tail can be faded
+    tail_hold = 2 * int(RATE * c["tail_fade_ms"] / 1000) if shaped else 0  # bytes held so the tail can be faded
     head_n = int(RATE * c["head_fade_ms"] / 1000) if shaped else 0
     timeout = aiohttp.ClientTimeout(total=180, sock_read=45)
+    care = voice_welfare.load()  # 🕊️ read once per reply
+    meta = tr.meta if tr else {}
+    temp = not voice_trace.is_saved_chat_id(meta.get("chat_id"))
+    near_free = care["hold"] == "near-free"
+    win = 2 * int(RATE * voice_welfare.window_s(care))
+    flow = flow or Flow()
+    tally = {"sentences": 0, "kills": 0, "skipped": 0, "heard_s": 0.0}  # 🕊️ one numbers-only line per reply
+
+    async def put(b: bytes) -> None:
+        flow.queued += len(b)
+        await q.put(b)
+
     try:
         for i, part in enumerate(parts):
             text, last = sieve(part["text"]), i == len(parts) - 1
@@ -189,60 +226,116 @@ async def produce(session, parts: list[dict], voice: str, q: asyncio.Queue, c: d
                 take.fed = text
             if not text.strip():  # 🎀 only emoji: nothing for her to say, the line just moves on
                 if shaped and last:
-                    await q.put(silence(gap_ms(part["text"], part.get("para_end", False), last, c)))
+                    await put(silence(gap_ms(part["text"], part.get("para_end", False), last, c)))
                 await q.put(BOUNDARY)
                 continue
-            payload = {"model": OMNI_MODEL, "input": text, "voice": voice or OMNI_MODEL,
-                       "response_format": "pcm", "stream": True, "stream_format": "audio"}
+            sent = voice_welfare.Sentence(care, path="stream", text=text, idx=i, chat_id=meta.get("chat_id"),
+                                          message_id=meta.get("message_id"), temp=temp, hold=care["hold"]) \
+                if care["enabled"] else None
             spoke = False
             if take:
                 take.t_req = tr.rel()
-            try:
-                async with session.post(f"{OMNI_URL}/audio/speech", json=payload, timeout=timeout) as r:
-                    if take:
-                        take.status = r.status
-                    if r.status != 200:
-                        log.warning("petal stream: omni said %s for part %d", r.status, i)
-                    else:
-                        rate = _rate_of(r.headers)
-                        pending, odd, first = bytearray(), b"", True
-                        async for chunk in r.content.iter_any():
-                            chunk = odd + chunk
-                            odd = chunk[-1:] if len(chunk) % 2 else b""
-                            chunk = chunk[: len(chunk) - len(odd)]
-                            pcm = to_rate(np.frombuffer(chunk, dtype=np.int16), rate)
-                            if take and len(pcm):
-                                if take.t_first is None:
+            while True:  # one pass per take. only welfare ever asks twice
+                payload = {"model": OMNI_MODEL, "input": text, "voice": voice or OMNI_MODEL,
+                           "response_format": "pcm", "stream": True, "stream_format": "audio"}
+                w = None
+                if sent:
+                    payload["seed"] = sent.seed()
+                    w = sent.watch()
+                buf, released, first, why, broke = bytearray(), 0, True, None, False
+
+                async def out(upto: int, final: bool = False) -> None:
+                    """sends buf[released:upto] to her ears, shaped only in "shaped" pacing"""
+                    nonlocal released, first, spoke
+                    if upto <= released and not final:
+                        return
+                    piece = np.frombuffer(bytes(buf[released:upto]), dtype=np.int16)
+                    released = max(released, upto)
+                    if not len(piece):
+                        return
+                    if first:
+                        piece, first = fade(piece, head_n, out=False), False
+                    if final and shaped and tail_hold:
+                        body, tail = piece[:-tail_hold], piece[-tail_hold:]
+                        piece = np.concatenate([body, fade(tail, len(tail), out=True)])
+                    await put(piece.tobytes())
+                    spoke = True
+
+                try:
+                    async with session.post(f"{OMNI_URL}/audio/speech", json=payload, timeout=timeout) as r:
+                        if take:
+                            take.status = r.status
+                        if r.status != 200:
+                            log.warning("petal stream: omni said %s for part %d", r.status, i)
+                            broke = True
+                        else:
+                            rate = _rate_of(r.headers)
+                            odd = b""
+                            async for chunk in r.content.iter_any():
+                                chunk = odd + chunk
+                                odd = chunk[-1:] if len(chunk) % 2 else b""
+                                chunk = chunk[: len(chunk) - len(odd)]
+                                pcm = to_rate(np.frombuffer(chunk, dtype=np.int16), rate)
+                                if not len(pcm):
+                                    continue
+                                if take and take.t_first is None:
                                     take.t_first = tr.rel()
-                                if tr.room():
-                                    take.pcm += pcm.tobytes()  # 🚩 her take, untouched
-                            pending += pcm.tobytes()
-                            if len(pending) > hold:
-                                cut = len(pending) - hold
-                                out = np.frombuffer(bytes(pending[:cut]), dtype=np.int16)
-                                del pending[:cut]
-                                if first:
-                                    out, first = fade(out, head_n, out=False), False
-                                await q.put(out.tobytes())
-                                spoke = True
-                        if pending:
-                            tail = np.frombuffer(bytes(pending), dtype=np.int16)
-                            if first:
-                                tail = fade(tail, head_n, out=False)
-                            if shaped:
-                                tail = fade(tail, len(tail), out=True)
-                            await q.put(tail.tobytes())
-                            spoke = True
-            except (aiohttp.ClientError, asyncio.TimeoutError) as e:
-                log.warning("petal stream: part %d lost (%s)", i, e.__class__.__name__)
-                if take:
-                    take.error = e.__class__.__name__
+                                b = pcm.tobytes()
+                                buf += b
+                                if w is None:  # welfare asleep: she goes out live, as she always did
+                                    await out(len(buf) - tail_hold)
+                                    continue
+                                hit = w.feed(b)  # stretch is a clock
+                                early = near_free and (released > 0 or flow.lead_s() < RUSH_S)
+                                if not hit and (w.due() or early):  # a loop is a pattern: listen again
+                                    kills = await asyncio.to_thread(w.listen, bytes(buf))
+                                    hit = "+".join(kills) if kills else None
+                                if hit:
+                                    why = hit
+                                    r.close()  # omni stops making a take nobody will hear
+                                    break
+                                if early:  # she's waiting: out goes all but the last window (always judged first)
+                                    await out(len(buf) - max(win, tail_hold))
+                except (aiohttp.ClientError, asyncio.TimeoutError) as e:
+                    log.warning("petal stream: part %d lost (%s)", i, e.__class__.__name__)
+                    broke = True
+                    if take:
+                        take.error = e.__class__.__name__
+                if w is not None and why is None and buf:
+                    # the whole take (or all of it that came before a break), as the report would hear it
+                    kills = await asyncio.to_thread(w.listen, bytes(buf))
+                    why = "+".join(kills) if kills else None
+                if why:  # 🕊️ a bad take: dropped whole (near-free: whatever had to go out early stays heard)
+                    sent.kill(w, bytes(buf), heard_s=released / (2 * RATE))
+                    if take:
+                        take.kills.append(why)
+                    if not sent.spent:
+                        continue  # a fresh take of the very same sentence
+                    await put(silence(care["skip_silence_ms"]))  # skipped: a clean silence, never the loop
+                    spoke = True
+                    break
+                if not (w is None and broke):  # asleep, a broken take ends where it broke, as it always did
+                    if sent and buf:
+                        sent.keep(w, bytes(buf))
+                    await out(len(buf), final=True)
+                if take and buf and tr.room():
+                    take.pcm += buf  # 🚩 the take she heard, untouched
+                break
             if take:
                 take.t_done = tr.rel()
+                take.tries = (len(sent.kills) + (1 if sent.kept else 0)) if sent else 1
+            if sent:
+                tally["sentences"] += 1
+                tally["kills"] += len(sent.kills)
+                tally["skipped"] += int(sent.skipped)
+                tally["heard_s"] += sum(k["heard_s"] for k in sent.kills)
+                await asyncio.to_thread(sent.close)
             if shaped and (spoke or last):
-                await q.put(silence(gap_ms(text, part.get("para_end", False), last, c)))
+                await put(silence(gap_ms(text, part.get("para_end", False), last, c)))
             await q.put(BOUNDARY)
     finally:
+        if tally["sentences"]:
+            voice_welfare.log_reply(temp=temp, **tally)
         await q.put(None)
 
 
@@ -276,7 +369,8 @@ async def station(session, parts: list[dict], voice: str, tr=None):
             tr.sieve_mode = str(sieve_config().get("mode", "?"))
         except Exception:
             pass
-    voice_task = asyncio.create_task(produce(session, parts, voice, q, c, tr))
+    flow = Flow()  # 🕊️ shared with the voice so near-free welfare knows when she's waiting
+    voice_task = asyncio.create_task(produce(session, parts, voice, q, c, tr, flow))
     guard = c["underrun_guard_ms"] / 1000
     pi, completed = 0, False  # 🚩 which sentence is on air, and whether she got to the end
 
@@ -289,6 +383,7 @@ async def station(session, parts: list[dict], voice: str, tr=None):
         lead = silence(c["lead_in_ms"])
         sent = len(lead) / (2 * RATE)
         t0 = time.monotonic()
+        flow.t0, flow.sent = t0, sent
         out = enc.encode(lead)
         if out:
             yield heard(out)
@@ -319,7 +414,9 @@ async def station(session, parts: list[dict], voice: str, tr=None):
                 take.start_s = round(sent, 3)
             if not filler:
                 between = False
+                flow.queued = max(0, flow.queued - len(pcm))
             sent += len(pcm) / (2 * RATE)
+            flow.sent = sent
             if take:
                 take.end_s = round(sent, 3)
             out = enc.encode(pcm)
