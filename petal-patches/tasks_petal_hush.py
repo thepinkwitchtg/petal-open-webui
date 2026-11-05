@@ -3,7 +3,7 @@
 # >>> petal · hush · begin >>>
 ##################################
 #
-# 🌸 petal · hush  ·  v0.13.1  (petal-patch, grafted by petal-hush-apply.sh)
+# 🌸 petal · hush  ·  v0.14.1  (petal-patch, grafted by petal-hush-apply.sh)
 # Petal writes the whisper in the empty chat field, at runtime.
 # called directly through generate_chat_completion, like title
 # generation — never through the chat pipeline, so memory injection,
@@ -58,6 +58,10 @@
 #           and recorded, keyed to Petal's reply id, in data/petal/hush-pulse.jsonl.
 #           the 🌸 petal · pulse filter sets the note in her system message — it rides
 #           on every typed message, whisper or not. dials: "pulse": false · pulse_pause
+# v0.14.1 · temp-chat silence (sprint contract 0): upstream now mints temp chats as
+#           'temporary:…' (legacy 'local:'), so the old startswith('local') let
+#           temp chats through. every check now asks is_saved_chat_id() — temp
+#           and channel chats record nothing; the reasons she reads are unchanged.
 #
 ##################################
 
@@ -72,6 +76,7 @@ from open_webui.env import FRONTEND_BUILD_DIR as _PETAL_BUILD_DIR
 from open_webui.env import STATIC_DIR as _PETAL_STATIC_DIR
 from open_webui.models.chat_messages import ChatMessages as _PetalChatMessages
 from open_webui.models.chats import Chats as _PetalChats
+from open_webui.utils.chat_id import is_saved_chat_id as _petal_is_saved_chat_id
 from open_webui.utils.misc import get_message_list as _petal_get_message_list
 from open_webui.utils.misc import get_output_text as _petal_get_output_text
 from open_webui.utils.models import get_all_models as _petal_get_all_models
@@ -519,7 +524,7 @@ async def _petal_hush_reply_context(request, form_data, user, models, admin_defa
     reply  · waits for her reply to finish, then reads the exchange
     linger · reads where you left off right now — she's already done"""
     chat_id = form_data.get('chat_id')
-    if not chat_id or str(chat_id).startswith('local'):
+    if not _petal_is_saved_chat_id(str(chat_id or '')):
         return {'whisper': None, 'mode': mode, 'reason': 'temporary chat — nothing saved to follow'}
     chat = await _PetalChats.get_chat_by_id_and_user_id(chat_id, user.id)
     if not chat:
@@ -808,7 +813,7 @@ async def petal_hush_pin(request: Request, form_data: dict, user=Depends(get_ver
     chat_id = str(form_data.get('chat_id') or '')
     ids = [str(i) for i in (form_data.get('message_ids') or []) if isinstance(i, (str, int)) and str(i)][:16]
     recorded, why_not = False, None
-    if chat_id.startswith('local'):
+    if chat_id and not _petal_is_saved_chat_id(chat_id):  # '' = a new chat's first send → still recorded (v0.13.1)
         why_not = 'temporary chat — pinned, nothing to record against'
     elif not ids:
         why_not = 'no reply id on this send — pinned, not recorded'
@@ -926,7 +931,7 @@ async def petal_hush_pulse(request: Request, form_data: dict, user=Depends(get_v
 
     chat_id = str(form_data.get('chat_id') or '')
     ids = [str(i) for i in (form_data.get('message_ids') or []) if isinstance(i, (str, int)) and str(i)][:16]
-    if chat_id.startswith('local'):
+    if chat_id and not _petal_is_saved_chat_id(chat_id):  # '' = a new chat's first send → still recorded
         return {'recorded': False, 'chars': len(note), 'reason': 'temporary chat — nothing to record against'}
     if not ids:
         return {'recorded': False, 'chars': len(note), 'reason': 'no reply id on this send'}

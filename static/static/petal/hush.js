@@ -1,7 +1,9 @@
 /* ═══════════════════════════════════════════════════════════
-   🌸 petal · hush  ·  v0.12 · open + reply + linger + pin + pulse · she writes it in
+   🌸 petal · hush  ·  v0.12.1 · open + reply + linger + pin + pulse · she writes it in
    the empty chat field whispers — and Petal writes the words.
 
+   v0.12.1 · temp chats ('temporary:…', the new upstream prefix) no longer ask
+          for a reply whisper — same is_saved check the server uses.
    v0.12 · reading time: after her reply, the field rests on a quiet line
           (hush.json "reply_rest", default "write…") while you read her —
           her whisper waits about as long as her reply takes to read
@@ -812,6 +814,10 @@
 		};
 	};
 
+	// temp-chat silence (sprint contract 0): mirrors isSavedChatId in $lib/utils/chatId —
+	// 'temporary:' (now), 'local:' (legacy) and 'channel:' chats have nothing saved to follow
+	const savedChat = (id) => !!id && !/^(temporary|local|channel):/.test(String(id));
+
 	const pulseRecord = async (stats, chatId, messageIds, model) => {
 		const t = token();
 		if (!t) return;
@@ -948,7 +954,7 @@
 			ps = pulseTake(b);
 		} catch (_) {}
 		try {
-			if (chatId && ids[0] && !String(chatId).startsWith('local')) onSend(chatId, ids[0]);
+			if (ids[0] && savedChat(chatId)) onSend(chatId, ids[0]);
 		} catch (_) {}
 		const pinning = !!(h && pinOn);
 		if (!pinning && !ps) return rawFetch(input, init);
