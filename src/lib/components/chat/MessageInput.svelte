@@ -74,7 +74,7 @@
 	} from '$lib/utils';
 	import { uploadFile } from '$lib/apis/files';
 	import { filesystemFile, getCwd, templatesApi, uploadNewFileToMachine } from '$lib/apis/machines';
-	import { isSavedChatId } from '$lib/utils/chatId';
+	import { isSavedChatId, isTemporaryChatId } from '$lib/utils/chatId';
 	import { generateAutoCompletion } from '$lib/apis';
 	import { deleteFileById } from '$lib/apis/files';
 	import { getChatById } from '$lib/apis/chats';
@@ -134,6 +134,7 @@
 	import QueuedMessageItem from './MessageInput/QueuedMessageItem.svelte';
 	import TaskList from './Messages/ResponseMessage/TaskList.svelte';
 	import StatusDetails from './StatusDetails.svelte';
+	import PetalStatusChip from './MessageInput/PetalStatusChip.svelte'; // 🌙 trip markers
 	import { getChatContext } from '$lib/components/chat/context';
 	import { machineIdOf } from '$lib/utils/machines';
 
@@ -2781,10 +2782,13 @@
 									{/if}
 								</div>
 
-								<div
-									use:fitControlLabels
-									class="flex flex-1 items-center min-w-0 overflow-x-auto scrollbar-none"
-								>
+								<div use:fitControlLabels class="flex flex-1 items-center min-w-0 overflow-x-auto scrollbar-none">
+									{#if $_user?.role === 'admin'}
+										<!-- 🌙 petal: what she's on — right after her pinned 💗 chips, before everything else -->
+										<div class="ml-1 flex shrink-0" style="order: -9000">
+											<PetalStatusChip temporary={$temporary || isTemporaryChatId(chatId)} />
+										</div>
+									{/if}
 									{#if selectedModelIds.length === 1 && ($models ?? []).find((m) => m.id === selectedModelIds[0])?.has_user_valves && ($_user?.role === 'admin' || ($_user?.permissions?.chat?.valves ?? true))}
 										<!-- 🌸 petal: with a pinned chip, this knob steps behind it (flex order — her 💗 leads the row) -->
 										<div class="ml-1 flex gap-1.5 shrink-0 {petalPinnedIds.length ? 'order-last' : ''}">
