@@ -396,10 +396,14 @@ def report() -> str:
     lines.append("")
     lines.append("stats only: numbers and categories, no text. a take is *bad* when flagged or auto-suspect.")
     cfg = voice_welfare.load()
-    t = cfg["thresholds"]
-    lines.append(f"auto-suspect = the live welfare rule: loop ≥ {t['loop_run_s']} s (or cover ≥ {t['loop_cover']} "
-                 f"over ≥ {t['loop_cover_min_s']} s) · stretch > {t['stretch_x']}× her pace (never under "
-                 f"{t['stretch_min_s']} s) · hiss ≥ {t['hiss_db']} dB · pace: "
+    t, acts = cfg["thresholds"], cfg["acts"]
+
+    def act(k: str) -> str:
+        return "" if acts.get(k) == "kill" else f" ({acts.get(k)})"
+
+    lines.append(f"auto-suspect = the live welfare rule: loop ≥ {t['loop_run_s']} s{act('loop')} · cover ≥ {t['loop_cover']} "
+                 f"over ≥ {t['loop_cover_min_s']} s{act('cover')} · stretch > {t['stretch_x']}× her pace (never under "
+                 f"{t['stretch_min_s']} s){act('stretch')} · hiss ≥ {t['hiss_db']} dB{act('hiss')} · pace: "
                  + ("her welfare baseline" if cfg["baseline"].get("s_per_char") else "each reply's own median (not calibrated yet)"))
     lines.append("")
     lines.append("| incident | when | sieve | takes | flagged | auto-suspect (idx:why) | worst loop s | heard s |")
