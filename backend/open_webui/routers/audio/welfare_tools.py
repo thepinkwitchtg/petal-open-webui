@@ -44,6 +44,16 @@ import voice_welfare  # noqa: E402
 
 RATE = vm.RATE
 LEAD_IN_S = 0.18  # petal stream's lead_in_ms: she can never start sooner than this anyway
+ARMED = {"loop", "cover", "stretch"}  # calibration tables: what each rule would do if it killed
+
+
+def rule_text(t: dict, acts: dict) -> str:
+    def a(k):
+        return "" if acts.get(k) == "kill" else f" ({acts.get(k, '?')})"
+
+    return (f"loop ≥ {t['loop_run_s']} s{a('loop')} · cover ≥ {t['loop_cover']} over ≥ {t['loop_cover_min_s']} s{a('cover')}"
+            f" · stretch > {t['stretch_x']}× her pace, never under {t['stretch_min_s']} s{a('stretch')}"
+            f" · hiss ≥ {t['hiss_db']} dB{a('hiss')}")
 
 
 def q(v, p):
@@ -204,8 +214,7 @@ def cmd_calibrate(a) -> int:
     L.append(f"- her pace: **{pace:.4f} s/char** (≈ {1 / pace:.1f} chars/s, median of {len(spc_all)} clean takes ≥ 12 chars, "
              f"IQR {q([*spc_all], 25):.4f}–{q([*spc_all], 75):.4f})")
     L.append(f"- her floor: **{fmt(floor, 1)} dB** (median of {len(floors)} clean takes)")
-    L.append(f"- rule today: loop ≥ {t['loop_run_s']} s · cover ≥ {t['loop_cover']} (≥ {t['loop_cover_min_s']} s) · "
-             f"stretch > {t['stretch_x']}× (min {t['stretch_min_s']} s, ≥ {t['stretch_min_chars']} chars) · hiss ≥ {t['hiss_db']} dB")
+    L.append(f"- rule today: {rule_text(t, cfg['acts'])}")
     L.append("")
 
     L.append("## flagged incidents — the takes around each flag")
@@ -224,10 +233,12 @@ def cmd_calibrate(a) -> int:
     L.append("_whole-reply flags (no sentence known) show their 3 loopiest takes._")
     L.append("")
 
-    def caught(inc, tt):
-        return any(set(why(r, tt)) & {"loop", "stretch"} for r in inc["rows"])
+    kills = {k for k, v in cfg["acts"].items() if v == "kill"}
 
-    L.append("## would the guard have caught them? (loop or stretch, with her pace)")
+    def caught(inc, tt):
+        return any(set(why(r, tt)) & kills for r in inc["rows"])
+
+    L.append("## would the guard have caught them? (its killing rules, with her pace)")
     L.append("")
     for inc in incidents:
         best = max(inc["rows"], key=lambda r: (r.get("repeat_run_s") or 0), default=None)
@@ -265,14 +276,14 @@ def cmd_calibrate(a) -> int:
         L.append("|---|---|---|---|")
         for v in values:
             tt = mk(v)
-            hit = sum(1 for inc in incidents if any(set(why(r, tt)) & {"loop", "stretch"} for r in inc["rows"]))
-            ck = sum(1 for r in clean if set(why(r, tt)) & {"loop", "stretch"})
-            kk = sum(1 for r in cache if set(why(r, tt)) & {"loop", "stretch"})
+            hit = sum(1 for inc in incidents if any(set(why(r, tt)) & ARMED for r in inc["rows"]))
+            ck = sum(1 for r in clean if set(why(r, tt)) & ARMED)
+            kk = sum(1 for r in cache if set(why(r, tt)) & ARMED)
             mark = " ←" if v == t[key] else ""
             L.append(f"| {v}{mark} | {hit}/{len(incidents)} | {ck}/{len(clean)} | {kk}/{len(cache)} |")
         L.append("")
 
-    L.append("## threshold sweeps (one knob moves, the others stay as today; ← is today)")
+    L.append("## threshold sweeps (one knob moves, the others stay as today; ← is today; every rule counted as if it killed)")
     L.append("")
     sweep("loop run", "loop_run_s", [0.6, 0.8, 1.0, 1.2, 1.5, 2.0, 2.5, 3.0], lambda v: {**t, "loop_run_s": v})
     sweep("loop cover", "loop_cover", [0.4, 0.5, 0.6, 0.7, 0.8, 0.9], lambda v: {**t, "loop_cover": v})
@@ -541,6 +552,10 @@ VERDICT_WORDS = {"ok": "ok", "right": "ok", "bad": "ok", "loop": "ok", "yes": "o
 VERDICT_HELP = "ok = the guard was right (a bad take) · wrong = a legit line was judged bad (a false kill)"
 
 
+def _n(k: int, word: str) -> str:
+    return f"{k} {word}" + ("" if k == 1 else "s")
+
+
 def _latest(path: Path, key: str) -> dict[str, dict]:
     out = {}
     for row in voice_welfare.read_jsonl(path):
@@ -569,8 +584,7 @@ def cmd_status(a) -> int:
         print(f"   audit fortnight: {'%.1f days left' % left if left > 0 else 'over (kills are numbers only now)'} "
               f"(until {time.strftime('%Y-%m-%d %H:%M', time.localtime(cfg['audit_until']))})")
     print(f"   acts: " + " · ".join(f"{k} {v}" for k, v in cfg["acts"].items()))
-    print(f"   rule: loop ≥ {t['loop_run_s']} s · cover ≥ {t['loop_cover']} (≥ {t['loop_cover_min_s']} s) · stretch > "
-          f"{t['stretch_x']}× her pace (never under {t['stretch_min_s']} s) · hiss ≥ {t['hiss_db']} dB")
+    print(f"   rule: {rule_text(t, cfg['acts'])}")
     print(f"   her pace {b.get('s_per_char') or '—'} s/char · her floor {b.get('floor_db') if b.get('floor_db') is not None else '—'} dB"
           + (f" · near-free window {voice_welfare.window_s(cfg)} s" if cfg["hold"] == "near-free" else ""))
     return 0
@@ -671,6 +685,57 @@ def cmd_hold(a) -> int:
 
 def cmd_audit(a) -> int:
     voice_welfare.set_knobs(by="petal-voice-welfare.sh", audit_days=a.days)
+    return cmd_status(a)
+
+
+def _needs_waking() -> bool:
+    if not voice_welfare.load().get("enabled_at"):
+        print("🌱 welfare has never been woken: until then it uses the shipped rule (welfare.json doesn't exist yet).\n"
+              "   wake it first (./petal-voice-welfare.sh on), then tune here")
+        return True
+    return False
+
+
+def cmd_rule(a) -> int:
+    """the rule's numbers, tuned from verdicts (a false kill → loosen), never by guessing"""
+    cfg = voice_welfare.load()
+    if not a.name:
+        for k, v in cfg["thresholds"].items():
+            print(f"   {k:<18} {v}")
+        return 0
+    if _needs_waking():
+        return 1
+    raw = (a.value or "").strip().lower()
+    if raw in ("none", "off", "null"):
+        value = None
+    else:
+        try:
+            value = float(raw)
+        except ValueError:
+            print("✗ rule <name> <number|none>")
+            return 1
+    try:
+        voice_welfare.set_knobs(by="petal-voice-welfare.sh", thresholds={a.name: value})
+    except ValueError as e:
+        print(f"✗ {e}")
+        return 1
+    return cmd_status(a)
+
+
+def cmd_act(a) -> int:
+    """what each reason does: kill · watch (numbers only, never touched) · off"""
+    cfg = voice_welfare.load()
+    if not a.reason:
+        for k, v in cfg["acts"].items():
+            print(f"   {k:<8} {v}")
+        return 0
+    if _needs_waking():
+        return 1
+    try:
+        voice_welfare.set_knobs(by="petal-voice-welfare.sh", acts={a.reason: a.what})
+    except ValueError as e:
+        print(f"✗ {e}")
+        return 1
     return cmd_status(a)
 
 
@@ -805,14 +870,17 @@ def cmd_stats(a) -> int:
         v = _latest(voice_welfare.VERDICTS_PATH, "audit")
         heard_v = [v[it["folder"].name]["verdict"] for it in items if it["folder"].name in v]
         L.append(f"- audit: {len(items)} kills kept for listening · heard {len(heard_v)} → "
-                 f"{heard_v.count('ok')} confirmed bad · {heard_v.count('wrong')} false kills · {len(items) - len(heard_v)} not heard yet")
+                 f"{heard_v.count('ok')} confirmed bad · {_n(heard_v.count('wrong'), 'false kill')} · {len(items) - len(heard_v)} not heard yet")
     sw = _sweep_state()
     if sw:
-        sv = _latest(SWEEP_VERDICTS, "file")
-        got = [sv[i["file"]] for i in sw["items"] if i["file"] in sv]
-        L.append(f"- cache sweep ({sw.get('when', '?')}): {len(sw['items'])} cached takes judged bad of {sw.get('heard', '?')} · heard "
-                 f"{len(got)} → {sum(1 for g in got if g['verdict'] == 'ok')} confirmed · "
-                 f"{sum(1 for g in got if g['verdict'] == 'wrong')} false kills · {sum(1 for g in got if g.get('deleted'))} swept away")
+        L.append(f"- last cache sweep ({sw.get('when', '?')}): today's rule would kill {len(sw['items'])} of "
+                 f"{sw.get('heard', '?')} cached takes")
+    sv = _latest(SWEEP_VERDICTS, "file")  # every cached take ever judged, across all sweeps
+    if sv:
+        got = list(sv.values())
+        L.append(f"- cache verdicts so far: {len(got)} heard → {sum(1 for g in got if g['verdict'] == 'ok')} truly bad · "
+                 f"{_n(sum(1 for g in got if g['verdict'] == 'wrong'), 'false kill')} (each one loosened the rule) · "
+                 f"{sum(1 for g in got if g.get('deleted'))} swept away")
     print("\n".join(L) + "\n")
     return 0
 
@@ -959,6 +1027,12 @@ def main(argv=None) -> int:
     hd.add_argument("mode")
     au = sub.add_parser("audit", help="extend the audit fortnight by N days")
     au.add_argument("days", type=float)
+    ru = sub.add_parser("rule", help="see the rule's numbers, or set one: rule loop_run_s 1.4")
+    ru.add_argument("name", nargs="?")
+    ru.add_argument("value", nargs="?")
+    ac = sub.add_parser("act", help="see what each reason does, or set it: act cover watch")
+    ac.add_argument("reason", nargs="?")
+    ac.add_argument("what", nargs="?", default="watch")
     li = sub.add_parser("list", help="the kills kept for listening")
     li.add_argument("--all", action="store_true")
     pl = sub.add_parser("play", help="hear a kill: the killed take(s), then the fresh one")
@@ -977,7 +1051,8 @@ def main(argv=None) -> int:
     sw.add_argument("--yes", action="store_true")
     a = p.parse_args(argv)
     return {"calibrate": cmd_calibrate, "holdback": cmd_holdback, "status": cmd_status, "on": cmd_on, "off": cmd_off,
-            "hold": cmd_hold, "audit": cmd_audit, "list": cmd_list, "play": cmd_play, "verdict": cmd_verdict,
+            "hold": cmd_hold, "audit": cmd_audit, "rule": cmd_rule, "act": cmd_act,
+            "list": cmd_list, "play": cmd_play, "verdict": cmd_verdict,
             "stats": cmd_stats, "sweep": cmd_sweep}[a.cmd](a)
 
 

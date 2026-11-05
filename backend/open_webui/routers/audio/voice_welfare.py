@@ -70,7 +70,8 @@ DEFAULTS = {
     "audit_until": None,
     "audit_days": 14,
     "enabled_at": None,
-    "acts": {"loop": "kill", "stretch": "kill", "hiss": "watch"},
+    # cover watches only: its 9 would-be kills in her cache (nov 5 2026) were all her normal voice
+    "acts": {"loop": "kill", "cover": "watch", "stretch": "kill", "hiss": "watch"},
     "thresholds": {},
     "baseline": dict(vm.DEFAULT_BASELINE),
 }
@@ -151,8 +152,10 @@ def _write_raw(raw: dict) -> None:
 
 
 def set_knobs(*, by: str, enabled: bool | None = None, hold: str | None = None, baseline: dict | None = None,
-              audit_days: float | None = None) -> dict:
-    """the only writer of welfare.json. the first waking starts the audit fortnight."""
+              audit_days: float | None = None, thresholds: dict | None = None, acts: dict | None = None,
+              valve: bool | None = None) -> dict:
+    """the only writer of welfare.json (the helper and the Petal Sieve filter's valve both come
+    through here). the first waking starts the audit fortnight."""
     with _lock:
         raw, exists, broken = _read_raw()
         if broken:
@@ -177,9 +180,42 @@ def set_knobs(*, by: str, enabled: bool | None = None, hold: str | None = None, 
             raw["baseline"] = {**(raw.get("baseline") or {}), **{k: v for k, v in baseline.items() if k in vm.DEFAULT_BASELINE}}
         if audit_days is not None:
             raw["audit_until"] = max(raw.get("audit_until") or 0, now) + audit_days * DAY
+        if thresholds:
+            for k, v in thresholds.items():
+                if k not in vm.DEFAULT_THRESHOLDS:
+                    raise ValueError(f"no rule called {k} (rules: {', '.join(vm.DEFAULT_THRESHOLDS)})")
+                if not (v is None and vm.DEFAULT_THRESHOLDS[k] is None) and \
+                        not (isinstance(v, (int, float)) and not isinstance(v, bool) and v >= 0):
+                    raise ValueError(f"{k} wants a number ≥ 0")
+            raw["thresholds"] = {**(raw.get("thresholds") or {}), **thresholds}
+        if acts:
+            for k, v in acts.items():
+                if k not in DEFAULTS["acts"] or v not in ACTS:
+                    raise ValueError(f"acts: {', '.join(DEFAULTS['acts'])} → {' | '.join(ACTS)}")
+            raw["acts"] = {**DEFAULTS["acts"], **(raw.get("acts") or {}), **acts}
+        if valve is not None:
+            raw["valve"] = bool(valve)  # what the Sieve filter's switch last said (last action wins)
         raw["set_by"], raw["set_at"] = by, round(now)
         _write_raw(raw)
     return load()
+
+
+def from_valve(on: bool, by: str = "petal-sieve filter") -> str | None:
+    """the Petal Sieve filter's 🕊️ switch, last action wins: only a *flip* of the switch touches
+    "enabled", so the helper's on/off and hand edits hold in between. before the first waking it
+    does nothing (that goes through ./petal-voice-welfare.sh on: the sweep check, her pace, the
+    audit fortnight). → what it did: None · "first sight" · "on" · "off" """
+    raw, exists, broken = _read_raw()
+    if not exists or broken or not raw.get("enabled_at"):
+        return None
+    last = raw.get("valve")
+    if last is None:  # first time the filter sees welfare awake: remember the switch, only ever turn off
+        set_knobs(by=by, valve=on, enabled=None if on else False)
+        return "first sight"
+    if bool(last) != bool(on):
+        set_knobs(by=by, valve=on, enabled=on)
+        return "on" if on else "off"
+    return None
 
 
 # ── the books (numbers only) ──────────────────────────────────────────────────
