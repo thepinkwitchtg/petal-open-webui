@@ -103,6 +103,7 @@ SETTINGS_DEFAULT: dict = {
 
 KINDS = ('status.start', 'status.end', 'integration.start', 'integration.end', 'climax', 'amend', 'void',
          'harvest',              # 1.1 · written by petal-ledger once per (status, part)
+         'gather',               # 1.1 · petal-ledger's OWUI moves, once per harvest line (files and moves stay independent; one undo declines the trip)
          'mutation', 'purge')    # 1.2 · 👽 the monsters are declared (never shortens) · the trip may close early
 # 'auto' is the reader's own, never accepted from a client · 'ledger' is petal-ledger's (1.1)
 VIA = ('owui', 'phone', 'petal', 'hand', 'ledger')
@@ -817,6 +818,38 @@ def harvests_due(view: View, now: int) -> list[dict]:
     return sorted(out, key=lambda d: (d['to'], d['part']))
 
 
+def gather_line(view: View, harvest_id: str) -> Optional[dict]:
+    """the gather line written for this harvest line, live OR voided — a voided gather means it was
+    undone, and an undone gather is never gathered again by itself (see gathers_declined: the whole trip)."""
+    for i in reversed(view.order):
+        e = view.raw[i]
+        if e['kind'] == 'gather' and e.get('harvest') == harvest_id:
+            return e
+    return None
+
+
+def gathers_declined(view: View) -> set:
+    """the trips (status refs) whose gathering she undid: one voided gather line declines its whole trip,
+    both parts and every later version (a trip that grows after her undo stays where she left it).
+    she said no — the reader never argues. filing by hand always stays hers."""
+    return {view.raw[i].get('ref') for i in view.order if view.raw[i]['kind'] == 'gather' and i in view.voided}
+
+
+def gathers_due(view: View) -> list[dict]:
+    """every live harvest line whose chats were never gathered into OWUI, oldest first: written without
+    a key or with OWUI away (owui_folder null) and no gather line points at it, live or voided.
+    a harvest line that already carries owui_folder (gathered inline, before 'gather' existed) counts as gathered.
+    a trip she undid (gathers_declined) is never due again, whatever version its harvests reach."""
+    declined = gathers_declined(view)
+    out = []
+    for i in view.order:
+        e = view.events.get(i)
+        if (e and e['kind'] == 'harvest' and not e.get('owui_folder') and e.get('ref') not in declined
+                and gather_line(view, i) is None):
+            out.append(e)
+    return out
+
+
 def _window(v: Any) -> list:
     if not isinstance(v, (list, tuple)) or len(v) != 2 or any(isinstance(x, bool) or not isinstance(x, (int, float)) for x in v):
         raise MarkerError('window should be [from, to] in unix seconds')
@@ -867,6 +900,15 @@ def _moved(v: Any) -> list[dict]:
         out.append({'chat_id': _s(m.get('chat_id'), 'chat_id', 200, required=True),
                     'prev_folder': pf, 'prev_pinned': bool(m.get('prev_pinned', False))})
     return out
+
+
+def _kept(v: Any) -> dict:
+    """1.1 · numbers only: how many chats of the window stayed where lily keeps them."""
+    if v is None:
+        return {}
+    if not isinstance(v, dict) or set(v) - {'filed', 'pinned', 'archived'}:
+        raise MarkerError('kept should be {filed, pinned, archived} counts')
+    return {k: _count(n, f'kept.{k}') for k, n in v.items()}
 
 
 def _count(v: Any, name: str) -> int:
@@ -1027,6 +1069,22 @@ def new_lines(view: View, body: dict, now: int) -> list[dict]:
                   chats=_count(body.get('chats'), 'chats'), messages=_count(body.get('messages'), 'messages'),
                   owui_folder=_s(body.get('owui_folder'), 'owui_folder', 200), moved=_moved(body.get('moved')))
 
+    elif kind == 'gather':
+        if via != 'ledger':
+            raise MarkerError("gather lines are petal-ledger's (via 'ledger')")
+        hid = body.get('harvest') or ''
+        h = view.events.get(hid)
+        if not h or h['kind'] != 'harvest':
+            raise MarkerError('harvest should be a live harvest line')
+        if h.get('owui_folder') or gather_line(view, hid) is not None:
+            raise MarkerError(f'already gathered: {h.get("part")}')   # once per harvest line, undone included
+        if h.get('ref') in gathers_declined(view):
+            raise MarkerError('this trip was un-gathered by hand: its chats stay where she put them')
+        # ref / part / window come from the harvest line itself, so the two can never disagree
+        ev.update(ref=h['ref'], part=h['part'], window=_window_of(h), harvest=hid,
+                  owui_folder=_s(body.get('owui_folder'), 'owui_folder', 200, required=True),
+                  moved=_moved(body.get('moved')), kept=_kept(body.get('kept')))
+
     elif kind == 'void':
         ref = body.get('ref') or ''
         if ref not in view.raw or ref in view.voided:
@@ -1054,6 +1112,26 @@ def record_harvest(garden: Garden, ref: str, part: str, folder: str, chats: int,
         lines = new_lines(view, {'kind': 'harvest', 'via': 'ledger', 'ref': ref, 'part': part, 'window': window,
                                  'folder': folder, 'chats': chats, 'messages': messages,
                                  'owui_folder': owui_folder, 'moved': moved}, now)
+        garden.append(lines)
+    return {'id': lines[-1]['id'], 'already': False}
+
+
+def record_gather(garden: Garden, harvest_id: str, owui_folder: str, moved: Optional[list] = None,
+                  kept: Optional[dict] = None, now: Optional[int] = None) -> dict:
+    """the ledger's second door: → {'id', 'already': False} or {'id': <existing line>, 'already': True}.
+    held under .markers.lock; once per harvest line (an undone, i.e. voided, gather counts as done)."""
+    now = int(now if now is not None else time.time())
+    with garden.locked():
+        view = build(garden)
+        auto = auto_lines(view, now)
+        if auto:
+            garden.append(auto)
+            view = build(garden)
+        existing = gather_line(view, harvest_id)
+        if existing:
+            return {'id': existing['id'], 'already': True}
+        lines = new_lines(view, {'kind': 'gather', 'via': 'ledger', 'harvest': harvest_id,
+                                 'owui_folder': owui_folder, 'moved': moved, 'kept': kept}, now)
         garden.append(lines)
     return {'id': lines[-1]['id'], 'already': False}
 
@@ -1325,6 +1403,41 @@ def _self_test() -> None:
         check(build(g).status_timeline(build(g).events[m8])['harvested']['trip']['id'] == v2['id'], 'harvested reads the latest line')
         check(v1['id'] != v2['id'] and not [d for d in harvests_due(build(g), t8 + 13 * H) if d['ref'] == m8 and d['part'] == 'trip'],
               'v1 stays in the log, the trip is settled at v2')
+
+        # 1.1 · gather later: files first, moves in their own line, once per harvest line
+        check([h['id'] for h in gathers_due(build(g)) if h['ref'] == m8] == [v1['id'], v2['id']],
+              'harvests written without moves are due for a gather (v1 and v2 alike)')
+        check(not [h for h in gathers_due(build(g)) if h['id'] == r1['id']], 'a voided harvest is never gathered')
+        g2 = record_gather(g, v2['id'], 'f-9', moved=[{'chat_id': 'c9', 'prev_folder': None, 'prev_pinned': False}],
+                           kept={'filed': 3, 'pinned': 1, 'archived': 0}, now=t8 + 13 * H)
+        gl = gather_line(build(g), v2['id'])
+        check(not g2['already'] and gl['ref'] == m8 and gl['part'] == 'trip' and gl['window'] == [t8, t8 + 12 * H]
+              and gl['harvest'] == v2['id'] and gl['owui_folder'] == 'f-9' and gl['kept']['filed'] == 3,
+              'the gather line carries the harvest line\'s own ref, part and window')
+        check(record_gather(g, v2['id'], 'f-9', now=t8 + 13 * H) == {'id': g2['id'], 'already': True}, 'gathered once')
+        write(g, {'kind': 'void', 'via': 'owui', 'ref': g2['id'], 'reason': 'undo'}, now=t8 + 14 * H)
+        check(not [h for h in gathers_due(build(g)) if h['id'] == v2['id']], 'an undone gather is never gathered again by itself')
+        check(gathers_declined(build(g)) == {m8} and not [h for h in gathers_due(build(g)) if h['ref'] == m8],
+              'one undo declines the whole trip: v1 and every later version stay ungathered')
+        try:
+            record_gather(g, v1['id'], 'f-9', now=t8 + 14 * H)
+            check(False, 'a declined trip should refuse a gather')
+        except MarkerError:
+            ok += 1
+        ri = record_harvest(g, lsd, 'trip', first[0]['folder'] + ' · v2', 3, 41, first[0]['window'], owui_folder='f-1',
+                            now=t8 + 14 * H)
+        check(not ri['already'] and not [h for h in gathers_due(build(g)) if h['id'] == ri['id']],
+              'a harvest that carries owui_folder (gathered inline) is never due for a gather')
+        for bad in ({'kind': 'gather', 'via': 'owui', 'harvest': v1['id'], 'owui_folder': 'f'},
+                    {'kind': 'gather', 'via': 'ledger', 'harvest': v1['id']},
+                    {'kind': 'gather', 'via': 'ledger', 'harvest': lsd, 'owui_folder': 'f'},
+                    {'kind': 'gather', 'via': 'ledger', 'harvest': v2['id'], 'owui_folder': 'f'},
+                    {'kind': 'gather', 'via': 'ledger', 'harvest': v1['id'], 'owui_folder': 'f', 'kept': {'filed': -1}}):
+            try:
+                write(g, bad, now=t8 + 15 * H)
+                check(False, 'bad gather should be refused')
+            except MarkerError:
+                ok += 1
 
         # a torn line never breaks a read
         with open(g.log, 'a') as f:
