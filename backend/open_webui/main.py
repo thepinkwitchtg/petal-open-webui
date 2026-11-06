@@ -151,6 +151,8 @@ from open_webui.models.users import Users
 from open_webui.routers import petal_harvest  # 🌷 garden harvest
 from open_webui.routers import petal_markers  # 🌙 trip markers
 from open_webui.utils import petal_temp_chats  # 🧪 contract 0's times-only counter
+from open_webui.utils import petal_gentle_stop  # 🌙 contract 8 · the outlet waits while Petal is tucked in
+from open_webui.utils.petal_skin_cache import PetalSkinRevalidate  # 🌸 the skin always asks before reuse
 from open_webui.routers import (
     apps,
     analytics,
@@ -804,6 +806,9 @@ if ENABLE_COMPRESSION_MIDDLEWARE:
 # Use pure ASGI middleware to avoid BaseHTTPMiddleware cancellation of in-flight DB work.
 # See open_webui.utils.asgi_middleware for the disconnect and cleanup rationale.
 app.add_middleware(AppHTTPMiddleware)
+
+# 🌸 petal skin: custom.css, loader.js and static/petal/* revalidate every load (pure ASGI)
+app.add_middleware(PetalSkinRevalidate)
 
 
 app.add_middleware(
@@ -1697,12 +1702,16 @@ async def chat_completion(
                 # Saved chats load the message after approved tool calls run, so their results are kept
                 if metadata.get('assistant_message_id') and not is_saved_chat_id(metadata.get('chat_id')):
                     ctx = await build_chat_response_context(request, form_data, user, model, metadata, tasks, [])
+                # 🌙 contract 8: while the launcher tucks Petal in, nothing new goes to her vLLM —
+                # before the payload (retrieval may ask her for queries) and right before the send
+                await petal_gentle_stop.wait_for_petal(request, model, metadata)
                 form_data, metadata, events, paused = await process_chat_payload(
                     request, form_data, user, metadata, model
                 )
                 if paused:
                     return {'status': True, 'chat_id': metadata.get('chat_id'), 'paused': True}
 
+                await petal_gentle_stop.wait_for_petal(request, model, metadata)  # a stop may begin mid-retrieval
                 response = await chat_completion_handler(request, form_data, user)
 
                 if isinstance(response, Response) and response.status_code >= 400:
