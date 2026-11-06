@@ -27,8 +27,10 @@
 		offerGatherUndo,
 		refreshMarkers,
 		span,
-		writeMarker
+		writeMarker,
+		writeTrip
 	} from '$lib/utils/petal-markers';
+	import type { TripResult } from '$lib/apis/petal-markers';
 
 	export let temporary = false;
 
@@ -76,6 +78,7 @@
 		clearTimeout(previewTimer);
 		clearTimeout(voidTimer);
 		clearTimeout(purgeTimer);
+		clearTimeout(tripTimer);
 		if (typeof document !== 'undefined') document.removeEventListener('visibilitychange', onVisible);
 		unlisten();
 	});
@@ -227,6 +230,9 @@
 		showNote = false;
 		fOtherName = '';
 		fOtherHours = '';
+		fEndOn = false;
+		trip = null;
+		tripErr = null;
 		mode = 'form';
 	};
 
@@ -240,6 +246,8 @@
 		fDose = st.dose ?? '';
 		fTaken = st.taken_at;
 		followNow = false;
+		fEndOn = false;
+		trip = null;
 		fNote = st.note ?? '';
 		showNote = !!st.note;
 		mode = 'form';
@@ -274,46 +282,124 @@
 	}
 
 	// time: follows now until nudged · typed times later than now mean yesterday
+	// A6 · a date too (‹ day ›, or type it), and for a trip that's over, her real end
+	type When = 'taken' | 'end';
+	const DAY = 86400;
+	let fEndOn = false;
+	let fEnd = nowS();
 	$: takenShown = followNow ? t : fTaken;
-	const nudge = (minutes: number) => {
-		const base = followNow ? nowS() : fTaken;
-		followNow = false;
-		fTaken = Math.min(nowS(), base + minutes * 60);
+	const baseOf = (w: When) => (w === 'end' ? fEnd : followNow ? nowS() : fTaken);
+	const setWhen = (w: When, s2: number) => {
+		if (w === 'end') {
+			fEnd = Math.max((followNow ? nowS() : fTaken) + 60, Math.min(nowS(), s2));
+		} else {
+			followNow = false;
+			fTaken = Math.min(nowS(), s2);
+			if (fEndOn && fEnd <= fTaken) fEnd = Math.min(nowS(), fTaken + 3600);
+		}
 	};
+	const nudge = (minutes: number, w: When = 'taken') => setWhen(w, baseOf(w) + minutes * 60);
 	const setNow = () => {
 		followNow = true;
+		fEndOn = false; // a trip that starts now hasn't ended
 		fTaken = nowS();
 		t = nowS();
 	};
 	const pad = (x: number) => String(x).padStart(2, '0');
-	const typeTime = (unit: 'h' | 'm', raw: string) => {
+	const isoDay = (s2: number) => {
+		const d = new Date(s2 * 1000);
+		return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+	};
+	const dayWord = (s2: number) => {
+		const k = isoDay(s2);
+		if (k === isoDay(t)) return 'today';
+		if (k === isoDay(t - DAY)) return 'yesterday';
+		return clock(s2, t).split(' ').slice(0, -1).join(' ') || k;
+	};
+	const shiftDay = (w: When, days: number) => setWhen(w, baseOf(w) + days * DAY);
+	const typeDay = (w: When, raw: string) => {
+		const m = raw.replace(/[\u2010-\u2015]/g, '-').trim().match(/^(\d{4})-(\d{1,2})-(\d{1,2})$/);
+		if (!m) return;
+		const d = new Date(baseOf(w) * 1000);
+		d.setFullYear(+m[1], +m[2] - 1, +m[3]);
+		setWhen(w, Math.floor(d.getTime() / 1000));
+	};
+	const typeTime = (unit: 'h' | 'm', raw: string, w: When = 'taken') => {
 		const v = parseInt(raw, 10);
 		if (!Number.isFinite(v)) return;
-		const d = new Date((followNow ? nowS() : fTaken) * 1000);
+		const d = new Date(baseOf(w) * 1000);
 		if (unit === 'h') d.setHours(Math.max(0, Math.min(23, v)));
 		else d.setMinutes(Math.max(0, Math.min(59, v)));
 		let s2 = Math.floor(d.getTime() / 1000);
-		if (s2 > nowS() + 60) s2 -= 86400; // 23:30 typed at 00:10 → last night
-		followNow = false;
-		fTaken = s2;
+		if (s2 > nowS() + 60) s2 -= DAY; // 23:30 typed at 00:10 → last night
+		setWhen(w, s2);
 	};
-	const timeKey = (unit: 'h' | 'm') => (e: KeyboardEvent) => {
+	const timeKey = (unit: 'h' | 'm', w: When = 'taken') => (e: KeyboardEvent) => {
 		const step = (e.shiftKey ? 10 : 1) * (unit === 'h' ? 60 : 1);
-		if (e.key === 'ArrowUp') nudge(step);
-		else if (e.key === 'ArrowDown') nudge(-step);
+		if (e.key === 'ArrowUp') nudge(step, w);
+		else if (e.key === 'ArrowDown') nudge(-step, w);
 		else if (e.key === 'Enter') submit();
 		else return;
 		e.preventDefault();
 	};
-	const timeWheel = (unit: 'h' | 'm') => (e: WheelEvent) => {
+	const timeWheel = (unit: 'h' | 'm', w: When = 'taken') => (e: WheelEvent) => {
 		e.preventDefault();
-		nudge((e.deltaY < 0 ? 1 : -1) * (e.shiftKey ? 10 : 1) * (unit === 'h' ? 60 : 1));
+		nudge((e.deltaY < 0 ? 1 : -1) * (e.shiftKey ? 10 : 1) * (unit === 'h' ? 60 : 1), w);
+	};
+
+	// the whole timeline, previewed by the server's own dry run (it can't disagree with the write)
+	let trip: TripResult | null = null;
+	let tripErr: string | null = null;
+	let tripTimer: ReturnType<typeof setTimeout> | undefined;
+	$: past = !editing && !followNow;
+	$: if (open && mode === 'form') scheduleTrip(past, fSub, fDose, fStrain, fTaken, fEndOn, fEnd, fOtherName, fOtherHours);
+	function tripBody(dry: boolean) {
+		const hours = parseFloat(fOtherHours.replace(',', '.'));
+		return {
+			substance: fSub === '__other' ? fOtherName.trim() : fSub,
+			dose: fDose.trim() || null,
+			taken_at: followNow ? nowS() : fTaken,
+			ended_at: fEndOn && !followNow ? fEnd : null,
+			note: fNote.trim() || null,
+			temp: temporary,
+			dry_run: dry,
+			...(strainsOf.length && fStrain ? { strain: fStrain } : {}),
+			...(fSub === '__other' && Number.isFinite(hours) && hours > 0 ? { duration_h: hours } : {})
+		};
+	}
+	function scheduleTrip(..._deps: unknown[]) {
+		clearTimeout(tripTimer);
+		if (!past || !fSub || doseMissing || (fSub === '__other' && !fOtherName.trim())) {
+			trip = null;
+			tripErr = null;
+			return;
+		}
+		tripTimer = setTimeout(async () => {
+			try {
+				trip = await writeTrip(tripBody(true));
+				tripErr = null;
+			} catch (e) {
+				trip = null;
+				tripErr = `${e}`;
+			}
+		}, 260);
+	}
+	const enableEnd = () => {
+		// start from the table's end (the dry run's, else the dose preview's), she nudges from there
+		const dur = preview?.duration_h;
+		const table = trip?.timeline?.expected_end ?? (dur != null ? Math.round(fTaken + dur * 3600) : null);
+		fEnd = Math.max(fTaken + 60, Math.min(nowS(), table ?? nowS()));
+		fEndOn = true;
 	};
 
 	// a curve substance scales with its dose: without a number it would never end
 	$: doseMissing = !!fEntry?.needs_dose && !/\d/.test(fDose);
 	$: canSubmit =
-		!busy && !!fSub && (fSub !== '__other' || fOtherName.trim().length > 0) && !doseMissing;
+		!busy &&
+		!!fSub &&
+		(fSub !== '__other' || fOtherName.trim().length > 0) &&
+		!doseMissing &&
+		!(past && tripErr);
 
 	const submit = async () => {
 		if (!canSubmit) return;
@@ -337,17 +423,13 @@
 				await writeMarker({ kind: 'amend', ref: editing.id, fields, temp: temporary });
 				toast.success('🌙 amended — the first line stays, the correction rides beside it');
 			} else {
-				const hours = parseFloat(fOtherHours.replace(',', '.'));
-				await writeMarker({
-					kind: 'status.start',
-					substance,
-					dose,
-					taken_at,
-					note,
-					temp: temporary,
-					...(strainsOf.length && fStrain ? { strain: fStrain } : {}),
-					...(fSub === '__other' && Number.isFinite(hours) && hours > 0 ? { duration_h: hours } : {})
-				});
+				// one lock on the server: the start line, then her real end (an amend or an end)
+				const r = await writeTrip(tripBody(false));
+				if (past) {
+					const due = r.due.length ? ` · ${r.due.join(' + ')} due for the ledger` : '';
+					const tl = r.timeline;
+					toast.success(`${tl.emoji} locked in · ${clock(tl.taken_at, nowS())} → ${clock(tl.end ?? nowS(), nowS())}${due}`);
+				}
 			}
 			t = nowS();
 			close();
@@ -731,12 +813,31 @@
 					</div>
 				{/if}
 
+				<div class="pmk-k">
+					taken · {followNow ? 'now' : `${dayWord(fTaken)} · ${span(nowS() - fTaken)} ago`}
+				</div>
 				<div class="pmk-row">
-					<span class="pmk-k">taken</span>
+					<button type="button" class="pmk-step" aria-label="a day earlier" on:click={() => shiftDay('taken', -1)}>‹</button>
+					<input
+						class="pmk-day"
+						inputmode="numeric"
+						aria-label="day taken"
+						value={isoDay(takenShown)}
+						on:change={(e) => typeDay('taken', e.currentTarget.value)}
+						on:keydown={(e) => e.key === 'Enter' && (e.preventDefault(), typeDay('taken', e.currentTarget.value))}
+					/>
+					<button
+						type="button"
+						class="pmk-step"
+						aria-label="a day later"
+						disabled={isoDay(takenShown) === isoDay(t)}
+						on:click={() => shiftDay('taken', 1)}>›</button
+					>
+					<span class="pmk-gap"></span>
 					<input
 						class="pmk-num"
 						inputmode="numeric"
-						aria-label="hour"
+						aria-label="hour taken"
 						value={pad(new Date(takenShown * 1000).getHours())}
 						on:keydown={timeKey('h')}
 						on:wheel={timeWheel('h')}
@@ -746,13 +847,12 @@
 					<input
 						class="pmk-num"
 						inputmode="numeric"
-						aria-label="minute"
+						aria-label="minute taken"
 						value={pad(new Date(takenShown * 1000).getMinutes())}
 						on:keydown={timeKey('m')}
 						on:wheel={timeWheel('m')}
 						on:change={(e) => typeTime('m', e.currentTarget.value)}
 					/>
-					<span class="pmk-soft small">{followNow ? 'now' : `${span(nowS() - fTaken)} ago`}</span>
 				</div>
 				<div class="pmk-row">
 					<button type="button" class="pmk-soft-btn tight" class:lit={followNow} on:click={setNow}>now</button>
@@ -761,13 +861,94 @@
 					<button type="button" class="pmk-soft-btn tight" on:click={() => nudge(-60)}>−1h</button>
 				</div>
 
+				{#if past}
+					{#if fEndOn}
+						<div class="pmk-k">
+							ended · {dayWord(fEnd)} · {span(fEnd - fTaken)} after
+							<button type="button" class="pmk-link" on:click={() => (fEndOn = false)}>let the table decide</button>
+						</div>
+						<div class="pmk-row">
+							<button type="button" class="pmk-step" aria-label="a day earlier" on:click={() => shiftDay('end', -1)}>‹</button>
+							<input
+								class="pmk-day"
+								inputmode="numeric"
+								aria-label="day it ended"
+								value={isoDay(fEnd)}
+								on:change={(e) => typeDay('end', e.currentTarget.value)}
+								on:keydown={(e) => e.key === 'Enter' && (e.preventDefault(), typeDay('end', e.currentTarget.value))}
+							/>
+							<button
+								type="button"
+								class="pmk-step"
+								aria-label="a day later"
+								disabled={isoDay(fEnd) === isoDay(t)}
+								on:click={() => shiftDay('end', 1)}>›</button
+							>
+							<span class="pmk-gap"></span>
+							<input
+								class="pmk-num"
+								inputmode="numeric"
+								aria-label="hour it ended"
+								value={pad(new Date(fEnd * 1000).getHours())}
+								on:keydown={timeKey('h', 'end')}
+								on:wheel={timeWheel('h', 'end')}
+								on:change={(e) => typeTime('h', e.currentTarget.value, 'end')}
+							/>
+							<span class="pmk-soft">:</span>
+							<input
+								class="pmk-num"
+								inputmode="numeric"
+								aria-label="minute it ended"
+								value={pad(new Date(fEnd * 1000).getMinutes())}
+								on:keydown={timeKey('m', 'end')}
+								on:wheel={timeWheel('m', 'end')}
+								on:change={(e) => typeTime('m', e.currentTarget.value, 'end')}
+							/>
+						</div>
+					{:else}
+						<button type="button" class="pmk-link start" on:click={enableEnd}>＋ it already ended at…</button>
+					{/if}
+
+					{#if tripErr}
+						<div class="pmk-warn">{tripErr}</div>
+					{:else if trip}
+						{@const tl = trip.timeline}
+						{@const b = bar(tl)}
+						<div class="pmk-tripview">
+							<div class="pmk-bar" aria-hidden="true">
+								<i class="pmk-seg active" style="left:{b.active.left}; width:{b.active.width}"></i>
+								{#if b.peak}<i class="pmk-seg peak" style="left:{b.peak.left}; width:{b.peak.width}"></i>{/if}
+								{#if b.integ}<i class="pmk-seg integ" style="left:{b.integ.left}; width:{b.integ.width}"></i>{/if}
+								<i class="pmk-now" style="left:{b.now}"></i>
+							</div>
+							<dl class="pmk-facts">
+								<dt>ends</dt>
+								<dd>
+									{#if tl.end !== null}~{clock(tl.end, t)}
+										<span class="pmk-soft">· {fEndOn ? 'your end' : 'from the table'}</span>
+									{:else}<span class="pmk-soft">no end known — {tl.why_no_end ?? 'end it by hand'}</span>{/if}
+								</dd>
+								{#if tl.integration && !tl.integration.empty}
+									<dt>integration</dt>
+									<dd>{clock(tl.integration.opens_at, t)} → {clock(tl.integration.closes_at, t)}</dd>
+								{/if}
+								<dt>harvests</dt>
+								<dd>
+									{#if trip.due.length}{trip.due.join(' + ')} <span class="pmk-soft">· due once locked in</span>
+									{:else}<span class="pmk-soft">when it ends</span>{/if}
+								</dd>
+							</dl>
+						</div>
+					{/if}
+				{/if}
+
 				{#if showNote}
 					<textarea class="pmk-field note" rows="2" placeholder="note (only for you)" bind:value={fNote}></textarea>
 				{/if}
 
 				<div class="pmk-actions foot">
 					<button type="submit" class="pmk-go" disabled={!canSubmit}>
-						{editing ? 'save the correction' : `set ${fEntry?.emoji ?? '✧'}`}
+						{editing ? 'save the correction' : past ? `lock it in ${fEntry?.emoji ?? '✧'}` : `set ${fEntry?.emoji ?? '✧'}`}
 					</button>
 					{#if !showNote}
 						<button type="button" class="pmk-soft-btn ghost" on:click={() => (showNote = true)}>＋ note</button>
@@ -1077,9 +1258,6 @@
 		color: var(--whisper, #8a7d92);
 		font-size: 0.72rem;
 	}
-	.pmk-row > .pmk-k {
-		margin-right: 0.2rem;
-	}
 	.pmk-subs {
 		display: flex;
 		flex-wrap: wrap;
@@ -1100,6 +1278,62 @@
 		border-color: oklch(0.711 0.214 var(--p-h-accent, 352) / 0.55);
 		background: oklch(0.711 0.214 var(--p-h-accent, 352) / 0.1);
 		color: var(--pearl, #f6eef3);
+	}
+	.pmk-step {
+		width: 2.25rem;
+		min-height: 2.25rem;
+		flex-shrink: 0;
+		border-radius: var(--radius-sm, 8px);
+		background: var(--obsidian-lit, #1d1724);
+		color: var(--mist, #cfc3cc);
+		font-size: 1rem;
+		line-height: 1;
+	}
+	.pmk-step:disabled {
+		opacity: 0.35;
+		cursor: default;
+	}
+	.pmk-day {
+		width: 6.6rem;
+		min-height: 2.25rem;
+		padding: 0;
+		border-radius: var(--radius-sm, 8px);
+		border: 1px solid var(--edge-soft, #2a2433);
+		background: var(--abyss, #0c0910);
+		color: var(--pearl, #f6eef3);
+		font-family: var(--font-mono, ui-monospace, monospace);
+		font-size: 0.8rem;
+		text-align: center;
+		outline: none;
+	}
+	.pmk-day:focus {
+		border-color: oklch(0.711 0.214 var(--p-h-accent, 352) / 0.55);
+	}
+	.pmk-gap {
+		flex: 1;
+		min-width: 0.25rem;
+	}
+	.pmk-link {
+		color: var(--candy-light, #f9c6dc);
+		font-size: 0.72rem;
+		text-decoration: underline;
+		text-decoration-color: oklch(0.711 0.214 var(--p-h-accent, 352) / 0.35);
+		text-underline-offset: 2px;
+	}
+	.pmk-k .pmk-link {
+		margin-left: 0.35rem;
+	}
+	.pmk-link.start {
+		align-self: flex-start;
+		min-height: 1.9rem;
+	}
+	.pmk-tripview {
+		display: flex;
+		flex-direction: column;
+		gap: 0.45rem;
+		padding: 0.55rem 0.6rem;
+		border-radius: var(--radius-sm, 8px);
+		background: var(--abyss, #0c0910);
 	}
 	.pmk-strain {
 		min-height: 1.9rem;
@@ -1217,6 +1451,20 @@
 		}
 		.pmk-num {
 			width: 2.3rem;
+		}
+		.pmk-step {
+			width: 1.7rem;
+			min-height: 1.7rem;
+			font-size: 0.85rem;
+		}
+		.pmk-day {
+			width: 5.6rem;
+			min-height: 1.8rem;
+			font-size: 0.74rem;
+		}
+		.pmk-tripview {
+			gap: 0.35rem;
+			padding: 0.45rem 0.5rem;
 		}
 		.pmk-actions,
 		.pmk-subs {

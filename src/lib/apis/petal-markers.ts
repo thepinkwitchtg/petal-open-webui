@@ -141,3 +141,14 @@ export const getMarkers = (
 
 export const postMarker = (token: string, body: Record<string, unknown>) =>
 	call<{ id: string }>(token, BASE, { method: 'POST', body: JSON.stringify(body) });
+
+// A6 · a new status, past or present, with her real end · dry_run previews the very same lines
+export type TripResult = {
+	id: string | null;
+	timeline: MarkerTimeline;
+	due: ('trip' | 'integration')[];
+	lines: string[];
+	written: boolean;
+};
+export const postTrip = (token: string, body: Record<string, unknown>) =>
+	call<TripResult>(token, `${BASE}/trip`, { method: 'POST', body: JSON.stringify(body) });
