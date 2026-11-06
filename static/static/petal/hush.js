@@ -1,7 +1,9 @@
 /* ═══════════════════════════════════════════════════════════
-   🌸 petal · hush  ·  v0.12.1 · open + reply + linger + pin + pulse · she writes it in
+   🌸 petal · hush  ·  v0.12.2 · open + reply + linger + pin + pulse · she writes it in
    the empty chat field whispers — and Petal writes the words.
 
+   v0.12.2 · the gentle stop: while the launcher tucks Petal in, the server answers
+          {gentle_stop: true} — a quiet rest (never a miss), the pool carries the room.
    v0.12.1 · temp chats ('temporary:…', the new upstream prefix) no longer ask
           for a reply whisper — same is_saved check the server uses.
    v0.12 · reading time: after her reply, the field rests on a quiet line
@@ -353,6 +355,8 @@
 					save(K.queue, queue.slice(-cap));
 					note('queued', { chars: line.length, queue: queue.length });
 				}
+			} else if (httpOk && data?.gentle_stop) {
+				note('gentle stop — Petal is being tucked in, the pool carries the room');
 			} else if (httpOk) {
 				tellOnce('trimmed', 'Petal answered but the line was trimmed —', data?.reason ?? 'no reason given', '· petalHush.peek() shows her words, for your eyes');
 			} else if (status === 404) {
@@ -418,6 +422,8 @@
 			miss(`${status} ${data?.detail ?? ''}`.trim(), data?.tried);
 		} else if (status === 0) {
 			miss(lastAsk?.body?.detail ?? 'offline');
+		} else if (ok && data?.gentle_stop) {
+			note('gentle stop — no reply whisper while Petal is tucked in');
 		} else if (ok && data?.reason && !/superseded|page left/.test(data.reason)) {
 			tellOnce('reply-' + data.reason, 'no reply whisper —', data.reason);
 		}

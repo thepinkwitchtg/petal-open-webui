@@ -16,6 +16,7 @@ import {
 	getMarkers,
 	getMarkersNow,
 	postMarker,
+	postTrip,
 	type MarkersNow,
 	type MarkerTimeline,
 	type MarkerVia
@@ -46,6 +47,13 @@ export const markerVia = (): MarkerVia =>
 export const writeMarker = async (body: Record<string, unknown>) => {
 	const r = await postMarker(localStorage.token, { via: markerVia(), ...body });
 	await refreshMarkers();
+	return r;
+};
+
+/** a new status, past or present (one lock: the start, then her real end) · dry_run writes nothing */
+export const writeTrip = async (body: Record<string, unknown>) => {
+	const r = await postTrip(localStorage.token, { via: markerVia(), ...body });
+	if (r.written) await refreshMarkers();
 	return r;
 };
 

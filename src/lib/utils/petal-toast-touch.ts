@@ -14,6 +14,7 @@
 //     lands just under it (toasts.css reads --petal-topbar-h)
 //   · lifetimes: 3200 ms default (the Toaster's own prop) · 6000 errors · 8000 with an
 //     action — filled in only when the caller didn't choose one
+//   · a date in a title or description keeps its hyphens whole (U+2011) on a narrow pill
 //
 // one delegated set of listeners, passive where they can be, no rAF, nothing runs idle.
 import { toast } from 'svelte-sonner';
@@ -45,6 +46,10 @@ type Press = {
 type Method = 'message' | 'success' | 'info' | 'warning' | 'error';
 const METHODS: Method[] = ['message', 'success', 'info', 'warning', 'error'];
 
+// a date in a toast never breaks at its hyphens on a narrow pill ("2026-" / "11-05")
+const NB = (v: unknown) =>
+	typeof v === 'string' ? v.replace(/\b(\d{4})-(\d{2})-(\d{2})\b/g, '$1\u2011$2\u2011$3') : v;
+
 const installDurations = () => {
 	const original = new Map<Method, (...a: any[]) => any>();
 	for (const m of METHODS) {
@@ -52,7 +57,10 @@ const installDurations = () => {
 		if (typeof fn !== 'function' || fn.__petal) continue;
 		original.set(m, fn);
 		const wrapped = (message: unknown, data?: Record<string, any>) => {
-			if (!isPetal() || (data && data.duration !== undefined)) return fn(message, data);
+			if (!isPetal()) return fn(message, data);
+			message = NB(message);
+			if (data && typeof data.description === 'string') data = { ...data, description: NB(data.description) };
+			if (data && data.duration !== undefined) return fn(message, data);
 			const duration = data?.action
 				? PETAL_TOAST_MS.action
 				: m === 'error'
