@@ -11,6 +11,7 @@ Petal does not see any of this yet: no filter, no system prompt injection (v0).
     GET  /api/v1/petal/markers/now               → { status, integration, also, last_dose, table, now }
     GET  /api/v1/petal/markers?from&to[&kind&chat_id&include_void]  → replayed events in range
     POST /api/v1/petal/markers   { kind, via, … } → { id }
+    POST /api/v1/petal/markers/trip  { substance, dose, taken_at, ended_at, dry_run, … } → a past trip, previewed or locked in
     GET  /api/v1/petal/markers/stats?from&to     → numbers only
 """
 
@@ -128,6 +129,24 @@ def markers_write(body: dict = Body(...), user=Depends(get_admin_user)):
 
     def go():
         return {'id': core.write(_garden(), body)['id']}
+
+    return _guard(go)
+
+
+@router.post('/markers/trip')
+def markers_trip(body: dict = Body(...), user=Depends(get_admin_user)):
+    """a new status, past or present, with her real end if she knows it (slice A6).
+    { substance, dose, strain?, taken_at, ended_at|null, note?, via, temp, dry_run }
+    → { id|null, timeline (with phase), due: [parts], lines: [kinds], written }
+    one lock: the start line, then an amend of ends_at (her end is later) or a status.end (earlier).
+    dry_run walks the very same path and writes nothing — the preview can't disagree with the write."""
+    if body.get('via') == 'ledger':
+        raise HTTPException(400, detail='harvest lines are written by petal-ledger, not through this door')
+    fields = {k: body[k] for k in ('substance', 'dose', 'strain', 'taken_at', 'note', 'via', 'temp', 'duration_h')
+              if k in body}
+
+    def go():
+        return core.trip(_garden(), fields, ended=body.get('ended_at'), dry_run=bool(body.get('dry_run')))
 
     return _guard(go)
 

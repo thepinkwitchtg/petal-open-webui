@@ -669,7 +669,7 @@ async def generate_moa_response(request: Request, form_data: dict, user=Depends(
 # >>> petal · hush · begin >>>
 ##################################
 #
-# 🌸 petal · hush  ·  v0.14.1  (petal-patch, grafted by petal-hush-apply.sh)
+# 🌸 petal · hush  ·  v0.15  (petal-patch, grafted by petal-hush-apply.sh)
 # Petal writes the whisper in the empty chat field, at runtime.
 # called directly through generate_chat_completion, like title
 # generation — never through the chat pipeline, so memory injection,
@@ -728,6 +728,12 @@ async def generate_moa_response(request: Request, form_data: dict, user=Depends(
 #           'temporary:…' (legacy 'local:'), so the old startswith('local') let
 #           temp chats through. every check now asks is_saved_chat_id() — temp
 #           and channel chats record nothing; the reasons she reads are unchanged.
+# v0.15 · the gentle stop (sprint contract 8): while the launcher tucks Petal in (a stop,
+#         a restart, a mode / model / profile switch) it leaves
+#         Petal-App-Data/petal-launcher/gentle-stop.json. as long as it's there the hush
+#         starts nothing new — no ask, no 'shorter please' retry — and answers
+#         {whisper: null, gentle_stop: true}, a quiet 200, so the page lets the pool carry
+#         the room and never counts it as a miss. work already in flight finishes.
 #
 ##################################
 
@@ -761,6 +767,35 @@ _PETAL_GROWN = _PetalPath(_PETAL_DATA_DIR) / 'petal' / 'hush-grown.json'
 _PETAL_PINS = _PetalPath(_PETAL_DATA_DIR) / 'petal' / 'hush-pins.jsonl'
 # every pulse, as rendered — how she wrote each message, keyed to Petal's reply
 _PETAL_PULSE = _PetalPath(_PETAL_DATA_DIR) / 'petal' / 'hush-pulse.jsonl'
+# the gentle stop (contract 8) — present while the launcher is putting Petal to bed
+_PETAL_GENTLE_STOP = (
+    _PetalPath(_petal_os.getenv('PETAL_APP_DATA') or '~/Gardens/Documents/Petal-App-Data').expanduser()
+    / 'petal-launcher'
+    / 'gentle-stop.json'
+)
+
+
+def _petal_gentle_stop():
+    """the launcher's note while Petal is being tucked in ({service, reason, since}), else None.
+    read fresh on every ask (a stat is nearly free), so the hush wakes the moment the file goes."""
+    try:
+        if not _PETAL_GENTLE_STOP.exists():
+            return None
+        return _petal_json.loads(_PETAL_GENTLE_STOP.read_text(encoding='utf-8')) or {}
+    except Exception:
+        return {}  # half-written or odd: still a stop
+
+
+def _petal_hush_resting(mode, stop):
+    why = (stop or {}).get('reason')
+    return {
+        'whisper': None,
+        'mode': mode,
+        'gentle_stop': True,
+        'reason': 'gentle stop — Petal is being tucked in' + (f' ({why})' if why else '') + ', the pool carries the room',
+    }
+
+
 # where the old copies lived — read only as a migration fallback, and reported while they linger
 _PETAL_SERVED = [
     ('served', _PetalPath(_PETAL_STATIC_DIR) / 'petal'),
@@ -1038,6 +1073,8 @@ def _petal_hush_unwrap(res):
 
 
 async def _petal_hush_ask(request, user, models, model_id, content):
+    if _petal_gentle_stop() is not None:  # a retry never starts while she's being tucked in
+        return 503, {'error': 'gentle stop — Petal is resting'}
     payload = {
         'model': model_id,
         'messages': [{'role': 'user', 'content': content}],
@@ -1284,6 +1321,10 @@ async def petal_hush(request: Request, form_data: dict, user=Depends(get_verifie
     mode = form_data.get('mode') if form_data.get('mode') in ('reply', 'linger') else 'open'
     if mode == 'linger' and not form_data.get('chat_id'):
         mode = 'open-linger'  # the new-chat page — you haven't begun yet
+    stop = _petal_gentle_stop()
+    if stop is not None:
+        log.info('petal hush[%s]: gentle stop — nothing asked', mode)
+        return _petal_hush_resting(mode, stop)
 
     if mode in ('reply', 'linger'):
         try:
@@ -1328,6 +1369,10 @@ async def petal_hush(request: Request, form_data: dict, user=Depends(get_verifie
 
     device, max_chars, max_words = _petal_hush_limits(form_data)
     stats.update({'device': device, 'max_chars': max_chars, 'max_words': max_words})
+    stop = _petal_gentle_stop()  # a reply wait can be long: look again right before asking
+    if stop is not None:
+        log.info('petal hush[%s]: gentle stop began while reading — nothing asked', mode)
+        return _petal_hush_resting(mode, stop)
     t0 = _petal_time.monotonic()
     code, body = await _petal_hush_ask(request, user, models, model_id, content)
     label = f'{_petal_hush_base(models, model_id)} · picked from {picked_by}'
