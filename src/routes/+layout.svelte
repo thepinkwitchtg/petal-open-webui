@@ -80,7 +80,8 @@
 		removeAllDetails
 	} from '$lib/utils';
 	import { setTextScale } from '$lib/utils/text-scale';
-	import { initializeTether, renewTetherSession } from '$lib/utils/tether';
+	import { installPetalToasts, PETAL_TOAST_MS } from '$lib/utils/petal-toast-touch'; // 🌸 abyssal toasts
+    import { initializeTether, renewTetherSession } from '$lib/utils/tether';
 
 	import NotificationToast from '$lib/components/NotificationToast.svelte';
 	import SyncStatsModal from '$lib/components/chat/Settings/SyncStatsModal.svelte';
@@ -1158,7 +1159,18 @@
 		}
 	};
 
+	// 🌸 abyssal toasts: under the petal skin the Toaster is always dark, colorless (petal css
+	// owns every color), short-lived, and leaves with one tap or one sideways flick
+	/** @type {HTMLElement} */
+	let toastHost;
+	/** @type {(() => void) | null} */
+	let unPetalToasts = null;
+	$: petalSkin = $theme === 'petal';
+	const coarsePointer =
+		typeof window !== 'undefined' && !!window.matchMedia?.('(pointer: coarse)').matches;
+
 	onMount(async () => {
+		unPetalToasts = installPetalToasts(toastHost);
 		const originalFetch = window.fetch.bind(window);
 		stopTether = await initializeTether(originalFetch);
 		window.fetch = async (input, init) => {
@@ -1499,6 +1511,7 @@
 	onDestroy(() => {
 		stopTether();
 		bc.close();
+		unPetalToasts?.();
 	});
 </script>
 
@@ -1553,23 +1566,36 @@
 	<SyncStatsModal bind:show={showSyncStatsModal} eventData={syncStatsEventData} />
 {/if}
 
-<div aria-live="polite">
-	<Toaster
-		theme={$theme.includes('dark')
-			? 'dark'
-			: $theme === 'system'
-				? window.matchMedia('(prefers-color-scheme: dark)').matches
-					? 'dark'
-					: 'light'
-				: 'light'}
-		richColors
-		position="top-right"
-		closeButton
-		toastOptions={{
-			classes: {
-				closeButton:
-					'!bg-white/80 !text-gray-500 !border-gray-200 hover:!bg-gray-50 hover:!text-gray-700 dark:!bg-gray-850 dark:!text-gray-400 dark:!border-gray-700 dark:hover:!bg-gray-800 dark:hover:!text-gray-200'
-			}
-		}}
-	/>
+<div aria-live="polite" bind:this={toastHost}>
+	{#if petalSkin}
+		<!-- 🌸 petal: toasts.css owns every color · the x stays in the DOM (the tap presses it) -->
+		<Toaster
+			theme="dark"
+			richColors={false}
+			position="top-right"
+			closeButton
+			expand={false}
+			duration={PETAL_TOAST_MS.default}
+			visibleToasts={coarsePointer ? 2 : 3}
+		/>
+	{:else}
+		<Toaster
+			theme={$theme.includes('dark')
+				? 'dark'
+				: $theme === 'system'
+					? window.matchMedia('(prefers-color-scheme: dark)').matches
+						? 'dark'
+						: 'light'
+					: 'light'}
+			richColors
+			position="top-right"
+			closeButton
+			toastOptions={{
+				classes: {
+					closeButton:
+						'!bg-white/80 !text-gray-500 !border-gray-200 hover:!bg-gray-50 hover:!text-gray-700 dark:!bg-gray-850 dark:!text-gray-400 dark:!border-gray-700 dark:hover:!bg-gray-800 dark:hover:!text-gray-200'
+				}
+			}}
+		/>
+	{/if}
 </div>
