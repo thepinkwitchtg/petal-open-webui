@@ -1,0 +1,171 @@
+/* ═══════════════════════════════════════════════════════════
+   🌸 petal · toasts  ·  v0.1  (sprint slice A5 · abyssal toasts)
+   every sonner toast as a small violet pill under the top bar.
+   pink lives in the glyph and the ring; the body stays violet.
+   no white surfaces, no gold, no amber.
+
+   sonner keeps nearly all of its own css in zero-specificity
+   :where(), and its mobile block (@media max-width: 600px) is one
+   attribute deep — html.petal outranks both, so nothing here needs
+   !important. its inline styles only set variables (--offset,
+   --width, --gap, --front-toast-height), which we simply don't read.
+
+   the tap / flick dismissal lives in src/lib/utils/petal-toast-touch.ts.
+   --petal-topbar-h is measured there each time the toaster appears.
+   nothing here animates while idle.
+   ═══════════════════════════════════════════════════════════ */
+
+html.petal [data-sonner-toaster] {
+	--petal-toast-top: calc(env(safe-area-inset-top, 0px) + var(--petal-topbar-h, 48px) + 6px);
+	font-family: var(--font-ui);
+}
+
+/* placement · just under the top bar, on its right — never over it */
+html.petal [data-sonner-toaster][data-y-position='top'] {
+	top: var(--petal-toast-top);
+}
+html.petal [data-sonner-toaster][data-x-position='right'] {
+	right: max(14px, env(safe-area-inset-right, 0px));
+	width: 340px;
+}
+
+/* ── the pill ─────────────────────────────────────────────── */
+html.petal [data-sonner-toaster] [data-sonner-toast][data-styled='true'] {
+	width: 100%;
+	padding: 11px 14px;
+	gap: 8px;
+	border: 1px solid transparent;
+	border-radius: var(--radius);
+	background:
+		linear-gradient(var(--obsidian-lit), var(--obsidian-lit)) padding-box,
+		var(--grad-hairline) border-box;
+	color: var(--pearl);
+	font-size: 13px;
+	box-shadow:
+		inset 0 1px 0 var(--glass-sheen),
+		0 12px 28px -14px oklch(0.06 0.05 var(--p-h-ground) / 0.85);
+	/* a sideways flick follows the finger (petal-toast-touch.ts sets --petal-dx);
+	   `translate` composes with sonner's own transform, so its motion is untouched */
+	translate: var(--petal-dx, 0px) 0;
+	transition:
+		transform 400ms,
+		opacity 400ms,
+		height 400ms,
+		box-shadow 200ms,
+		translate 220ms ease-out;
+}
+html.petal [data-sonner-toast][data-swiping='true'],
+html.petal [data-sonner-toast][data-petal-drag='true'] {
+	transition: none; /* fingers lead, nothing lags */
+}
+html.petal [data-sonner-toast][data-petal-drag='true'] {
+	opacity: var(--petal-fade, 1);
+}
+
+html.petal [data-sonner-toast] [data-title] {
+	color: var(--pearl);
+	font-size: 13px;
+	font-weight: 500;
+	line-height: 1.4;
+}
+html.petal [data-sonner-toast] [data-description] {
+	color: var(--mist);
+	font-size: 12px;
+	line-height: 1.4;
+	display: -webkit-box;
+	-webkit-box-orient: vertical;
+	-webkit-line-clamp: 2;
+	line-clamp: 2;
+	overflow: hidden;
+}
+
+/* ── types · the glyph carries the color, the body stays violet ── */
+html.petal [data-sonner-toast] [data-icon] {
+	color: var(--mist);
+}
+html.petal [data-sonner-toast][data-type='success'] [data-icon] {
+	color: var(--candy);
+}
+html.petal [data-sonner-toast][data-type='info'] [data-icon],
+html.petal [data-sonner-toast][data-type='warning'] [data-icon] {
+	color: var(--iris);
+}
+html.petal [data-sonner-toast][data-type='error'] [data-icon] {
+	color: var(--candy-deep);
+}
+/* error · a deeper ring, still no red fill */
+html.petal [data-sonner-toaster] [data-sonner-toast][data-styled='true'][data-type='error'] {
+	background:
+		linear-gradient(var(--obsidian-lit), var(--obsidian-lit)) padding-box,
+		linear-gradient(135deg, var(--candy), var(--candy-deep) 55%, var(--iris)) border-box;
+	box-shadow:
+		inset 0 1px 0 var(--glass-sheen),
+		0 0 0 1px oklch(0.607 calc(0.198 * var(--p-chroma)) var(--p-h-accent) / 0.18),
+		0 12px 28px -14px oklch(0.06 0.05 var(--p-h-ground) / 0.85);
+}
+
+/* ── the action · a gradient pill ───────────────────────────── */
+html.petal [data-sonner-toast] [data-button]:not([data-cancel]) {
+	height: 26px;
+	padding: 0 12px;
+	border: 0;
+	border-radius: 999px;
+	background: var(--grad-fill);
+	color: var(--abyss);
+	font-family: var(--font-ui);
+	font-size: 12px;
+	font-weight: 600;
+	cursor: pointer;
+}
+html.petal [data-sonner-toast] [data-cancel] {
+	height: 26px;
+	padding: 0 10px;
+	border-radius: 999px;
+	background: var(--obsidian);
+	color: var(--mist);
+}
+
+/* ── the x · small and petal-tinted with a mouse; gone under a thumb ── */
+html.petal [data-sonner-toast] [data-close-button] {
+	width: 18px;
+	height: 18px;
+	background: var(--obsidian);
+	color: var(--mist);
+	border: 1px solid var(--edge-lit);
+	transition:
+		color 140ms,
+		border-color 140ms,
+		opacity 140ms;
+}
+html.petal [data-sonner-toast] [data-close-button]:hover {
+	background: var(--obsidian);
+	color: var(--pearl);
+	border-color: oklch(0.711 0.214 var(--p-h-accent) / 0.55);
+}
+@media (pointer: coarse) {
+	/* kept in the DOM: one tap anywhere on the pill presses it */
+	html.petal [data-sonner-toast] [data-close-button] {
+		display: none;
+	}
+}
+
+/* ── the phone · sonner's own breakpoint ─────────────────────── */
+@media (max-width: 600px) {
+	html.petal [data-sonner-toaster] {
+		left: auto;
+		right: max(8px, env(safe-area-inset-right, 0px));
+		width: min(78vw, 320px);
+	}
+	html.petal [data-sonner-toaster][data-x-position='right'] {
+		right: max(8px, env(safe-area-inset-right, 0px));
+		width: min(78vw, 320px);
+	}
+	html.petal [data-sonner-toaster] [data-sonner-toast] {
+		left: 0;
+		right: 0;
+	}
+	html.petal [data-sonner-toaster] [data-sonner-toast][data-styled='true'] {
+		width: 100%;
+		padding: 10px 12px;
+	}
+}
