@@ -1058,6 +1058,59 @@ def record_harvest(garden: Garden, ref: str, part: str, folder: str, chats: int,
     return {'id': lines[-1]['id'], 'already': False}
 
 
+# ─────────────────────────────────────────────────────────────
+#  a trip, past or present, with her real end (slice A6 · same logic as petal-markers-past-trip.sh)
+# ─────────────────────────────────────────────────────────────
+def _trip_lines(view: View, body: dict, ended: Any, now: int) -> tuple[list[dict], View, str]:
+    """→ (lines, the view with them, status id) — nothing written. the start line, then her end:
+    later than the table's (or the table can't say) → an amend of ends_at · earlier → a status.end."""
+    start = new_lines(view, {**body, 'kind': 'status.start'}, now)
+    v1 = View([view.raw[i] for i in view.order] + start, view.table, view.settings, view.broken)
+    sid = start[-1]['id']
+    st = v1.events[sid]
+    lines = list(start)
+    if ended is not None:
+        end = _t(ended, 'ended_at')
+        taken = int(st['taken_at'])
+        if end <= taken:
+            raise MarkerError('the end comes before the ingestion')
+        if end > now + 600:
+            raise MarkerError('that end is in the future — leave it empty and the table carries it')
+        exp = st.get('ends_at')
+        base = {'via': body.get('via'), 'temp': bool(body.get('temp', False)), 'ref': sid}
+        if exp is None or end > int(exp):
+            lines += new_lines(v1, {**base, 'kind': 'amend', 'fields': {'ends_at': end},
+                                    'reason': 'her real end (later than the table)'}, now)
+        elif end < int(exp):
+            lines += new_lines(v1, {**base, 'kind': 'status.end', 'at': end}, now)
+    v2 = View([view.raw[i] for i in view.order] + lines, view.table, view.settings, view.broken)
+    return lines, v2, sid
+
+
+def trip(garden: Garden, body: dict, ended: Any = None, now: Optional[int] = None, dry_run: bool = False) -> dict:
+    """one door for a new status, past or present · dry_run previews the very same lines.
+    → {'id', 'timeline' (with phase), 'due': [parts the ledger may harvest], 'written'}"""
+    now = int(now if now is not None else time.time())
+    if dry_run:
+        lines, v2, sid = _trip_lines(build(garden), body, ended, now)
+        written = False
+    else:
+        with garden.locked():  # one lock: the start and its end land together
+            view = build(garden)
+            auto = auto_lines(view, now)
+            if auto:
+                garden.append(auto)
+                view = build(garden)
+            lines, v2, sid = _trip_lines(view, body, ended, now)
+            garden.append(lines)
+        v2, _ = settle(garden, now)  # this trip's own boundaries tell their story at once
+        written = True
+    tl = v2.status_timeline(v2.events[sid])
+    return {'id': sid if written else None, 'timeline': {**tl, 'phase': phase_at(tl, now)},
+            'due': [d['part'] for d in harvests_due(v2, now) if d['ref'] == sid],
+            'lines': [l['kind'] for l in lines], 'written': written}
+
+
 def write(garden: Garden, body: dict, now: Optional[int] = None) -> dict:
     """settle, validate, append → {'id', 'lines'} (the id is the request's own line)."""
     now = int(now if now is not None else time.time())
@@ -1270,6 +1323,37 @@ def _self_test() -> None:
                 ok += 1
         am = write(g, {'kind': 'amend', 'via': 'phone', 'ref': m6, 'fields': {'strain': 'enigma'}}, now=t7 + 6 * H)
         check(g.lines()[0][-1]['fields'].get('strain') == 'enigma', 'strain is amendable')
+
+        # A6 · a past trip from the chip: one lock, the start, then her real end (amend or end)
+        tp = t0 + 2500 * H
+        dry = trip(g, {'via': 'phone', 'substance': 'mushrooms', 'dose': '3.5', 'taken_at': tp}, ended=tp + 9 * H,
+                   now=tp + 30 * H, dry_run=True)
+        check(not dry['written'] and dry['lines'] == ['status.start', 'amend'] and dry['timeline']['end'] == tp + 9 * H,
+              'dry run: a later end → start + amend, nothing written')
+        check(not [e for e in g.lines()[0] if e.get('taken_at') == tp], 'the dry run touched nothing')
+        r = trip(g, {'via': 'phone', 'substance': 'mushrooms', 'dose': '3.5', 'taken_at': tp}, ended=tp + 9 * H, now=tp + 30 * H)
+        tlp = r['timeline']
+        check(r['written'] and tlp['end'] == tp + 9 * H and tlp['ended_by'] == 'auto', 'later end → the amended expected end')
+        check(tlp['integration']['opens_at'] == tp + int(0.75 * 9 * H) and tlp['phase'] == 'integration',
+              'integration follows her real length')
+        check(r['due'] == ['trip'], 'the trip part is due for the ledger at once')
+        r2 = trip(g, {'via': 'owui', 'substance': 'mushrooms', 'dose': '5', 'taken_at': tp + 200 * H}, ended=tp + 204 * H,
+                  now=tp + 300 * H)
+        check(r2['lines'] == ['status.start', 'status.end'] and r2['timeline']['end'] == tp + 204 * H
+              and r2['timeline']['ended_by'] == 'manual', 'earlier end → a manual status.end at her time')
+        check(r2['due'] == ['trip', 'integration'], 'long over: both parts due')
+        r3 = trip(g, {'via': 'owui', 'substance': 'mushrooms', 'dose': '3.5', 'taken_at': tp + 400 * H}, ended=tp + 406 * H,
+                  now=tp + 410 * H)
+        check(r3['lines'] == ['status.start'], 'an end equal to the table writes no correction')
+        r4 = trip(g, {'via': 'owui', 'substance': 'mushrooms', 'dose': '3.5', 'taken_at': tp + 500 * H}, now=tp + 500 * H + 60)
+        check(r4['lines'] == ['status.start'] and r4['timeline']['phase'] == 'peak', 'no end, taken now: an ordinary start')
+        for bad_end in (tp + 600 * H - 60, tp + 700 * H):
+            try:
+                trip(g, {'via': 'owui', 'substance': 'mushrooms', 'dose': '3', 'taken_at': tp + 600 * H}, ended=bad_end,
+                     now=tp + 650 * H, dry_run=True)
+                check(False, 'a bad end should be refused')
+            except MarkerError:
+                ok += 1
 
         # 1.1 · harvests: due once a window is over, written once per (ref, part), void = again
         due = harvests_due(build(g), t0 + 100 * H)

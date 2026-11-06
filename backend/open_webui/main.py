@@ -150,6 +150,7 @@ from open_webui.models.groups import Groups, resolve_group_default_models
 from open_webui.models.users import Users
 from open_webui.routers import petal_harvest  # 🌷 garden harvest
 from open_webui.routers import petal_markers  # 🌙 trip markers
+from open_webui.utils import petal_temp_chats  # 🧪 contract 0's times-only counter
 from open_webui.routers import (
     apps,
     analytics,
@@ -1315,6 +1316,7 @@ async def chat_completion(
                 create=True,
             ):
                 raise HTTPException(status_code=404, detail='Temporary chat expired or unavailable')
+            petal_temp_chats.note_opened(metadata['chat_id'])  # 🧪 the time it was opened, nothing else
 
         initial_title_generation = None
         if is_new_chat and tasks and TASKS.TITLE_GENERATION in tasks:
