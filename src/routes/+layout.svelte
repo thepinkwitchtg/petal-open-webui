@@ -11,6 +11,7 @@
 	import { createPyodideWorker } from '$lib/pyodide/createPyodideWorker';
 	import { toast } from 'svelte-sonner';
 	import Toaster from '$lib/components/common/Toaster.svelte';
+	import { Toaster as SonnerToaster } from 'svelte-sonner'; // 🌸 the petal skin's toasts (toasts.css)
 
 	let loadingProgress = spring(0, {
 		stiffness: 0.05
@@ -71,7 +72,8 @@
 	import { COMMUNITY_ORIGINS, WEBUI_API_BASE_URL, WEBUI_BASE_URL } from '$lib/constants';
 	import { bestMatchingLanguage, cleanText, getUserTimezone, removeAllDetails } from '$lib/utils';
 	import { setTextScale } from '$lib/utils/text-scale';
-	import { initializeTether, renewTetherSession } from '$lib/utils/tether';
+	import { installPetalToasts, PETAL_TOAST_MS } from '$lib/utils/petal-toast-touch'; // 🌸 abyssal toasts
+    import { initializeTether, renewTetherSession } from '$lib/utils/tether';
 
 	import NotificationToast from '$lib/components/NotificationToast.svelte';
 	import SyncStatsModal from '$lib/components/chat/Settings/SyncStatsModal.svelte';
@@ -911,7 +913,18 @@
 		}
 	};
 
+	// 🌸 abyssal toasts: under the petal skin the Toaster is always dark, colorless (petal css
+	// owns every color), short-lived, and leaves with one tap or one sideways flick
+	/** @type {HTMLElement} */
+	let toastHost;
+	/** @type {(() => void) | null} */
+	let unPetalToasts = null;
+	$: petalSkin = $theme === 'petal';
+	const coarsePointer =
+		typeof window !== 'undefined' && !!window.matchMedia?.('(pointer: coarse)').matches;
+
 	onMount(async () => {
+		unPetalToasts = installPetalToasts(toastHost);
 		const originalFetch = window.fetch.bind(window);
 		stopTether = await initializeTether(originalFetch);
 		window.fetch = async (input, init) => {
@@ -1265,6 +1278,7 @@
 	onDestroy(() => {
 		stopTether();
 		bc.close();
+		unPetalToasts?.();
 	});
 </script>
 
@@ -1319,6 +1333,20 @@
 	<SyncStatsModal bind:show={showSyncStatsModal} eventData={syncStatsEventData} />
 {/if}
 
-<div aria-live="polite">
-	<Toaster />
+<div aria-live="polite" bind:this={toastHost}>
+	{#if petalSkin}
+		<!-- 🌸 petal: toasts.css owns every color · the x stays in the DOM (the tap presses it) · sonner's own
+		     Toaster, never upstream's unstyled wrapper (0.13.5), so the petal css keeps its shapes -->
+		<SonnerToaster
+			theme="dark"
+			richColors={false}
+			position="top-right"
+			closeButton
+			expand={false}
+			duration={PETAL_TOAST_MS.default}
+			visibleToasts={coarsePointer ? 2 : 3}
+		/>
+	{:else}
+		<Toaster />
+	{/if}
 </div>

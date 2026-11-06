@@ -226,9 +226,8 @@ export const offerGatherUndo = async () => {
 		markSeen(fresh.map((e) => e.id)); // quiet: offered once, the latest only
 		const line = fresh[fresh.length - 1];
 		const where = String(line.folder ?? '').replace(/\//g, ' · ');
-		toast(`🌷 trip gathered · ${where}`, {
+		toast.message(`🌷 trip gathered · ${where}`, {
 			description: `${line.moved.length} chat${line.moved.length === 1 ? '' : 's'} moved into the trip folder`,
-			duration: 15000,
 			action: { label: 'undo', onClick: () => undoGather(line).catch((e) => toast.error(`🌷 ${e}`)) }
 		});
 	} catch {
