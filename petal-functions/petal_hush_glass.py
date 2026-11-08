@@ -2,7 +2,7 @@
 title: 🌸 petal · hush glass
 author: lily & claude
 description: total transparency for the pin — under every reply that answered a whisper, a source chip shows exactly the note Petal was given (the line you answered + its glow, lingers, device, presence), read from the private pin record and checked against her actual system prompt.
-version: 0.2
+version: 0.3
 required_open_webui_version: 0.12.0
 """
 
@@ -63,7 +63,7 @@ def _system_text(messages) -> str:
 
 class Filter:
     class Valves(BaseModel):
-        chip_name: str = Field(default='🌸 the whisper she answered', description='the source chip label')
+        chip_label: str = Field(default='👄 hush', description='the source chip label (emoji · system · what it did)')
         show_numbers: bool = Field(
             default=True, description='add a line under the note with the raw numbers sent with it'
         )
@@ -106,13 +106,13 @@ class Filter:
                 {
                     'type': 'source',
                     'data': {
-                        'source': {'name': self.valves.chip_name, 'id': f'petal-hush-pin-{message_id}'},
+                        'source': {'name': self.valves.chip_label, 'id': f'petal-hush-pin-{message_id}'},
                         'document': [doc],
                         'metadata': [
                             {
                                 # 0.12 groups chips by metadata.source and labels them with metadata.name
                                 'source': f'petal-hush-pin-{message_id}',
-                                'name': f"{self.valves.chip_name} · {rec.get('kind')}"
+                                'name': f"{self.valves.chip_label} · {rec.get('kind')} mode"
                                 + ('' if delivered else ' · ⚠ not delivered'),
                             }
                         ],
