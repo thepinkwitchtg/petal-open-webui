@@ -309,6 +309,7 @@ type Settings = {
 	userLocation?: any;
 	webSearch?: any;
 	memory?: boolean;
+	petalSight?: { thumbs?: boolean; notes?: boolean; debug?: boolean }; // 🌸👁 what Petal sees (slice A8)
 	autoTags?: boolean;
 	autoFollowUps?: boolean;
 	splitLargeChunks?(body: any, splitLargeChunks: any): unknown;

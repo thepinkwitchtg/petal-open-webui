@@ -152,6 +152,7 @@ from open_webui.routers import petal_harvest  # 🌷 garden harvest
 from open_webui.routers import petal_markers  # 🌙 trip markers
 from open_webui.utils import petal_temp_chats  # 🧪 contract 0's times-only counter
 from open_webui.utils import petal_gentle_stop  # 🌙 contract 8 · the outlet waits while Petal is tucked in
+from open_webui.utils import petal_state  # 🌸👁 what Petal sees of Lily's state (climaxes, thumbs, the trail)
 from open_webui.utils.petal_skin_cache import PetalSkinRevalidate  # 🌸 the skin always asks before reuse
 from open_webui.routers import (
     apps,
@@ -1712,6 +1713,10 @@ async def chat_completion(
                     return {'status': True, 'chat_id': metadata.get('chat_id'), 'paused': True}
 
                 await petal_gentle_stop.wait_for_petal(request, model, metadata)  # a stop may begin mid-retrieval
+                try:  # 🌸👁 slice A8: her state, assembled last so it's exactly what Petal reads
+                    await petal_state.apply(request, form_data, user, metadata, model)
+                except Exception as e:
+                    log.warning(f'🌸 petal state skipped: {e!r}')  # her state never breaks a message
                 response = await chat_completion_handler(request, form_data, user)
 
                 if isinstance(response, Response) and response.status_code >= 400:
