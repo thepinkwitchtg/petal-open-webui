@@ -2,7 +2,7 @@
 title: ✿ Petal Tool Traces
 author: Lily · the Pink Witch
 description: after every reply, tucks the tools Petal truly touched into one quiet source pastille — expand it to see each call (arguments + what came back). no chip = no tools. a reply that talks about a skill without opening one gets a ♡ pastille instead. traces live in the message's sources: you see them, she never re-reads them.
-version: 0.2.0
+version: 0.3.0
 """
 
 import json
@@ -87,11 +87,11 @@ class Filter:
         if not calls:
             content = msg.get("content") or ""
             if self.valves.flag_skill_mimicry and re.search(r"\bskills?\b", content, re.I):
-                await chip("♡ skill spoken · none opened",
+                await chip("📜 skills · spoken of, none opened",
                            "she spoke of a skill in this reply without calling view_skill —\n"
                            "she answered from the skill's one-line summary alone.")
             elif self.valves.chip_when_none:
-                await chip("◦ no tools", "no tools touched · answered from what she already held.")
+                await chip("📜 skills · none used", "no tools touched · answered from what she already held.")
             return body
 
         sections, labels = [], []
@@ -110,8 +110,6 @@ class Filter:
                 f"\n\narguments\n{_args(c.get('arguments'))}\n\nresult\n{result_txt}"
             )
 
-        lead = "✿" if any(c.get("name") == "view_skill" for c in calls) else "🔧"
-        uniq = list(dict.fromkeys(labels))
-        title = f"{lead} " + (uniq[0] if len(uniq) == 1 else f"{len(calls)} tools")
+        title = f"📜 skills used · {len(calls)} call" + ("s" if len(calls) != 1 else "")
         await chip(title, "\n\n".join(sections))
         return body
