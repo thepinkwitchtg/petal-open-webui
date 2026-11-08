@@ -2,7 +2,7 @@
 title: 🌸 petal · pulse
 author: lily & claude
 description: how she wrote, riding with every message — when she began, how long she wrote, typed / pasted / erased / sent, pauses, emptied fields, time looked away. numbers measured by hush.js, rendered through petal-lenses/hush-pulse.txt, set at the bottom of Petal's system message, with a source chip showing the note word for word.
-version: 0.1
+version: 0.2
 required_open_webui_version: 0.12.0
 """
 
@@ -78,7 +78,7 @@ class Filter:
         priority: int = Field(default=0, description='filter order — lower runs first')
         inject: bool = Field(default=True, description='set the pulse in her system message')
         chip: bool = Field(default=True, description='show the source chip under her reply')
-        chip_name: str = Field(default='🌸 how she wrote', description='the source chip label')
+        chip_label: str = Field(default='', description='the source chip label (empty: 📱 from mobile / 💻 from computer · wrote Ns · N% kept)')
         show_numbers: bool = Field(
             default=True, description='add a line under the note with the raw numbers recorded with it'
         )
@@ -125,17 +125,21 @@ class Filter:
                         f" · {rec.get('device')} · lens {rec.get('lens')}\n"
                         f'placed {placed}'
                     )
+                dev = str(rec.get('device') or '').lower()
+                label = self.valves.chip_label.strip() or (
+                    ('📱 from mobile' if dev in ('mobile', 'phone', 'tablet', 'touch') else '💻 from computer')
+                    + f" · wrote {rec.get('wrote_seconds')}s · {rec.get('kept_percent')}% kept")
                 await __event_emitter__(
                     {
                         'type': 'source',
                         'data': {
-                            'source': {'name': self.valves.chip_name, 'id': f'petal-pulse-{message_id}'},
+                            'source': {'name': label, 'id': f'petal-pulse-{message_id}'},
                             'document': [doc],
                             'metadata': [
                                 {
                                     # 0.12 groups chips by metadata.source and labels them with metadata.name
                                     'source': f'petal-pulse-{message_id}',
-                                    'name': self.valves.chip_name,
+                                    'name': label,
                                 }
                             ],
                         },
