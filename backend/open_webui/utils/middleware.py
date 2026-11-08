@@ -6541,8 +6541,17 @@ async def streaming_chat_response_handler(response, ctx):
                             'done': True,
                             'meta': {'response_ended_at': time.time()},
                             'output': current_output,
-                            # Petal · resolved system (persona + two-room memory) → training capture
-                            **({'system': metadata['system_prompt']} if metadata.get('system_prompt') else {}),
+                            # Petal · resolved system (persona + two-room memory) → training capture.
+                            # upstream renamed system_prompt → base_system_prompt (oct 9 'refac'), which
+                            # silently emptied this stamp; petal_state sets system_prompt to exactly what
+                            # Petal read (state lines included), base_system_prompt covers every other model
+                            **(
+                                {'system': metadata.get('system_prompt') or metadata['base_system_prompt']}
+                                if (metadata.get('system_prompt') or metadata.get('base_system_prompt'))
+                                else {}
+                            ),
+                            # Petal · the state lines she saw in the conversation (slice A8) → the ledger
+                            **({'petal_state': metadata['petal_state']} if metadata.get('petal_state') else {}),
                             **({'usage': usage} if usage else {}),
                         },
                     )
