@@ -769,7 +769,7 @@
 			<UserSettingRow
 				let:labelId
 				label="your thumbs"
-				description="after a rated reply she reads a quiet 👍 / 👎 note, so an ick you never said aloud can still reach her"
+				description="after a rated reply she reads a quiet 👍🏻 / 👎🏻 note, so an ick you never said aloud can still reach her"
 			>
 				<Switch ariaLabelledbyId={labelId} bind:state={sightThumbs} on:change={saveSight} />
 			</UserSettingRow>
