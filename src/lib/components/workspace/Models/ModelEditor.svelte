@@ -52,6 +52,7 @@
 	import ActionsSelector from '$lib/components/workspace/Models/ActionsSelector.svelte';
 	import Capabilities from '$lib/components/workspace/Models/Capabilities.svelte';
 	import Textarea from '$lib/components/common/Textarea.svelte';
+	import PetalStates from './PetalStates.svelte'; // 🌙 petal states panel (slice 9a)
 	import AccessControl from '../common/AccessControl.svelte';
 	import Spinner from '$lib/components/common/Spinner.svelte';
 	import ChevronLeft from '$lib/components/icons/ChevronLeft.svelte';
@@ -1555,6 +1556,7 @@
 											</button>
 										{/if}
 									</div>
+									<PetalStates bind:meta={info.meta} bind:system disabled={readOnly || historical} /> <!-- 🌙 petal states (slice 9a) -->
 									<!-- Previous labels retained for i18n extraction: {$i18n.t('Model Params')} -->
 									<div class="mt-2 space-y-0.5">
 										<button
