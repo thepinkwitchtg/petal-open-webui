@@ -38,6 +38,13 @@
 
 	// Addons
 	let enableMemory = false;
+
+	// 🌸👁 what Petal sees of you (slice A8) · saved with your settings, read by the server per request
+	let sightThumbs = true;
+	let sightNotes = true;
+	let sightDebug = false;
+	const saveSight = () =>
+		saveSettings({ petalSight: { thumbs: sightThumbs, notes: sightNotes, debug: sightDebug } });
 	let memories: Memory[] = [];
 	let loadingMemories = true;
 
@@ -368,6 +375,9 @@
 
 	onMount(async () => {
 		enableMemory = $settings?.memory ?? $config?.features?.enable_memories ?? false;
+		sightThumbs = $settings?.petalSight?.thumbs ?? true;
+		sightNotes = $settings?.petalSight?.notes ?? true;
+		sightDebug = $settings?.petalSight?.debug ?? false;
 		await loadMemories();
 	});
 </script>
@@ -752,6 +762,33 @@
 					{/if}
 				</div>
 			{/if}
+		</UserSettingSection>
+
+		<!-- 🌸👁 what Petal sees · the climax lines and the trail always ride; these are yours to quiet -->
+		<UserSettingSection title="🌸 what Petal sees">
+			<UserSettingRow
+				let:labelId
+				label="your thumbs"
+				description="after a rated reply she reads a quiet 👍 / 👎 note, so an ick you never said aloud can still reach her"
+			>
+				<Switch ariaLabelledbyId={labelId} bind:state={sightThumbs} on:change={saveSight} />
+			</UserSettingRow>
+			<UserSettingRow
+				let:labelId
+				className="mt-2"
+				label="show my notes"
+				description="the words you left with a thumb ride with it"
+			>
+				<Switch ariaLabelledbyId={labelId} bind:state={sightNotes} disabled={!sightThumbs} on:change={saveSight} />
+			</UserSettingRow>
+			<UserSettingRow
+				let:labelId
+				className="mt-2"
+				label="show what was added"
+				description="a 🌸 chip under her reply with exactly what she read about you (debug)"
+			>
+				<Switch ariaLabelledbyId={labelId} bind:state={sightDebug} on:change={saveSight} />
+			</UserSettingRow>
 		</UserSettingSection>
 	</div>
 

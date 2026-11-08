@@ -99,6 +99,9 @@ SETTINGS_DEFAULT: dict = {
     'integration_from': 0.75,
     'integration_tail_h': 72,
     'manual_integration_h': 72,
+    # what Petal reads of the climax trail (slice A8 · petal_state.py): the last trail_days of
+    # climax times, `charges` per rolling charge_window_h, none until cooldown_h after the last
+    'climax': {'trail_days': 3, 'charges': 1, 'charge_window_h': 24, 'cooldown_h': 0},
 }
 
 KINDS = ('status.start', 'status.end', 'integration.start', 'integration.end', 'climax', 'amend', 'void',
