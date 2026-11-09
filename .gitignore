@@ -327,3 +327,5 @@ backend/open_webui/static/custom.css
 
 # 🌸 petal masters — source art lives in ~/petal-assets/
 petal-master*.png
+backend/open_webui/static/fonts/SamsungColorEmoji.ttf
+static/static/petal/fonts/SamsungColorEmoji.ttf
