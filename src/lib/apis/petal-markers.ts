@@ -47,9 +47,15 @@ export type MarkerTimeline = {
 	phase?: 'upcoming' | 'peak' | 'active' | 'integration' | 'over';
 };
 
+// A11 · ✧ an orbit's outcome once she knows it (null = still open)
+export type Outcome = 'held' | 'leaked' | null;
+
 export type MarkerWindow = {
 	id: string;
-	source: 'status' | 'manual';
+	source: 'status' | 'manual' | 'orbit'; // an orbit window's id is the orbit's own id
+	outcome?: Outcome;
+	chat_id?: string | null;
+	message_id?: string | null;
 	status_ref?: string;
 	status?: MarkerTimeline; // the status a derived window grew from (👽 stays reachable after its end)
 	label: string | null;
@@ -77,7 +83,8 @@ export type MarkersNow = {
 	now: number;
 	status: MarkerTimeline | null;
 	also: MarkerTimeline[];
-	integration: MarkerWindow | null;
+	integration: MarkerWindow | null; // a trip's (or a hand-opened) window leads, an orbit's follows
+	integrations?: MarkerWindow[]; // every open window
 	last_dose: Record<string, string>;
 	table: MarkerSubstance[];
 };

@@ -11,6 +11,9 @@ home: $PETAL_APP_DATA/trip-markers/   (default ~/Gardens/Documents/Petal-App-Dat
 
 reading rule: replay the file in order, applying `amend` and `void` by `ref`.
 derived phases (peak · active · integration · over) are computed on read, never typed.
+✧ an `orbit` (slice A11, the primary gesture) carries its outcome open (null) until she says
+held or leaked (an amend), and opens its own integration window (climax.orbit_integration_h).
+🌊 a spill is the `climax` kind, relabeled in the UI: past lines are never rewritten.
 auto-transitions: the first reader that notices a boundary was crossed writes the
 matching line (via "auto"), so the log tells the story too. no timers, no daemons.
 
@@ -100,13 +103,20 @@ SETTINGS_DEFAULT: dict = {
     'integration_tail_h': 72,
     'manual_integration_h': 72,
     # what Petal reads of the climax trail (slice A8 · petal_state.py): the last trail_days of
-    # climax times, `charges` per rolling charge_window_h, none until cooldown_h after the last
-    'climax': {'trail_days': 3, 'charges': 1, 'charge_window_h': 24, 'cooldown_h': 0},
+    # climax times, `charges` per rolling charge_window_h, none until cooldown_h after the last.
+    # slice A11 · an orbit opens its own integration window (orbit_integration_h, 0 = none) and
+    # spends orbit_spends[outcome] of a charge (a spill spends 1); orbit_trail_days feeds the trail
+    'climax': {'trail_days': 3, 'charges': 1, 'charge_window_h': 24, 'cooldown_h': 0,
+               'orbit_integration_h': 12, 'orbit_spends': {'held': 0, 'leaked': 0.5, 'unknown': 0},
+               'orbit_trail_days': 7},
 }
+CLIMAX_DEFAULT: dict = SETTINGS_DEFAULT['climax']
 
 KINDS = ('status.start', 'status.end', 'integration.start', 'integration.end', 'climax', 'amend', 'void',
          'harvest',              # 1.1 · written by petal-ledger once per (status, part)
-         'mutation', 'purge')    # 1.2 · 👽 the monsters are declared (never shortens) · the trip may close early
+         'mutation', 'purge',    # 1.2 · 👽 the monsters are declared (never shortens) · the trip may close early
+         'orbit')                # A11 · ✧ the primary gesture: outcome open (null) → held | leaked
+OUTCOMES = ('held', 'leaked')    # an orbit's outcome once she knows it (null = still open)
 # 'auto' is the reader's own, never accepted from a client · 'ledger' is petal-ledger's (1.1)
 VIA = ('owui', 'phone', 'petal', 'hand', 'ledger')
 HARVEST_PARTS = ('trip', 'integration')
@@ -119,6 +129,7 @@ AMENDABLE = {
     'integration.start': ('at', 'label', 'note'),
     'integration.end': ('at',),
     'climax': ('note',),
+    'orbit': ('outcome', 'note'),
     'mutation': ('at', 'note'),
     'purge': ('at', 'note'),
 }
@@ -141,6 +152,23 @@ def anchor_id(status_id: str) -> str:
 
 def app_data_root() -> Path:
     return Path(os.environ.get('PETAL_APP_DATA') or '~/Gardens/Documents/Petal-App-Data').expanduser()
+
+
+def climax_knobs(settings: Optional[dict]) -> dict:
+    """settings.json → climax, every knob present (hers win when they make sense, the defaults
+    fill the rest: a file planted before a knob existed still reads whole)."""
+    c = (settings or {}).get('climax')
+    c = c if isinstance(c, dict) else {}
+    out = copy.deepcopy(CLIMAX_DEFAULT)
+    for k, v in c.items():
+        if k == 'orbit_spends':
+            if isinstance(v, dict):
+                for o, w in v.items():
+                    if o in out['orbit_spends'] and isinstance(w, (int, float)) and not isinstance(w, bool) and w >= 0:
+                        out['orbit_spends'][o] = w
+        elif k in out and isinstance(v, (int, float)) and not isinstance(v, bool) and v >= 0:
+            out[k] = v
+    return out
 
 
 # ─────────────────────────────────────────────────────────────
@@ -524,6 +552,24 @@ class View:
             })
         return out
 
+    def orbit_windows(self) -> list[dict]:
+        """A11 · every live orbit opens an integration window of climax.orbit_integration_h; a hand
+        `integration.end` (ref = the orbit) closes it early, and the reader closes it on time."""
+        tail = float(climax_knobs(self.settings)['orbit_integration_h']) * H
+        if tail <= 0:
+            return []
+        out = []
+        for e in self.of_kind('orbit'):
+            hand = [int(x['at']) for x in self.refs('integration.end', e['id']) if x.get('via') != 'auto']
+            close = min(hand) if hand else int(e['at'] + tail)
+            out.append({
+                'id': e['id'], 'source': 'orbit', 'label': '✧ orbit', 'note': e.get('note'),
+                'outcome': e.get('outcome'), 'chat_id': e.get('chat_id'), 'message_id': e.get('message_id'),
+                'opens_at': int(e['at']), 'closes_at': close, 'closed_by': 'manual' if hand else 'auto',
+                'temp': bool(e.get('temp')), 'empty': close <= int(e['at']),
+            })
+        return out
+
     def timelines(self) -> list[dict]:
         return sorted((self.status_timeline(s) for s in self.of_kind('status.start')), key=lambda t: t['taken_at'])
 
@@ -587,7 +633,7 @@ def auto_lines(view: View, now: int) -> list[dict]:
         if (ig and not ig['empty'] and ig['closed_by'] == 'auto' and now >= ig['closes_at'] and anchored
                 and not _already_at(view, 'integration.end', anchor, ig['closes_at'])):
             out.append(line('integration.end', ig['closes_at'], temp=tl['temp'], ref=anchor))
-    for w in view.manual_windows():
+    for w in view.manual_windows() + view.orbit_windows():
         if w['closed_by'] == 'auto' and now >= w['closes_at'] and not _already(view, 'integration.end', w['id']):
             out.append(line('integration.end', w['closes_at'], temp=w['temp'], ref=w['id']))
     return sorted(out, key=lambda e: e['at'])
@@ -622,10 +668,11 @@ def now_view(view: View, now: int) -> dict:
                                  'label': f"{tl['emoji']} {tl['label']}", 'note': None,
                                  'opens_at': ig['opens_at'], 'closes_at': ig['closes_at'],
                                  'closed_by': ig['closed_by'], 'temp': tl['temp']})
-    for w in view.manual_windows():
+    for w in view.manual_windows() + view.orbit_windows():
         if not w['empty'] and w['opens_at'] <= now < w['closes_at']:
             open_windows.append(w)
-    open_windows.sort(key=lambda w: w['opens_at'], reverse=True)
+    # a trip's (or a hand-opened) window leads; an orbit's flavors from behind (A11)
+    open_windows.sort(key=lambda w: (w['source'] == 'orbit', -w['opens_at']))
 
     # the last dose used per substance, so a repeat is one tap (numbers, from her own log)
     last: dict[str, Any] = {}
@@ -638,6 +685,7 @@ def now_view(view: View, now: int) -> dict:
         'status': current[0] if current else None,
         'also': current[1:],
         'integration': open_windows[0] if open_windows else None,
+        'integrations': open_windows,
         'last_dose': last,
     }
 
@@ -692,7 +740,11 @@ def stats(view: View, lo: int, hi: int, now: int) -> dict:
         ig = tl['integration']
         if ig and not ig['empty']:
             integ.append((ig['opens_at'], ig['closes_at']))
-    integ += [(w['opens_at'], w['closes_at']) for w in view.manual_windows() if not w['empty']]
+    integ += [(w['opens_at'], w['closes_at']) for w in view.manual_windows() + view.orbit_windows() if not w['empty']]
+    orbits = {'held': 0, 'leaked': 0, 'open': 0}
+    for e in view.of_kind('orbit'):
+        if lo <= int(e['at']) <= hi:
+            orbits[e.get('outcome') if e.get('outcome') in OUTCOMES else 'open'] += 1
 
     return {
         'from': lo, 'to': hi,
@@ -707,6 +759,8 @@ def stats(view: View, lo: int, hi: int, now: int) -> dict:
             'in_integration': _union_hours(integ, lo, hi_eff),
         },
         'climaxes': counts['climax'],
+        'spills': counts['climax'],  # A11 · the same lines, her word for them
+        'orbits': orbits,
         'broken_lines': view.broken,
         'duplicate_ids': view.dupes,
     }
@@ -942,7 +996,7 @@ def new_lines(view: View, body: dict, now: int) -> list[dict]:
             pre.append({'id': ref, 'kind': 'integration.start', 'at': ig['opens_at'], 'written_at': now,
                         'via': 'auto', 'temp': tl['temp'], 'label': f"{tl['emoji']} {tl['label']}", 'note': None})
             opened = ig['opens_at']
-        elif target['kind'] != 'integration.start':
+        elif target['kind'] not in ('integration.start', 'orbit'):
             raise MarkerError('ref should be an integration window')
         else:
             opened = int(target['at'])
@@ -954,6 +1008,21 @@ def new_lines(view: View, body: dict, now: int) -> list[dict]:
         ev.update(chat_id=_s(body.get('chat_id'), 'chat_id', 200, required=True),
                   message_id=_s(body.get('message_id'), 'message_id', 200, required=True),
                   note=_s(body.get('note'), 'note', 2000))
+
+    elif kind == 'orbit':
+        # contract 0: an orbit is her explicit act, honored anywhere; in a temp chat it's kept
+        # without any chat/message link (temp: true)
+        chat_id = None if temp else _s(body.get('chat_id'), 'chat_id', 200)
+        message_id = None if temp else _s(body.get('message_id'), 'message_id', 200)
+        if message_id and not chat_id:
+            raise MarkerError('message_id needs its chat_id')
+        outcome = body.get('outcome')
+        if outcome is not None and outcome not in OUTCOMES:
+            raise MarkerError('outcome should be held, leaked, or null (still open)')
+        if message_id and any(e.get('message_id') == message_id and e.get('chat_id') == chat_id
+                              for e in view.of_kind('orbit')):
+            raise MarkerError('this reply already carries an orbit')
+        ev.update(chat_id=chat_id, message_id=message_id, outcome=outcome, note=_s(body.get('note'), 'note', 2000))
 
     elif kind == 'amend':
         ref = body.get('ref') or ''
@@ -981,6 +1050,10 @@ def new_lines(view: View, body: dict, now: int) -> list[dict]:
                 clean[k] = _s(v, k, 32)
             elif k == 'strain':
                 clean[k] = _strain_key(view.table, fields.get('substance', target.get('substance')), v)
+            elif k == 'outcome':
+                if v is not None and v not in OUTCOMES:
+                    raise MarkerError('outcome should be held, leaked, or null (still open)')
+                clean[k] = v
             else:
                 clean[k] = _s(v, k, 2000 if k == 'note' else 120)
         if target['kind'] == 'status.start' and 'substance' in clean and 'strain' not in clean:
@@ -1428,6 +1501,62 @@ def _self_test() -> None:
         check(st['counts']['status.start'] == 7 and st['counts']['void'] == 5 and st['counts']['harvest'] == 0
               and st['counts']['mutation'] == 1 and st['counts']['purge'] == 1, 'stats count the live view')
         check(st['statuses_per_tier'].get('lsd≥500') == 1, 'tiers counted by threshold, not by text')
+
+        # ── A11 · ✧ the orbit: outcome open → held | leaked, its own integration window ──
+        g2 = Garden(Path(d) / 'orbits')
+        g2.ensure()
+        to = 2_000_000_000
+        o1 = write(g2, {'kind': 'orbit', 'via': 'owui', 'chat_id': 'c1', 'message_id': 'm1'}, now=to)['id']
+        e1 = build(g2).events[o1]
+        check(e1['outcome'] is None and e1['chat_id'] == 'c1' and not e1['temp'], 'an orbit lands with its outcome open')
+        for bad, why in (({'chat_id': 'c1', 'message_id': 'm1'}, 'one orbit per reply'),
+                         ({'message_id': 'm9'}, 'a message needs its chat'),
+                         ({'chat_id': 'c1', 'message_id': 'm2', 'outcome': 'spilled'}, 'outcome is held | leaked | null')):
+            try:
+                write(g2, {'kind': 'orbit', 'via': 'owui', **bad}, now=to + 60)
+                check(False, why)
+            except MarkerError:
+                check(True, why)
+        ot = write(g2, {'kind': 'orbit', 'via': 'phone', 'temp': True, 'chat_id': 'local:x', 'message_id': 'q'}, now=to + 120)['id']
+        et = build(g2).events[ot]
+        check(et['temp'] and et['chat_id'] is None and et['message_id'] is None, 'contract 0: a temp orbit keeps no link')
+        n = now_view(build(g2), to + H)
+        check(n['integration']['source'] == 'orbit' and n['integration']['id'] == ot
+              and n['integration']['closes_at'] == to + 120 + 12 * H and len(n['integrations']) == 2,
+              'each orbit opens its own integration window (12 h by default), the newest leads')
+        write(g2, {'kind': 'amend', 'via': 'owui', 'ref': o1, 'fields': {'outcome': 'held'}}, now=to + 2 * H)
+        check(build(g2).events[o1]['outcome'] == 'held', 'one tap later: held')
+        try:
+            write(g2, {'kind': 'amend', 'via': 'owui', 'ref': o1, 'fields': {'outcome': 'maybe'}}, now=to + 2 * H)
+            check(False, 'a strange outcome is refused')
+        except MarkerError:
+            check(True, 'a strange outcome is refused')
+        v2, w2 = settle(g2, to + 13 * H)
+        ends = sorted((e['ref'], e['at']) for e in w2 if e['kind'] == 'integration.end')
+        check(ends == sorted([(o1, to + 12 * H), (ot, to + 120 + 12 * H)]), 'the reader closes each orbit window on time')
+        check(settle(g2, to + 14 * H)[1] == [], 'and only once')
+        o3 = write(g2, {'kind': 'orbit', 'via': 'owui'}, now=to + 20 * H)['id']
+        write(g2, {'kind': 'integration.end', 'via': 'owui', 'ref': o3}, now=to + 21 * H)
+        w3 = [w for w in build(g2).orbit_windows() if w['id'] == o3][0]
+        check(w3['closes_at'] == to + 21 * H and w3['closed_by'] == 'manual', 'closed early by hand')
+        check(not [e for e in settle(g2, to + 40 * H)[1] if e.get('ref') == o3], 'a hand close is never doubled')
+        mi = write(g2, {'kind': 'integration.start', 'via': 'owui'}, now=to + 60 * H)['id']
+        o4 = write(g2, {'kind': 'orbit', 'via': 'owui'}, now=to + 61 * H)['id']
+        n = now_view(build(g2), to + 62 * H)
+        check(n['integration']['id'] == mi and [w['id'] for w in n['integrations']] == [mi, o4],
+              "a hand-opened (or a trip's) window leads, the orbit's flavors from behind")
+        write(g2, {'kind': 'void', 'via': 'owui', 'ref': o4}, now=to + 62 * H)
+        check(o4 not in [w['id'] for w in build(g2).orbit_windows()], 'a voided orbit opens nothing')
+        write(g2, {'kind': 'orbit', 'via': 'owui', 'outcome': 'leaked'}, now=to + 63 * H)
+        st2 = stats(build(g2), to, to + 70 * H, to + 70 * H)
+        check(st2['orbits'] == {'held': 1, 'leaked': 1, 'open': 2} and st2['spills'] == 0 and numbers_only(st2),
+              'stats: orbits by outcome, numbers only')
+        K = climax_knobs({'climax': {'trail_days': 5, 'charges': 'two', 'orbit_spends': {'leaked': 1, 'held': -1}}})
+        check(K['trail_days'] == 5 and K['charges'] == 1 and K['orbit_integration_h'] == 12
+              and K['orbit_spends'] == {'held': 0, 'leaked': 1, 'unknown': 0}, 'knobs: hers win when sane, defaults fill the rest')
+        check(climax_knobs({'climax': {'trail_days': 3}})['orbit_trail_days'] == 7, 'a file planted before A11 reads whole')
+        g2.settings_path.write_text(json.dumps({'climax': {'orbit_integration_h': 0}}))
+        check(build(g2).orbit_windows() == [], 'orbit_integration_h 0 → no window')
 
     print(f'🌙 petal markers core · self-test · {ok} checks bloomed, none wilted')
 

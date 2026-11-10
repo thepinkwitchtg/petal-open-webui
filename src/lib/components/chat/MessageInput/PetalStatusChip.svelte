@@ -26,6 +26,7 @@
 		phaseAt,
 		offerGatherUndo,
 		refreshMarkers,
+		setOutcome,
 		span,
 		writeMarker,
 		writeTrip
@@ -100,7 +101,7 @@
 				tier: s.tier?.label ?? null
 			}
 		: ig
-			? { emoji: '🌙', word: 'integration', left: span(ig.closes_at - t), tier: null }
+			? { emoji: ig.source === 'orbit' ? '✧' : '🌙', word: 'integration', left: span(ig.closes_at - t), tier: null }
 			: null;
 
 	$: chipTitle = s
@@ -108,7 +109,7 @@
 				s.end !== null ? ` · ends ${clock(s.end, t)}` : ''
 			}${ig ? ' · integration open' : ''}`
 		: ig
-			? `integration · closes ${clock(ig.closes_at, t)}`
+			? `${ig.source === 'orbit' ? `✧ orbit · ${ig.outcome ?? 'open'} · ` : ''}integration · closes ${clock(ig.closes_at, t)}`
 			: $markersError
 				? `trip markers: ${$markersError}`
 				: 'what are you on? ✧';
@@ -477,6 +478,13 @@
 			undoable('🌙 integration closed', r.id);
 		});
 
+	// A11 · ✧ an orbit's window: its outcome is one tap here too (tap the lit one again → open)
+	const OUTCOMES = ['held', 'leaked'] as const;
+	const pickOutcome = (id: string, outcome: 'held' | 'leaked' | null) =>
+		act(async () => {
+			await setOutcome(id, outcome);
+		});
+
 	const openIntegration = () =>
 		act(async () => {
 			const r = await writeMarker({ kind: 'integration.start', temp: temporary });
@@ -690,14 +698,31 @@
 			{#if ig}
 				<section class="pmk-card integ">
 					<header class="pmk-head">
-						<span class="pmk-big" aria-hidden="true">🌙</span>
+						<span class="pmk-big" aria-hidden="true">{ig.source === 'orbit' ? '✧' : '🌙'}</span>
 						<div class="pmk-title">
 							<div class="pmk-name">integration</div>
 							<div class="pmk-soft">
-								{ig.label ?? 'opened by hand'} · closes {clock(ig.closes_at, t)} · {span(ig.closes_at - t)}
+								{ig.label ?? 'opened by hand'}{ig.source === 'orbit' ? ` · ${clock(ig.opens_at, t)}` : ''} · closes {clock(
+									ig.closes_at,
+									t
+								)} · {span(ig.closes_at - t)}
 							</div>
 						</div>
 					</header>
+					{#if ig.source === 'orbit'}
+						<div class="pmk-outcome" role="group" aria-label="the orbit's outcome">
+							{#each OUTCOMES as o (o)}
+								<button
+									type="button"
+									class="pmk-pill"
+									class:on={ig.outcome === o}
+									disabled={busy}
+									on:click={() => ig && pickOutcome(ig.id, ig.outcome === o ? null : o)}>{o}</button
+								>
+							{/each}
+							{#if !ig.outcome}<span class="pmk-soft">open</span>{/if}
+						</div>
+					{/if}
 					<div class="pmk-actions">
 						{#if ig.status && mutationOpen(ig.status)}
 							<button
@@ -1201,6 +1226,28 @@
 	.pmk-actions.foot {
 		padding-top: 0.15rem;
 	}
+	.pmk-outcome {
+		display: flex;
+		align-items: center;
+		gap: 0.4rem;
+	}
+	.pmk-pill {
+		min-height: 2.25rem;
+		min-width: 4.5rem;
+		padding: 0 0.85rem;
+		border-radius: 999px;
+		border: 1px solid var(--edge-soft, #2a2433);
+		background: var(--abyss, #0c0910);
+		color: var(--mist, #cfc3cc);
+		font-size: 0.78rem;
+	}
+	.pmk-pill.on {
+		border-color: transparent;
+		background:
+			linear-gradient(var(--obsidian-lit, #1d1724), var(--obsidian-lit, #1d1724)) padding-box,
+			var(--grad-hairline, linear-gradient(135deg, #f9c6dc, #f472b6 45%, #a873f0)) border-box;
+		color: var(--pearl, #f6eef3);
+	}
 	.pmk-soft-btn,
 	.pmk-go,
 	.pmk-sub {
@@ -1425,10 +1472,14 @@
 		}
 		.pmk-soft-btn,
 		.pmk-go,
-		.pmk-sub {
+		.pmk-sub,
+		.pmk-pill {
 			min-height: 1.7rem;
 			padding: 0 0.6rem;
 			font-size: 0.71rem;
+		}
+		.pmk-pill {
+			min-width: 3.6rem;
 		}
 		.pmk-soft-btn.tight {
 			padding: 0 0.3rem;

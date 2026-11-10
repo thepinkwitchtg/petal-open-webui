@@ -1284,7 +1284,10 @@
 		chat.id === $page.params.id &&
 		(!fullWidthTabs || mainChatActive)
 	) {
-		const target = $page.url.searchParams.get('message');
+		// 🌸 /c/<chat>#<message> (the diary's jumps) reveals a message just like ?message=
+		const target =
+			$page.url.searchParams.get('message') ||
+			(/^#[\w-]{8,}$/.test($page.url.hash) ? $page.url.hash.slice(1) : null);
 		const key = `${chat.id}:${target}`;
 		if (target && history.messages[target] && key !== revealedSearchMessage) {
 			revealedSearchMessage = key;

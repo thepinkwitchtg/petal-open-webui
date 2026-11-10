@@ -45,6 +45,7 @@ from open_webui.utils.headers import get_headers_and_cookies, include_user_info_
 from open_webui.utils.json_codec import JSONCodec
 from open_webui.utils.misc import convert_logit_bias_input_to_json, get_provider_function, merge_tool_call_batches
 from open_webui.utils.model_ids import strip_provider_model_prefix
+from open_webui.utils import petal_eyes  # 👁 slice A10
 from open_webui.utils.payload import (
     apply_model_params_to_body_openai,
     apply_system_prompt_to_body,
@@ -1573,7 +1574,10 @@ async def generate_chat_completion(
     if not is_streaming_request:
         payload.pop('stream_options', None)
 
-    payload = JSONCodec.dumps(payload)
+    # 🌸👁 slice A10: serialized once, these exact bytes are sent, and her eyes keep them
+    # (req_sha = sha256(bytes), the same hash petal-spill keeps at the source)
+    payload = JSONCodec.dumps(payload).encode('utf-8')
+    petal_eyes.see(metadata, payload, model=form_data.get('model'), url=request_url)
 
     r = None
     streaming = False

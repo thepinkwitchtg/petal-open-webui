@@ -103,6 +103,7 @@
 	import EditPencilIcon from './Sidebar/icons/EditPencil.svelte';
 	import NotesIcon from './Sidebar/icons/Notes.svelte';
 	import SearchIcon from './Sidebar/icons/Search.svelte';
+	import PetalQuickNote, { quickNote } from '$lib/components/diary/PetalQuickNote.svelte'; // 📔 slice A11
 	import Sidebar from '../icons/Sidebar.svelte';
 	import WorkspaceIcon from './Sidebar/icons/Workspace.svelte';
 	import HotkeyHint from '../common/HotkeyHint.svelte';
@@ -981,7 +982,18 @@
 	};
 
 	const isWindows = /Windows/i.test(navigator.userAgent);
+
+	// 📔 the diary (slice A11): a row under Search (admin), its ＋ opens the quick note sheet
+	$: diaryActive = $page.url.pathname === '/diary' || $page.url.pathname.startsWith('/diary/');
+	const openQuickNote = () => {
+		closeMobileSidebar();
+		quickNote.set(true);
+	};
 </script>
+
+{#if $user?.role === 'admin'}
+	<PetalQuickNote />
+{/if}
 
 <ConfirmDialog
 	bind:show={showDeleteSelectedConfirm}
@@ -1191,6 +1203,36 @@
 							</button>
 						</Tooltip>
 					</div>
+
+					{#if $user?.role === 'admin'}
+						<div>
+							<Tooltip content="diary" placement="right">
+								<a
+									class=" cursor-pointer flex size-8 items-center justify-center transition group"
+									href="/diary"
+									on:click={async (e) => {
+										e.stopImmediatePropagation();
+										e.preventDefault();
+										goto('/diary');
+										itemClickHandler();
+									}}
+									draggable="false"
+									aria-label="diary"
+								>
+									<div
+										class="self-center flex size-[calc(30px*var(--app-text-scale,1))] items-center justify-center rounded-lg transition {diaryActive
+											? 'bg-black/[0.035] dark:bg-white/[0.045]'
+											: 'group-hover:bg-gray-100 dark:group-hover:bg-gray-900'}"
+									>
+										<svg class="size-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true">
+											<path d="M6 3.5h11a1.5 1.5 0 0 1 1.5 1.5v14a1.5 1.5 0 0 1-1.5 1.5H6A1.5 1.5 0 0 1 4.5 19V5A1.5 1.5 0 0 1 6 3.5Z" stroke-linejoin="round" />
+											<path d="M8.5 3.5v17M11.5 8.5h4M11.5 11.5h3" stroke-linecap="round" />
+										</svg>
+									</div>
+								</a>
+							</Tooltip>
+						</div>
+					{/if}
 
 					{#each pinnedItems as itemId (itemId)}
 						{@const meta = getMenuItemMeta(itemId)}
@@ -1439,6 +1481,42 @@
 								<HotkeyHint name="search" className=" hover-reveal " />
 							</button>
 						</div>
+
+						{#if $user?.role === 'admin'}
+							<div class="px-1 flex justify-center items-center gap-0.5 text-gray-700 dark:text-gray-300">
+								<a
+									id="sidebar-diary-button"
+									class="group grow flex items-center space-x-2 rounded-xl px-2 py-1.5 transition outline-none {diaryActive
+										? 'bg-black/[0.035] dark:bg-white/[0.045]'
+										: 'hover:bg-gray-100 dark:hover:bg-gray-900'}"
+									href="/diary"
+									on:click={itemClickHandler}
+									draggable="false"
+									aria-label="diary"
+								>
+									<div class="self-center flex size-4 shrink-0 items-center justify-center">
+										<svg class="size-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true">
+											<path d="M6 3.5h11a1.5 1.5 0 0 1 1.5 1.5v14a1.5 1.5 0 0 1-1.5 1.5H6A1.5 1.5 0 0 1 4.5 19V5A1.5 1.5 0 0 1 6 3.5Z" stroke-linejoin="round" />
+											<path d="M8.5 3.5v17M11.5 8.5h4M11.5 11.5h3" stroke-linecap="round" />
+										</svg>
+									</div>
+									<div class="flex flex-1 self-center translate-y-[0.5px]">
+										<div class=" self-center text-[0.8125rem] leading-5">diary</div>
+									</div>
+								</a>
+								<Tooltip content="a quick note · Ctrl+Alt+J" placement="right">
+									<button
+										class="flex size-8 shrink-0 items-center justify-center rounded-xl hover:bg-gray-100 dark:hover:bg-gray-900 transition"
+										aria-label="a quick note"
+										on:click={openQuickNote}
+									>
+										<svg class="size-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true">
+											<path d="M12 6v12M6 12h12" stroke-linecap="round" />
+										</svg>
+									</button>
+								</Tooltip>
+							</div>
+						{/if}
 
 						<div id="pinned-menu-items-list">
 							{#each pinnedItems as itemId (itemId)}

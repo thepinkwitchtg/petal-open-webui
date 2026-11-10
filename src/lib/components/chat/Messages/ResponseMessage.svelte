@@ -43,7 +43,9 @@
 	} from '$lib/utils/petalStream';
 	import { imageGenerations } from '$lib/apis/images';
 	import { isSavedChatId } from '$lib/utils/chatId';
-	import { climaxFor, toggleClimax } from '$lib/utils/petal-markers'; // 🌙 trip markers
+	import { castOrbit, marksFor } from '$lib/utils/petal-markers'; // 🌙 trip markers · ✧ orbits
+	import PetalEyes from './PetalEyes.svelte'; // 👁 what Petal received (slice A10)
+	import PetalOrbitMenu from './PetalOrbitMenu.svelte'; // ✧ the menu (slice A11)
 	import {
 		copyToClipboard as _copyToClipboard,
 		approximateToHumanReadable,
@@ -243,24 +245,36 @@
 
 	let showRateComment = false;
 
-	// ✧ climax flag (trip markers · contract 1): one tap marks that this reply caused a climax,
-	// a second tap voids it (kept in the log, gone from the view). temp chats have no saved
-	// message to anchor to, so the flag is dimmed there and says why.
-	$: climaxSaved = isSavedChatId(chatId);
-	$: climaxStore = $user?.role === 'admin' && climaxSaved ? climaxFor(chatId) : null;
-	$: climaxId = $climaxStore?.[message.id];
-	let climaxBusy = false;
-	const flagClimax = async () => {
-		if (climaxBusy || !climaxSaved) return;
-		climaxBusy = true;
+	// ✧ the orbit (slice A11 · the primary gesture): one tap keeps an orbit on this reply with
+	// its outcome open, and opens the ✧ menu (held · leaked · 🌊 it was a spill · unflag). a
+	// reply that carries a mark opens the menu instead. a temp chat keeps its orbit without
+	// any link (contract 0); a 🌊 spill needs a saved message, so there it stays dimmed.
+	$: marksSaved = isSavedChatId(chatId);
+	$: marksStore = $user?.role === 'admin' && chatId ? marksFor(chatId) : null;
+	$: mark = $marksStore?.[message.id] ?? null;
+	let orbitBtn: HTMLButtonElement;
+	let orbitMenu = false;
+	let orbitBusy = false;
+	const tapOrbit = async () => {
+		if (orbitBusy) return;
+		if (mark?.orbit || mark?.spill) {
+			orbitMenu = !orbitMenu;
+			return;
+		}
+		orbitBusy = true;
 		try {
-			await toggleClimax(chatId, message.id, climaxId);
+			await castOrbit(chatId, message.id);
+			orbitMenu = true;
 		} catch (e) {
 			toast.error(`✧ ${e}`);
 		} finally {
-			climaxBusy = false;
+			orbitBusy = false;
 		}
 	};
+
+	// 👁 her eyes: the raw view of exactly what Petal received for this reply (temp chats too:
+	// the server keeps their last 20 sends in memory)
+	let eyesOpen = false;
 
 	// 🚩 flag the voice: plants this reply's stream as an incident on the rig
 	let flaggingVoice = false;
@@ -1334,22 +1348,82 @@
 
 								{#if $user?.role === 'admin' && message.done}
 									<Tooltip
-										content={!climaxSaved
-											? 'temporary chat — no saved message to anchor a climax to'
-											: climaxId
-												? 'climax kept ✧ tap to unflag'
-												: 'this reply caused a climax ✧'}
+										content={mark?.spill
+											? '🌊 a spill · tap for the ✧ menu'
+											: mark?.orbit
+												? `✧ orbit · ${mark.orbit.outcome ?? 'open'} · tap for the ✧ menu`
+												: marksSaved
+													? '✧ an orbit · one tap'
+													: '✧ an orbit · kept without a link (temp chat)'}
 										placement="bottom"
 									>
 										<button
-											aria-label="Climax flag"
-											aria-pressed={!!climaxId}
-											class="{isLastMessage || climaxId || ($settings?.highContrastMode ?? false)
+											bind:this={orbitBtn}
+											aria-label="Orbit"
+											aria-pressed={!!(mark?.orbit || mark?.spill)}
+											aria-expanded={orbitMenu}
+											class="{isLastMessage || mark || ($settings?.highContrastMode ?? false)
 												? 'visible'
-												: 'hover-reveal'} inline-flex size-7 shrink-0 items-center justify-center p-1.5 rounded-lg transition {climaxSaved
-												? 'hover:bg-black/5 dark:hover:bg-white/5 dark:hover:text-gray-400 hover:text-gray-600'
-												: 'opacity-35 cursor-default'} {climaxBusy ? 'opacity-50' : ''}"
-											on:click={flagClimax}
+												: 'hover-reveal'} inline-flex size-7 shrink-0 items-center justify-center p-1.5 rounded-lg transition hover:bg-black/5 dark:hover:bg-white/5 dark:hover:text-gray-400 hover:text-gray-600 {orbitBusy
+												? 'opacity-50'
+												: ''}"
+											on:click={tapOrbit}
+										>
+											{#if mark?.spill && !mark?.orbit}
+												<span
+													class="text-[0.95rem] leading-none"
+													style="font-family: var(--font-emoji, 'SamsungColorEmoji'), sans-serif"
+													aria-hidden="true">🌊</span
+												>
+											{:else}
+												<svg
+													class="size-4"
+													aria-hidden="true"
+													viewBox="0 0 24 24"
+													stroke-width="1.5"
+													fill="none"
+													xmlns="http://www.w3.org/2000/svg"
+												>
+													{#if mark?.orbit}
+														<defs>
+															<linearGradient id="petal-orbit-{message.id}" x1="0" y1="0" x2="1" y2="1">
+																<stop offset="0" stop-color="var(--candy-light, #f9c6dc)" />
+																<stop offset="0.48" stop-color="var(--candy, #f472b6)" />
+																<stop offset="1" stop-color="var(--iris, #a873f0)" />
+															</linearGradient>
+														</defs>
+													{/if}
+													<path
+														d="M12 2.5C12.7 7.8 16.2 11.3 21.5 12C16.2 12.7 12.7 16.2 12 21.5C11.3 16.2 7.8 12.7 2.5 12C7.8 11.3 11.3 7.8 12 2.5Z"
+														stroke={mark?.orbit ? `url(#petal-orbit-${message.id})` : 'currentColor'}
+														fill={mark?.orbit && mark.orbit.outcome !== null ? `url(#petal-orbit-${message.id})` : 'none'}
+														stroke-linejoin="round"
+													/>
+													<path d="M19 3.5V6.5M17.5 5H20.5" stroke="currentColor" stroke-linecap="round" />
+												</svg>
+											{/if}
+										</button>
+									</Tooltip>
+									{#if orbitMenu && orbitBtn}
+										<PetalOrbitMenu
+											anchor={orbitBtn}
+											{chatId}
+											messageId={message.id}
+											marks={mark}
+											saved={marksSaved}
+											on:close={() => (orbitMenu = false)}
+										/>
+									{/if}
+								{/if}
+
+								{#if $user?.role === 'admin' && message.done}
+									<Tooltip content="👁 what Petal received" placement="bottom">
+										<button
+											aria-label="What Petal received"
+											class="{isLastMessage || ($settings?.highContrastMode ?? false)
+												? 'visible'
+												: 'hover-reveal'} inline-flex size-7 shrink-0 items-center justify-center p-1.5 hover:bg-black/5 dark:hover:bg-white/5 rounded-lg dark:hover:text-gray-400 hover:text-gray-600 transition"
+											on:click={() => (eyesOpen = true)}
 										>
 											<svg
 												class="size-4"
@@ -1359,25 +1433,27 @@
 												fill="none"
 												xmlns="http://www.w3.org/2000/svg"
 											>
-												{#if climaxId}
-													<defs>
-														<linearGradient id="petal-climax-{message.id}" x1="0" y1="0" x2="1" y2="1">
-															<stop offset="0" stop-color="var(--candy-light, #f9c6dc)" />
-															<stop offset="0.48" stop-color="var(--candy, #f472b6)" />
-															<stop offset="1" stop-color="var(--iris, #a873f0)" />
-														</linearGradient>
-													</defs>
-												{/if}
 												<path
-													d="M12 2.5C12.7 7.8 16.2 11.3 21.5 12C16.2 12.7 12.7 16.2 12 21.5C11.3 16.2 7.8 12.7 2.5 12C7.8 11.3 11.3 7.8 12 2.5Z"
-													stroke={climaxId ? `url(#petal-climax-${message.id})` : 'currentColor'}
-													fill={climaxId ? `url(#petal-climax-${message.id})` : 'none'}
+													d="M2.5 12C4.6 7.6 8 5.5 12 5.5C16 5.5 19.4 7.6 21.5 12C19.4 16.4 16 18.5 12 18.5C8 18.5 4.6 16.4 2.5 12Z"
+													stroke="currentColor"
 													stroke-linejoin="round"
 												/>
-												<path d="M19 3.5V6.5M17.5 5H20.5" stroke="currentColor" stroke-linecap="round" />
+												<circle cx="12" cy="12" r="3.25" stroke="currentColor" />
 											</svg>
 										</button>
 									</Tooltip>
+									{#if eyesOpen}
+										<PetalEyes
+											{chatId}
+											messageId={message.id}
+											saved={message.content ?? ''}
+											marks={[
+												...(mark?.orbit ? [`✧ an orbit on this reply · ${mark.orbit.outcome ?? 'open'}`] : []),
+												...(mark?.spill ? ['🌊 a spill on this reply'] : [])
+											]}
+											on:close={() => (eyesOpen = false)}
+										/>
+									{/if}
 								{/if}
 
 								{#if Object.keys(message.usage ?? {}).some((key) => key !== 'incomplete') && $visibleControls['chat.usage']}
