@@ -6,7 +6,8 @@ A thin door over utils/petal_markers_core.py (pure python, self-tested):
 
 Home: $PETAL_APP_DATA/trip-markers/   (default ~/Gardens/Documents/Petal-App-Data)
 Admin-only: nobody else on the instance can read or write the markers.
-Petal does not see any of this yet: no filter, no system prompt injection (v0).
+What Petal sees of them is assembled in utils/petal_state.py (the climax trail, slice A8;
+retention-first with ✧ orbits, slice A11).
 
     GET  /api/v1/petal/markers/now               → { status, integration, also, last_dose, table, now }
     GET  /api/v1/petal/markers?from&to[&kind&chat_id&include_void]  → replayed events in range
@@ -125,7 +126,10 @@ def markers_write(body: dict = Body(...), user=Depends(get_admin_user)):
         raise HTTPException(400, detail='harvest lines are written by petal-ledger, not through this door')
     # contract 0: a climax needs a saved message to anchor to — temp and channel chats are dimmed
     if body.get('kind') == 'climax' and not is_saved_chat_id(str(body.get('chat_id') or '')):
-        raise HTTPException(409, detail='temporary chat — no saved message to anchor a climax to')
+        raise HTTPException(409, detail='temporary chat — no saved message to anchor a spill to')
+    # A11 · an orbit is her explicit act: honored from a temp chat too, kept without any link
+    if body.get('kind') == 'orbit' and body.get('chat_id') and not is_saved_chat_id(str(body.get('chat_id'))):
+        body = {**body, 'temp': True}
 
     def go():
         return {'id': core.write(_garden(), body)['id']}
