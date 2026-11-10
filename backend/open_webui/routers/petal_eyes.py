@@ -4,7 +4,8 @@ petal_eyes 👁 — what Petal received, for Lily's eyes (slice A10).
 A thin door over utils/petal_eyes.py. Admin-only.
 
     GET /api/v1/petal/eyes?chat_id&message_id   → { rounds: [record…], kept: disk|ring }
-    GET /api/v1/petal/eyes/spill?req_sha[&at]   → { path, view, record } from petal-spill/*/*.json.gz
+    GET /api/v1/petal/eyes/wellspring?req_sha[&at] → { path, view, record } from petal-wellspring/<day>/
+                                                   (its index.jsonl first, a scan as the fallback)
     GET /api/v1/petal/eyes/stats                → numbers only
 """
 
@@ -38,11 +39,11 @@ async def read_eyes(chat_id: str, message_id: str, user=Depends(get_admin_user))
     return {'rounds': rounds, 'kept': 'disk' if is_saved_chat_id(chat_id) else 'ring'}
 
 
-@router.get('/eyes/spill')
-async def read_spill(req_sha: str, at: Optional[float] = None, user=Depends(get_admin_user)):
-    found = await asyncio.to_thread(eyes.find_spill, req_sha, at)
+@router.get('/eyes/wellspring')
+async def read_wellspring(req_sha: str, at: Optional[float] = None, user=Depends(get_admin_user)):
+    found = await asyncio.to_thread(eyes.find_wellspring, req_sha, at)
     if not found:
-        raise HTTPException(status_code=404, detail='no spill carries this hash')
+        raise HTTPException(status_code=404, detail='no wellspring record carries this hash')
     return found
 
 

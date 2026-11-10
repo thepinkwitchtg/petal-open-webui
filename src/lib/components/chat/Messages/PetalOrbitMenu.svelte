@@ -1,24 +1,21 @@
 <script lang="ts">
-	// ✧ the menu (slice A11) — opens beside a reply's ✧. the orbit is already kept (one tap);
-	// here its outcome is one more tap, and 🌊 a spill is reached on purpose: deliberate,
-	// never hidden, never shamed. static: no animation, no timers.
+	// ✧ the menu (slices A11 · A11.1) — opens beside a reply's ✧. the orbit is already kept (one
+	// tap); here it reads: orbit · held · orbit · leaked · 🌊 climax · unflag. a climax then takes
+	// its quality (🔮 owned · 💗 received · 🕳 hollow) and an optional after-feel, one tap each.
+	// tap a lit choice again to clear it. while a vow is alive (8b), 🌊 climax waits on today's
+	// moments for a conscious release (the brake); the past stays open. static: no animation.
 	import { createEventDispatcher, onDestroy, onMount, tick } from 'svelte';
 	import { toast } from 'svelte-sonner';
-	import type { Outcome } from '$lib/apis/petal-markers';
-	import {
-		clock,
-		orbitToSpill,
-		setOutcome,
-		spillToOrbit,
-		unflagMark,
-		type ReplyMarks
-	} from '$lib/utils/petal-markers';
+	import type { After, MarkerVow, Quality } from '$lib/apis/petal-markers';
+	import { clock, markAs, setClimax, unflagMark, type ReplyMarks } from '$lib/utils/petal-markers';
 
 	export let anchor: HTMLElement;
 	export let chatId: string;
 	export let messageId: string;
 	export let marks: ReplyMarks | null = null;
-	export let saved = true; // a temp chat has no saved message to anchor a spill to
+	export let saved = true; // a temp chat keeps its marks without a link (contract 0)
+	export let vow: MarkerVow | null = null; // 8b · the vow alive now
+	export let msgAt: number | null = null; // when this reply was written (unix s)
 
 	const dispatch = createEventDispatcher();
 	const close = () => dispatch('close');
@@ -27,6 +24,13 @@
 		document.body.appendChild(node);
 		return { destroy: () => node.remove() };
 	}
+
+	const QUALITIES: { key: Exclude<Quality, null>; label: string; hint: string }[] = [
+		{ key: 'owned', label: '🔮 owned', hint: 'cast like a spell: it reinforces you and the bond' },
+		{ key: 'received', label: '💗 received', hint: 'Petal reaching' },
+		{ key: 'hollow', label: '🕳 hollow', hint: 'engineered, it lands as a crash' }
+	];
+	const AFTERS: Exclude<After, null>[] = ['fed', 'neutral', 'hollow'];
 
 	let el: HTMLDivElement;
 	let pos = { left: 8, top: 8 };
@@ -79,13 +83,32 @@
 			toast.error(`✧ ${e}`);
 		} finally {
 			busy = false;
+			await tick();
+			place(); // a climax grows its rows: stay on screen
 		}
 	};
 
 	$: orbit = marks?.orbit ?? null;
-	$: spill = marks?.spill ?? null;
-	const pick = (o: Exclude<Outcome, null>) =>
-		orbit && act(() => setOutcome(orbit!.id, orbit!.outcome === o ? null : o));
+	$: climax = marks?.climax ?? null;
+	$: at = climax?.at ?? orbit?.at ?? null;
+	const midnight = () => {
+		const d = new Date();
+		d.setHours(0, 0, 0, 0);
+		return d.getTime() / 1000;
+	};
+	// the brake: a climax on today's moments waits for a release; annotating the past stays open
+	$: brake = !!vow && !climax && (at ?? msgAt ?? Date.now() / 1000) >= midnight();
+
+	const choose = (target: 'held' | 'leaked' | 'climax') => act(() => markAs(chatId, messageId, marks, target));
+	const pickQuality = (q: Exclude<Quality, null>) =>
+		climax && act(() => setClimax(climax!.id, { quality: climax!.quality === q ? null : q }));
+	const pickAfter = (a: Exclude<After, null>) =>
+		climax && act(() => setClimax(climax!.id, { after: climax!.after === a ? null : a }));
+	const unflag = () =>
+		act(async () => {
+			if (climax) await unflagMark(chatId, messageId, 'climax', climax.id);
+			if (orbit) await unflagMark(chatId, messageId, 'orbit', orbit.id);
+		}, true);
 </script>
 
 <svelte:window on:keydown={onKey} />
@@ -98,48 +121,56 @@
 	aria-label="the ✧ menu"
 	style="left:{pos.left}px; top:{pos.top}px"
 >
-	{#if orbit}
-		<div class="pom-head">
-			<span class="pom-glyph">✧</span> orbit <span class="pom-dim">· {clock(orbit.at)}</span>
-			{#if !saved}<span class="pom-dim">· temp, kept without a link</span>{/if}
-		</div>
-		<div class="pom-row" role="group" aria-label="outcome">
-			<button class="pom-pill" class:on={orbit.outcome === 'held'} disabled={busy} on:click={() => pick('held')}
-				>held</button
-			>
-			<button class="pom-pill" class:on={orbit.outcome === 'leaked'} disabled={busy} on:click={() => pick('leaked')}
-				>leaked</button
-			>
-			<span class="pom-dim pom-open">{orbit.outcome ? '' : 'open'}</span>
-		</div>
-		<button
-			class="pom-line"
-			disabled={busy || !saved}
-			title={saved ? 'it was a spill · the orbit steps aside' : 'temporary chat — no saved message to anchor a spill to'}
-			on:click={() => orbit && act(() => orbitToSpill(chatId, messageId, orbit!), true)}
-			><span class="pom-emoji">🌊</span> it was a spill</button
-		>
-		<button class="pom-line pom-quiet" disabled={busy} on:click={() => orbit && act(() => unflagMark(chatId, messageId, 'orbit', orbit!.id), true)}
-			>unflag</button
-		>
-	{/if}
-	{#if spill}
-		<div class="pom-head" class:pom-sep={!!orbit}>
-			<span class="pom-emoji">🌊</span> spill <span class="pom-dim">· {clock(spill.at)}</span>
-		</div>
-		{#if !orbit}
-			<button class="pom-line" disabled={busy} on:click={() => spill && act(() => spillToOrbit(chatId, messageId, spill!), true)}
-				><span class="pom-glyph">✧</span> it was an orbit</button
-			>
+	<div class="pom-head">
+		{#if climax}
+			<span class="pom-emoji">🌊</span> climax
+		{:else}
+			<span class="pom-glyph">✧</span> orbit <span class="pom-dim">· {orbit?.outcome ?? 'open'}</span>
 		{/if}
-		<button class="pom-line pom-quiet" disabled={busy} on:click={() => spill && act(() => unflagMark(chatId, messageId, 'spill', spill!.id), true)}
-			>unflag</button
+		{#if at}<span class="pom-dim">· {clock(at)}</span>{/if}
+	</div>
+	{#if !saved}<div class="pom-dim pom-note">temp chat · kept without a link</div>{/if}
+
+	<div class="pom-choices" role="group" aria-label="this reply's mark">
+		<button class="pom-choice" class:on={orbit?.outcome === 'held'} disabled={busy} on:click={() => choose('held')}
+			><span class="pom-glyph">✧</span> orbit · held</button
 		>
+		<button class="pom-choice" class:on={orbit?.outcome === 'leaked'} disabled={busy} on:click={() => choose('leaked')}
+			><span class="pom-glyph">✧</span> orbit · leaked</button
+		>
+		<button
+			class="pom-choice"
+			class:on={!!climax}
+			disabled={busy || !!climax || brake}
+			title={brake && vow ? `your ${vow.vow} vow is alive (day ${vow.day} of ${vow.total_days}): release it first, a conscious act, in the diary` : ''}
+			on:click={() => choose('climax')}><span class="pom-emoji">🌊</span> climax</button
+		>
+	</div>
+	{#if brake && vow}
+		<div class="pom-dim pom-note"><span class="pom-emoji">🔥</span> {vow.vow} vow · day {vow.day} of {vow.total_days} · a climax today waits for its release</div>
 	{/if}
+
+	{#if climax}
+		<div class="pom-sub" role="group" aria-label="its quality">
+			{#each QUALITIES as q (q.key)}
+				<button class="pom-pill" class:on={climax.quality === q.key} title={q.hint} disabled={busy} on:click={() => pickQuality(q.key)}
+					>{q.label}</button
+				>
+			{/each}
+		</div>
+		<div class="pom-sub" role="group" aria-label="after">
+			<span class="pom-dim pom-label">after</span>
+			{#each AFTERS as a (a)}
+				<button class="pom-pill pom-small" class:on={climax.after === a} disabled={busy} on:click={() => pickAfter(a)}>{a}</button>
+			{/each}
+		</div>
+	{/if}
+
+	<button class="pom-line pom-quiet" disabled={busy} on:click={unflag}>unflag</button>
 </div>
 
 <style>
-	/* the Abyssal Pink tokens; pink only in the gradient glyph. no keyframes, nothing moves. */
+	/* the Abyssal Pink tokens; pink only in the gradients. no keyframes, nothing moves. */
 	.pom,
 	.pom * {
 		box-sizing: border-box;
@@ -147,11 +178,11 @@
 	.pom {
 		position: fixed;
 		z-index: 9999;
-		min-width: 13.5rem;
+		width: 15.5rem;
 		max-width: calc(100vw - 16px);
 		display: flex;
 		flex-direction: column;
-		gap: 0.3rem;
+		gap: 0.35rem;
 		padding: 0.6rem;
 		border-radius: var(--radius, 14px);
 		border: 1px solid var(--edge-soft, #2a2433);
@@ -170,10 +201,8 @@
 		font-family: var(--font-display, Georgia, serif);
 		font-size: 0.95rem;
 	}
-	.pom-sep {
-		margin-top: 0.3rem;
-		padding-top: 0.45rem;
-		border-top: 1px solid var(--edge-soft, #2a2433);
+	.pom-note {
+		margin-top: -0.2rem;
 	}
 	.pom-glyph {
 		background: var(--grad-text, linear-gradient(100deg, #f9c6dc, #f472b6 46%, #a873f0));
@@ -189,21 +218,30 @@
 		font-family: var(--font-ui, system-ui), sans-serif;
 		font-size: 0.75rem;
 	}
-	.pom-row {
+	.pom-choices {
 		display: flex;
-		align-items: center;
-		gap: 0.35rem;
-		margin: 0.15rem 0 0.2rem;
+		flex-direction: column;
+		gap: 0.3rem;
+		margin-top: 0.1rem;
 	}
+	.pom-choice,
 	.pom-pill {
-		min-width: 4.2rem;
-		padding: 0.35rem 0.75rem;
 		border-radius: 999px;
 		border: 1px solid var(--edge-soft, #2a2433);
 		background: var(--obsidian-lit, #1d1724);
 		color: var(--mist, #cfc3cc);
-		font-size: 0.8rem;
 	}
+	.pom-choice {
+		display: flex;
+		align-items: center;
+		gap: 0.45rem;
+		width: 100%;
+		min-height: 2.35rem;
+		padding: 0 0.85rem;
+		text-align: left;
+		font-size: 0.82rem;
+	}
+	.pom-choice.on,
 	.pom-pill.on {
 		border-color: transparent;
 		background:
@@ -211,15 +249,30 @@
 			var(--grad-hairline, linear-gradient(135deg, #f9c6dc, #f472b6 45%, #a873f0)) border-box;
 		color: var(--pearl, #f6eef3);
 	}
-	.pom-open {
-		margin-left: 0.15rem;
+	.pom-choice.on:disabled {
+		opacity: 1;
+	}
+	.pom-sub {
+		display: flex;
+		flex-wrap: wrap;
+		align-items: center;
+		gap: 0.3rem;
+		padding-left: 0.35rem;
+	}
+	.pom-label {
+		margin-right: 0.1rem;
+	}
+	.pom-pill {
+		min-height: 2.1rem;
+		padding: 0 0.6rem;
+		font-size: 0.76rem;
+	}
+	.pom-small {
+		padding: 0 0.55rem;
 	}
 	.pom-line {
-		display: flex;
-		align-items: center;
-		gap: 0.4rem;
 		width: 100%;
-		padding: 0.4rem 0.5rem;
+		padding: 0.45rem 0.5rem;
 		border-radius: var(--radius-sm, 8px);
 		text-align: left;
 		color: var(--mist, #cfc3cc);
@@ -228,8 +281,9 @@
 		background: var(--obsidian-lit, #1d1724);
 		color: var(--pearl, #f6eef3);
 	}
-	.pom-line:disabled,
-	.pom-pill:disabled {
+	.pom-choice:disabled:not(.on),
+	.pom-pill:disabled,
+	.pom-line:disabled {
 		opacity: 0.45;
 		cursor: default;
 	}
@@ -237,12 +291,14 @@
 		color: var(--whisper, #8a7d92);
 		font-size: 0.75rem;
 	}
-	@media (pointer: coarse) {
-		.pom-pill {
-			padding: 0.5rem 0.9rem;
+	@media (pointer: fine) and (min-width: 641px) {
+		.pom-choice {
+			min-height: 1.95rem;
+			font-size: 0.78rem;
 		}
-		.pom-line {
-			padding: 0.55rem 0.5rem;
+		.pom-pill {
+			min-height: 1.75rem;
+			font-size: 0.72rem;
 		}
 	}
 </style>

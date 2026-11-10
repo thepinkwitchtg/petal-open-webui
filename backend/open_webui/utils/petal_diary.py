@@ -8,9 +8,9 @@ home: $PETAL_APP_DATA/petal-diary/diary.jsonl          gold tier · 700/600 · a
 reading rule: replay in order, applying amend and void by ref, exactly like the trip markers.
 `petal_sees` stays false until she says otherwise: nothing in the diary reaches Petal on its own.
 
-the stream merges her notes with the trip markers: ✧ orbits, 🌊 spills (the climax kind), trips,
-and vows once the core knows them. newest first, every marker with its chat + message, so the
-page can jump to /c/<chat>#<message> in one tap.
+the stream merges her notes with the trip markers: ✧ orbits, 🌊 climaxes (with their quality and
+after-feel), trips, and 🔥 vows (committed, then released or fulfilled). newest first, every marker
+with its chat + message, so the page can jump to /c/<chat>#<message> in one tap.
 
     self-test:  python3 backend/open_webui/utils/petal_diary.py
 """
@@ -236,8 +236,9 @@ def _note_item(n: dict) -> dict:
             'petal_sees': bool(n.get('petal_sees')), 'via': n.get('via'), 'amended': bool(n.get('_amends'))}
 
 
-def marker_items(mview: Any) -> list[dict]:
-    """✧ orbits, 🌊 spills, trips (and vows, once the core knows them) from a trip-markers view."""
+def marker_items(mview: Any, now: Optional[int] = None) -> list[dict]:
+    """✧ orbits, 🌊 climaxes, trips and 🔥 vows from a trip-markers view."""
+    now = int(now if now is not None else time.time())
     out = []
     for e in mview.events.values():
         k = e['kind']
@@ -246,11 +247,19 @@ def marker_items(mview: Any) -> list[dict]:
             out.append({'type': 'orbit', **base, 'outcome': e.get('outcome'), 'note': e.get('note'),
                         'chat_id': e.get('chat_id'), 'message_id': e.get('message_id')})
         elif k == 'climax':
-            out.append({'type': 'spill', **base, 'note': e.get('note'),
-                        'chat_id': e.get('chat_id'), 'message_id': e.get('message_id')})
-        elif k.startswith('vow.'):
-            out.append({'type': 'vow', **base, 'kind': k,
-                        **{f: e.get(f) for f in ('vow', 'until', 'words', 'ref', 'reason') if e.get(f) is not None}})
+            out.append({'type': 'climax', **base, 'quality': e.get('quality'), 'after': e.get('after'),
+                        'note': e.get('note'), 'chat_id': e.get('chat_id'), 'message_id': e.get('message_id')})
+    for v in (mview.vows(now) if hasattr(mview, 'vows') else []):
+        alive = v['ended_by'] is None and v['at'] <= now < v['end']
+        out.append({'type': 'vow', 'id': v['id'], 'at': v['at'], 'temp': v['temp'], 'amended': v['amended'],
+                    'vow': v['vow'], 'words': v['words'], 'until': v['until'], 'total_days': v['total_days'],
+                    'ended_by': v['ended_by'], 'reason': v['reason'], 'alive': alive,
+                    'day': min(v['total_days'], (now - v['at']) // (24 * 3600) + 1) if alive else None})
+        if v['ended_by']:
+            out.append({'type': 'vow_end', 'id': f"{v['id']}:end", 'at': v['end'], 'temp': v['temp'], 'amended': False,
+                        'vow': v['vow'], 'how': 'released' if v['ended_by'] == 'release' else 'fulfilled',
+                        'reason': v['reason'], 'days_kept': max(0, (v['end'] - v['at']) // (24 * 3600)),
+                        'total_days': v['total_days'], 'ref': v['id']})
     for tl in mview.timelines():
         ig = tl['integration']
         out.append({
@@ -270,23 +279,25 @@ def _haystack(it: dict) -> str:
         words = [it['text'], 'note']
     elif t == 'orbit':
         words = ['orbit ✧', it.get('outcome') or 'open', it.get('note') or '']
-    elif t == 'spill':
-        words = ['spill 🌊', it.get('note') or '']
+    elif t == 'climax':
+        words = ['climax 🌊', it.get('quality') or '', it.get('after') or '', it.get('note') or '']
     elif t == 'trip':
         words = ['trip', it['emoji'], it['label'], it.get('substance') or '', it.get('dose') or '',
                  it.get('strain') or '', it.get('tier') or '', it.get('note') or '']
+    elif t == 'vow':
+        words = ['vow 🔥', it.get('vow') or '', it.get('words') or '', 'alive' if it.get('alive') else '']
     else:
-        words = ['vow 🔥', str(it.get('vow') or ''), str(it.get('words') or '')]
+        words = ['vow 🔥', it.get('vow') or '', it.get('how') or '', it.get('reason') or '']
     return ' '.join(words).casefold()
 
 
 def stream(diary: Diary, mview: Any = None, q: Optional[str] = None, before: Optional[int] = None,
-           limit: int = 300) -> dict:
+           limit: int = 300, now: Optional[int] = None) -> dict:
     """her notes + the markers, newest first · q filters (any word, case-insensitive) · `before`
     pages back in time. → {'items': [...], 'more': bool}"""
     items = [_note_item(n) for n in build(diary).notes.values()]
     if mview is not None:
-        items += marker_items(mview)
+        items += marker_items(mview, now)
     if q and q.strip():
         terms = q.casefold().split()
         items = [it for it in items if all(t in _haystack(it) for t in terms)]
@@ -354,9 +365,16 @@ def _self_test() -> None:
             def __init__(self):
                 self.events = {
                     'o1': {'id': 'o1', 'kind': 'orbit', 'at': t0 + 300, 'outcome': None, 'chat_id': 'c1', 'message_id': 'm1'},
-                    's1': {'id': 's1', 'kind': 'climax', 'at': t0 - 3600, 'chat_id': 'c1', 'message_id': 'm0'},
+                    's1': {'id': 's1', 'kind': 'climax', 'at': t0 - 3600, 'chat_id': 'c1', 'message_id': 'm0', 'quality': 'owned'},
                     'x1': {'id': 'x1', 'kind': 'integration.start', 'at': t0},
                 }
+
+            def vows(self, now):
+                return [{'id': 'v1', 'vow': 'abstinence', 'words': 'my charge aims at the trip', 'at': t0 - 10 * 86400,
+                         'until': t0 - 3 * 86400, 'end': t0 - 4 * 86400, 'ended_by': 'release', 'reason': 'the trip came early',
+                         'temp': False, 'total_days': 7, 'amended': False},
+                        {'id': 'v2', 'vow': 'abstinence', 'words': 'fourteen days', 'at': t0 - 86400 // 2, 'until': t0 + 13 * 86400,
+                         'end': t0 + 13 * 86400, 'ended_by': None, 'reason': None, 'temp': False, 'total_days': 14, 'amended': False}]
 
             def timelines(self):
                 return [{'id': 't1', 'taken_at': t0 - 7200, 'temp': False, 'amended': False, 'emoji': '🍄', 'label': 'mushies',
@@ -364,14 +382,22 @@ def _self_test() -> None:
                          'tier': {'label': 'ego death territory'}, 'note': None, 'end': t0 - 7200 + 6 * 3600, 'ended_by': 'auto',
                          'integration': {'opens_at': t0, 'closes_at': t0 + 90000, 'empty': False}, 'mutated': None, 'purged': None}]
 
-        s = stream(dy, MV())
-        check([it['type'] for it in s['items']] == ['orbit', 'note', 'spill', 'trip'] and not s['more'],
-              'the stream: newest first, notes + orbits + spills + trips (other kinds stay out)')
+        s = stream(dy, MV(), now=t0 + 600)
+        check([it['type'] for it in s['items']] == ['orbit', 'note', 'climax', 'trip', 'vow', 'vow_end', 'vow'] and not s['more'],
+              'the stream: newest first, notes + orbits + climaxes + trips + vows (other kinds stay out)')
+        vs = [it for it in s['items'] if it['type'] in ('vow', 'vow_end')]
+        check(vs[0]['alive'] and vs[0]['day'] == 1 and vs[0]['total_days'] == 14, 'the vow alive now: day 1 of 14')
+        check(vs[1]['how'] == 'released' and vs[1]['reason'] == 'the trip came early' and vs[1]['days_kept'] == 6
+              and not vs[2]['alive'], 'a released vow: its end in the stream, her reason, days kept')
+        check([it['type'] for it in stream(dy, MV(), q='released trip', now=t0 + 600)['items']] == ['vow_end'], 'a vow is searchable')
+        check(s['items'][2]['quality'] == 'owned' and s['items'][2]['after'] is None, 'a climax carries its quality and after-feel')
+        check([it['type'] for it in stream(dy, MV(), q='owned', now=t0 + 600)['items']] == ['climax'], "a climax's quality is searchable")
         check(s['items'][0]['chat_id'] == 'c1' and s['items'][0]['message_id'] == 'm1', 'a marker carries its chat + message for the jump')
         check([it['type'] for it in stream(dy, MV(), q='RITUAL')['items']] == ['note'], 'search: case-insensitive')
         check([it['type'] for it in stream(dy, MV(), q='mushies ego')['items']] == ['trip'], 'search: every word must match')
         check([it['type'] for it in stream(dy, MV(), q='open')['items']] == ['orbit'], "an orbit's open outcome is searchable")
-        check([it['type'] for it in stream(dy, MV(), before=t0)['items']] == ['spill', 'trip'], 'before pages back in time')
+        check([it['type'] for it in stream(dy, MV(), before=t0, now=t0 + 600)['items']] == ['climax', 'trip', 'vow', 'vow_end', 'vow'],
+              'before pages back in time')
         check(stream(dy, MV(), limit=2)['more'] is True, 'more when the page is full')
         sts = stats(dy)
         check(sts == {'notes': 1, 'petal_sees': 1, 'amended': 1, 'voided': 1, 'broken_lines': 1}, 'stats: numbers only')

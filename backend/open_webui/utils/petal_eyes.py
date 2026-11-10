@@ -2,8 +2,9 @@
 petal_eyes 🌸👁 — what Petal received, byte for byte (slice A10 · her eyes).
 
 the outlet (routers/openai.py) serializes the payload once, sends those exact bytes and shows
-them here first. `req_sha = sha256(bytes)`: petal-spill (Lily's source tap on :8010) keeps the
-same hash for the same bytes, so the two views join on it.
+them here first. `req_sha = sha256(bytes)`: petal-wellspring (Lily's source tap, every raw
+character Petal writes, before OWUI prettifies it) keeps the same hash for the same bytes, so
+the two views join on it.
 
   saved chats → $PETAL_APP_DATA/petal-eyes/<chat_id>/<message_id>.json.gz      gold tier · 700/600
                 another round for the same reply (a tool follow-up, a continue) lands beside it
@@ -20,7 +21,7 @@ a record: {at, chat_id, message_id, model, req_sha, payload, parts, round, to}
       (__metadata__ or {}).setdefault('petal_eyes_parts', []).append({'source': '🌸 petal-soft', 'text': text})
 
             extra keys ride along as they are ({'tokens': 32, 'memory_ids': [...]}, a pull …)
-  to      — host:port the bytes went to (so a missing spill can say "not through the tap")
+  to      — host:port the bytes went to (so a missing wellspring record can say where they went)
 """
 
 import asyncio
@@ -56,8 +57,11 @@ def home() -> Path:
     return core.app_data_root() / 'petal-eyes'
 
 
-def spill_home() -> Path:
-    return core.app_data_root() / 'petal-spill'
+def wellspring_home() -> Path:
+    """petal-wellspring/ · the tap's former home (petal-spill/) is read only while the new one is absent."""
+    root = core.app_data_root()
+    home_ = root / 'petal-wellspring'
+    return root / 'petal-spill' if not home_.is_dir() and (root / 'petal-spill').is_dir() else home_
 
 
 # ── the injectors' side ────────────────────────────────────────
@@ -234,12 +238,55 @@ def stats() -> dict:
     return {'chats': chats, 'records': records, 'bytes': size, 'ring': ring, 'ring_size': RING_SIZE}
 
 
-# ── petal-spill: the source tap's side of the join ─────────────
-# the tap's record shape is hers; it's read defensively here: any of these keys may hold the hash
+# ── 🫗 petal-wellspring: the source tap's side of the join (A11.1, was petal-spill) ─────────
+# a record: petal-wellspring/<day>/<HHMMSS>-<id>.json.gz, one JSON object each:
+#   {id, at, route, path, caller, req_sha, model, request, status, ms, cut, streamed, raw, content,
+#    reasoning, finish, flags: [str]}
+# every day folder keeps an index.jsonl, one line per record: {req_sha, file, at, route}. the indexes
+# are read first (each once per change) and only the matching file is opened; a scan of the files
+# stays as the fallback (a day without an index, a line not written yet, the tap's older records).
 _SHA_IN = re.compile(rb'"(?:req_sha|request_sha|req_sha256|request_sha256|sha256|body_sha)"\s*:\s*"([0-9a-f]{64})"')
-_spill_seen: dict = {}  # path → (mtime, size): already read
-_spill_by_sha: dict = {}  # req_sha → path
-_spill_lock = threading.Lock()
+_well_lock = threading.Lock()
+_well_index_sig: dict = {}  # index path → (mtime, size): already read
+_well_seen: dict = {}  # record path → (mtime, size): already scanned
+_well_by_sha: dict = {}  # req_sha → record path
+
+
+def _inside(p: Path, root: Path) -> bool:
+    try:
+        p.resolve().relative_to(root.resolve())
+        return True
+    except (ValueError, OSError):
+        return False
+
+
+def _read_indexes(root: Path) -> None:
+    for idx in root.glob('*/index.jsonl'):
+        try:
+            st = idx.stat()
+        except OSError:
+            continue
+        sig = (st.st_mtime, st.st_size)
+        if _well_index_sig.get(str(idx)) == sig:
+            continue
+        try:
+            text = idx.read_text(encoding='utf-8', errors='replace')
+        except OSError:
+            continue
+        for line in text.splitlines():
+            try:
+                e = json.loads(line)
+            except ValueError:
+                continue  # a torn line: the scan still finds its record
+            sha, f = (e.get('req_sha'), e.get('file')) if isinstance(e, dict) else (None, None)
+            if not (isinstance(sha, str) and _SHA.match(sha) and isinstance(f, str) and f):
+                continue
+            # a file name inside its day, or a path from the wellspring's root: never outside it
+            for p in (idx.parent / f, root / f, idx.parent / Path(f).name):
+                if _inside(p, root) and p.is_file():
+                    _well_by_sha[sha] = str(p)
+                    break
+        _well_index_sig[str(idx)] = sig
 
 
 def _shas_in(path: Path) -> set:
@@ -255,7 +302,7 @@ def _holds(rec: Any, req_sha: str) -> bool:
     return req_sha in json.dumps(rec, ensure_ascii=False, default=str) if rec is not None else False
 
 
-def _load_spill(path: Path, req_sha: str) -> Optional[dict]:
+def _load_well(path: Path, root: Path, req_sha: str) -> Optional[dict]:
     try:
         data = gzip.decompress(path.read_bytes()).decode('utf-8', 'replace')
     except Exception:
@@ -263,9 +310,9 @@ def _load_spill(path: Path, req_sha: str) -> Optional[dict]:
     rec: Any = None
     try:
         rec = json.loads(data)
-        if isinstance(rec, list):  # an array of records: the one carrying this hash
+        if isinstance(rec, list):  # an older tap's array of records: the one carrying this hash
             rec = next((r for r in rec if _holds(r, req_sha)), None)
-    except ValueError:  # jsonl: one record per line
+    except ValueError:  # an older tap's jsonl: one record per line
         for line in data.splitlines():
             try:
                 r = json.loads(line)
@@ -274,30 +321,35 @@ def _load_spill(path: Path, req_sha: str) -> Optional[dict]:
             if _holds(r, req_sha):
                 rec = r
                 break
-    if rec is None:
+    if rec is None or (isinstance(rec, dict) and rec.get('req_sha') not in (None, req_sha)):
         return None
     try:
-        rel = str(path.relative_to(spill_home()))
+        rel = str(path.relative_to(root))
     except ValueError:
         rel = path.name
-    return {'path': rel, 'view': spill_view(rec), 'record': rec}
+    record = rec
+    if isinstance(rec, dict) and rec.get('request') is not None:  # the very bytes her eyes already hold
+        size = len(rec['request']) if isinstance(rec['request'], str) else len(json.dumps(rec['request']))
+        record = {**rec, 'request': f'… the same request her eyes hold (req_sha matches) · {size:,} chars'}
+    return {'path': rel, 'view': wellspring_view(rec), 'record': record}
 
 
-def find_spill(req_sha: str, at: Optional[float] = None) -> Optional[dict]:
-    """the spill record whose hash is `req_sha` (petal-spill/*/*.json.gz). each file is read once
-    per server life; the files nearest `at` (the send time) are read first."""
+def find_wellspring(req_sha: str, at: Optional[float] = None) -> Optional[dict]:
+    """the wellspring record whose hash is `req_sha`: the day indexes first, then (fallback) every
+    file, each read once per server life, the files nearest `at` (the send time) first."""
     req_sha = str(req_sha or '').lower()
     if not _SHA.match(req_sha):
         return None
-    root = spill_home()
-    with _spill_lock:
-        known = _spill_by_sha.get(req_sha)
+    root = wellspring_home()
+    if not root.is_dir():
+        return None
+    with _well_lock:
+        _read_indexes(root)
+        known = _well_by_sha.get(req_sha)
         if known and Path(known).is_file():
-            found = _load_spill(Path(known), req_sha)
+            found = _load_well(Path(known), root, req_sha)
             if found:
                 return found
-        if not root.is_dir():
-            return None
         files = []
         for p in root.glob('*/*.json.gz'):
             try:
@@ -313,14 +365,14 @@ def find_spill(req_sha: str, at: Optional[float] = None) -> Optional[dict]:
 
         for p, st in sorted(files, key=order):
             sig = (st.st_mtime, st.st_size)
-            if _spill_seen.get(str(p)) == sig:
+            if _well_seen.get(str(p)) == sig:
                 continue
             shas = _shas_in(p)
-            _spill_seen[str(p)] = sig
-            for s in shas:
-                _spill_by_sha[s] = str(p)
+            _well_seen[str(p)] = sig
+            for sha in shas:
+                _well_by_sha.setdefault(sha, str(p))
             if req_sha in shas:
-                return _load_spill(p, req_sha)
+                return _load_well(p, root, req_sha)
     return None
 
 
@@ -356,25 +408,40 @@ def _from_chunks(rec: dict, fields: tuple) -> Optional[str]:
     return None
 
 
-def spill_view(rec: Any) -> dict:
-    """best-effort names for what the tap kept · the whole record always rides beside it."""
+_WELL_META = ('id', 'at', 'route', 'path', 'caller', 'model', 'status', 'ms', 'cut', 'streamed', 'finish')
+
+
+def wellspring_view(rec: Any) -> dict:
+    """the wellspring's own names (A11.1) · an older tap's records are read by best-effort names ·
+    the whole record always rides beside it."""
     if not isinstance(rec, dict):
-        return {'content': None, 'reasoning': None, 'flags': None, 'keys': []}
-    content = _dig(
-        rec,
-        ('content',), ('raw_content',), ('raw',), ('text',), ('output_text',), ('output',), ('completion',),
-        ('response', 'content'), ('response', 'text'), ('choices', 0, 'message', 'content'),
-    )  # fmt: skip
-    reasoning = _dig(
-        rec,
-        ('reasoning',), ('reasoning_content',), ('thinking',), ('think',),
-        ('response', 'reasoning'), ('response', 'reasoning_content'),
-        ('choices', 0, 'message', 'reasoning_content'), ('choices', 0, 'message', 'reasoning'),
-    )  # fmt: skip
-    if content is None:
-        content = _from_chunks(rec, ('content',))
-    if reasoning is None:
-        reasoning = _from_chunks(rec, ('reasoning_content', 'reasoning'))
-    flags = _dig(rec, ('flags',), ('✧',), ('marks',), ('sparkles',), ('stars',))
+        return {'content': None, 'reasoning': None, 'raw': None, 'flags': None, 'meta': {}, 'keys': []}
     as_text = lambda v: v if (v is None or isinstance(v, str)) else json.dumps(v, ensure_ascii=False, indent=1)
-    return {'content': as_text(content), 'reasoning': as_text(reasoning), 'flags': flags, 'keys': list(rec.keys())[:80]}
+    content = rec.get('content') if isinstance(rec.get('content'), str) else None
+    reasoning = rec.get('reasoning') if isinstance(rec.get('reasoning'), str) else None
+    if content is None:
+        content = _dig(
+            rec,
+            ('raw_content',), ('text',), ('output_text',), ('output',), ('completion',),
+            ('response', 'content'), ('response', 'text'), ('choices', 0, 'message', 'content'),
+        ) or _from_chunks(rec, ('content',))  # fmt: skip
+    if reasoning is None:
+        reasoning = _dig(
+            rec,
+            ('reasoning_content',), ('thinking',), ('think',),
+            ('response', 'reasoning'), ('response', 'reasoning_content'),
+            ('choices', 0, 'message', 'reasoning_content'), ('choices', 0, 'message', 'reasoning'),
+        ) or _from_chunks(rec, ('reasoning_content', 'reasoning'))  # fmt: skip
+    flags = rec.get('flags')
+    if flags is None:
+        flags = _dig(rec, ('✧',), ('marks',), ('sparkles',), ('stars',))
+    if flags is not None and not isinstance(flags, list):
+        flags = [flags]
+    return {
+        'content': as_text(content),
+        'reasoning': as_text(reasoning),
+        'raw': as_text(rec.get('raw')),
+        'flags': [f if isinstance(f, str) else json.dumps(f, ensure_ascii=False) for f in flags] if flags else flags,
+        'meta': {k: rec[k] for k in _WELL_META if rec.get(k) is not None},
+        'keys': list(rec.keys())[:80],
+    }

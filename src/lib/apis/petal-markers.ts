@@ -49,6 +49,9 @@ export type MarkerTimeline = {
 
 // A11 · ✧ an orbit's outcome once she knows it (null = still open)
 export type Outcome = 'held' | 'leaked' | null;
+// A11.1 · 🌊 a climax's quality (🔮 owned · 💗 received · 🕳 hollow) and after-feel, both optional
+export type Quality = 'owned' | 'received' | 'hollow' | null;
+export type After = 'fed' | 'neutral' | 'hollow' | null;
 
 export type MarkerWindow = {
 	id: string;
@@ -79,12 +82,29 @@ export type MarkerSubstance = {
 	tiers: { from: number; label: string }[];
 };
 
+// 8b · 🔥 a vow: sacred and deliberate (committed with her words, released consciously)
+export type MarkerVow = {
+	id: string;
+	vow: string;
+	words: string;
+	at: number;
+	until: number;
+	end: number;
+	ended_by: 'release' | 'fulfilled' | null;
+	reason: string | null;
+	total_days: number;
+	day: number; // day 1 = its first 24 h
+	temp: boolean;
+	amended: boolean;
+};
+
 export type MarkersNow = {
 	now: number;
 	status: MarkerTimeline | null;
 	also: MarkerTimeline[];
 	integration: MarkerWindow | null; // a trip's (or a hand-opened) window leads, an orbit's follows
 	integrations?: MarkerWindow[]; // every open window
+	vow?: MarkerVow | null; // 8b · the vow alive now
 	last_dose: Record<string, string>;
 	table: MarkerSubstance[];
 };
