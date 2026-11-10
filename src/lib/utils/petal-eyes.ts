@@ -51,12 +51,39 @@ const fold = (s: string) => {
 	return { out, map };
 };
 
+/** where `text` first sits in `hay` (−1: nowhere) · a trimmed or re-spaced copy still counts. */
+export function firstAt(hay: string, text: string): number {
+	if (!hay || !text) return -1;
+	const needle = needleOf(text, hay);
+	if (needle) return hay.indexOf(needle);
+	const nf = fold(text.trim()).out;
+	if (nf.length < 3) return -1;
+	const { out, map } = fold(hay);
+	const i = out.indexOf(nf);
+	return i < 0 ? -1 : map[i];
+}
+
 /** `text` split into segments, each part's every occurrence tinted by its source.
  * a smaller part inside a bigger one keeps its own tint (painted last). a part whose spacing
  * changed on the way (a newline become a space…) is still found. `found` collects the indexes
  * of the parts that were seen. */
 export function tint(text: string, parts: EyesPart[], sources: string[], found?: Set<number>): Seg[] {
 	if (!text) return [];
+	const owner = ownersOf(text, parts, sources, found);
+	if (!owner) return [{ text, src: null }];
+	const out: Seg[] = [];
+	let start = 0;
+	for (let i = 1; i <= text.length; i++) {
+		if (i === text.length || owner[i] !== owner[start]) {
+			out.push({ text: text.slice(start, i), src: owner[start] < 0 ? null : owner[start] });
+			start = i;
+		}
+	}
+	return out;
+}
+
+/** per character: the source index that tints it (−1: none) · null when no part is in `text`. */
+function ownersOf(text: string, parts: EyesPart[], sources: string[], found?: Set<number>): Int16Array | null {
 	const spans: { s: number; e: number; src: number }[] = [];
 	let folded: { out: string; map: number[] } | null = null;
 	parts.forEach((p, pi) => {
@@ -77,19 +104,11 @@ export function tint(text: string, parts: EyesPart[], sources: string[], found?:
 			spans.push({ s: map[i], e: map[i + nf.length - 1] + 1, src });
 		}
 	});
-	if (!spans.length) return [{ text, src: null }];
+	if (!spans.length) return null;
 	const owner = new Int16Array(text.length).fill(-1);
 	spans.sort((a, b) => b.e - b.s - (a.e - a.s)); // biggest first, so the specific ones win
 	for (const sp of spans) owner.fill(sp.src, sp.s, sp.e);
-	const out: Seg[] = [];
-	let start = 0;
-	for (let i = 1; i <= text.length; i++) {
-		if (i === text.length || owner[i] !== owner[start]) {
-			out.push({ text: text.slice(start, i), src: owner[start] < 0 ? null : owner[start] });
-			start = i;
-		}
-	}
-	return out;
+	return owner;
 }
 
 const kb = (n: number) => (n < 1024 ? `${n} B` : `${(n / 1024).toFixed(n < 10240 ? 1 : 0)} KB`);
@@ -141,6 +160,143 @@ export function systemOf(payload: Record<string, any>): { at: number | null; tex
 	});
 	return out;
 }
+
+const isSystem = (role: string) => role === 'system' || role === 'developer';
+
+/** where each message sits, in her words: `system`, `turn N` (her turns and Petal's, counted
+ * from 1), or `system · after turn N` for a system turn further down the history. */
+export function turnLabels(msgs: Msg[]): string[] {
+	let n = 0;
+	return msgs.map((m) => (isSystem(m.role) ? (n ? `system · after turn ${n}` : 'system') : `turn ${++n}`));
+}
+
+export type Place = { where: string; role: string | null; key: [number, number, number] };
+
+/** each part's first place in the request, in reading order: the instructions, then every
+ * message's text, then whatever rides on it. `order` lists the parts as Petal reads them: the ones
+ * found in place first, then the ones beside the text (steering, soft tokens), the ones with
+ * nothing to tint, and last the ones nowhere in what was sent. */
+export function placesOf(payload: Record<string, any>, parts: EyesPart[]): { places: (Place | null)[]; order: number[] } {
+	const msgs = historyOf(payload);
+	const labels = turnLabels(msgs);
+	const slots: { where: string; role: string | null; key: [number, number]; text: string }[] = [];
+	if (typeof payload?.instructions === 'string')
+		slots.push({ where: 'instructions', role: null, key: [-1, 0], text: payload.instructions });
+	msgs.forEach((m, mi) => {
+		const text = m.pieces
+			.filter((p) => p.kind === 'text')
+			.map((p) => p.text)
+			.join('\n');
+		slots.push({ where: labels[mi], role: m.role, key: [mi, 0], text });
+		m.extra.forEach(([k, v], xi) =>
+			slots.push({ where: `${labels[mi]} · rides along · ${k}`, role: m.role, key: [mi, 1 + xi], text: v })
+		);
+	});
+	const places = parts.map((p): Place | null => {
+		if (partKind(p.source) !== 'text' || !p.text) return null;
+		for (const s of slots) {
+			const at = firstAt(s.text, p.text);
+			if (at >= 0) return { where: s.where, role: s.role, key: [s.key[0], s.key[1], at] };
+		}
+		return null;
+	});
+	const rank = (i: number) => {
+		const p = parts[i];
+		return places[i] ? 0 : partKind(p.source) !== 'text' ? 1 : !p.text ? 2 : 3;
+	};
+	const cmp = (a: number, b: number) => {
+		const ra = rank(a);
+		const rb = rank(b);
+		if (ra !== rb || ra) return ra - rb || a - b;
+		const ka = places[a]!.key;
+		const kb = places[b]!.key;
+		return ka[0] - kb[0] || ka[1] - kb[1] || ka[2] - kb[2] || a - b;
+	};
+	return { places, order: parts.map((_, i) => i).sort(cmp) };
+}
+
+// ── 🧵 the rendered view (A13): what vLLM's own chat template made of the request ──────────
+/** what a chat template writes as markers: <|…|> (ChatML, Qwen-Omni pads, Llama headers), the
+ * think and tool tags, <s></s>, [INST], gemma's turns */
+export const SPECIAL =
+	/<\|[^<>|\s]{1,48}\|>|<\/?(?:think|tool_call|tool_response|tools|answer)>|<\/?s>|\[\/?INST\]|<(?:start|end)_of_turn>|<bos>|<eos>/g;
+
+export type RSeg = { text: string; src: number | null; tpl: boolean; tok: boolean; n: number };
+
+/** the rendered prompt in segments: special tokens (a run of the same one folded into one, ×n),
+ * the template's own words (everything that isn't her messages' text), and the parts tinted by
+ * source inside her messages. `tail` = what the template writes after the last message: where
+ * Petal starts writing. `missed` counts message texts the template reshaped (not found verbatim). */
+export function renderedSegs(text: string, payload: Record<string, any>, parts: EyesPart[], sources: string[]) {
+	const inMsg = new Uint8Array(text.length);
+	let cursor = 0;
+	let lastEnd = 0;
+	let missed = 0;
+	// a turn's text opens right after its header (a newline, a tag's '>', [INST]'s space): a short
+	// "hi" is never taken from inside the tool block the template wrote before it
+	const opens = (i: number) => i === 0 || /[\n >]/.test(text[i - 1]);
+	const locate = (needle: string, from: number, first: boolean) => {
+		let i = text.indexOf(needle, from);
+		for (let n = 0; first && i >= 0 && !opens(i) && n < 400; n++) i = text.indexOf(needle, i + 1);
+		return first && i >= 0 && !opens(i) ? -1 : i;
+	};
+	for (const m of historyOf(payload)) {
+		let first = true;
+		for (const p of m.pieces) {
+			if (p.kind !== 'text' || !p.text.trim()) continue;
+			const t = p.text.trim(); // templates often trim (or lstrip) a turn's text
+			// exact after its header, else trimmed after its header, else wherever it first appears
+			const tries: [string, boolean][] = [[p.text, first], [t, first], [p.text, false], [t, false]];
+			let at = -1;
+			let len = 0;
+			for (const [needle, strict] of tries) {
+				at = locate(needle, cursor, strict);
+				len = needle.length;
+				if (at >= 0) break;
+			}
+			if (at < 0) {
+				missed++;
+				continue;
+			}
+			inMsg.fill(1, at, at + len);
+			cursor = lastEnd = at + len;
+			first = false;
+		}
+	}
+	const owner = ownersOf(text, parts, sources);
+	const toks: [number, number][] = [];
+	for (const mt of text.matchAll(SPECIAL)) toks.push([mt.index!, mt.index! + mt[0].length]);
+	const segs: RSeg[] = [];
+	const push = (s: number, e: number) => {
+		if (e <= s) return;
+		let start = s;
+		for (let i = s + 1; i <= e; i++) {
+			const cut =
+				i === e ||
+				inMsg[i] !== inMsg[start] ||
+				(owner ? owner[i] : -1) !== (owner ? owner[start] : -1);
+			if (!cut) continue;
+			const src = owner && inMsg[start] && owner[start] >= 0 ? owner[start] : null;
+			segs.push({ text: text.slice(start, i), src, tpl: !inMsg[start], tok: false, n: 1 });
+			start = i;
+		}
+	};
+	let at = 0;
+	for (const [s, e] of toks) {
+		push(at, s);
+		const tok = text.slice(s, e);
+		const last = segs[segs.length - 1];
+		if (last?.tok && last.text === tok && at === s) last.n++;
+		else segs.push({ text: tok, src: null, tpl: !inMsg[s], tok: true, n: 1 });
+		at = e;
+	}
+	push(at, text.length);
+	return { segs, tail: text.slice(lastEnd), lastEnd, missed };
+}
+
+/** the thinking switch, read from where she starts writing */
+export const thinkingOf = (tail: string): 'closed' | 'open' | null =>
+	/<think>\s*<\/think>\s*$/.test(tail) ? 'closed' : /<think>\s*$/.test(tail) ? 'open' : null;
 
 const TEXT_KEYS = new Set(['messages', 'input', 'instructions', 'prompt']);
 

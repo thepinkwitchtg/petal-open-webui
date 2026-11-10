@@ -12,12 +12,18 @@
 	//
 	// nothing animates, ever: the label re-reads once a minute while the page is
 	// visible and something is counting down; a hidden page holds no timer at all.
+	//
+	// 🔥 the vow (A13) has its section beside the trips: a chip of its own after the trip's
+	// (💗 Heartstrings · 🍄 trip · 🔥 vow), its card in the panel (day N of M, her words, a
+	// release that takes her reason) and the ritual to commit one (name · how long · her why ·
+	// read it back · I commit). its day turns over by one timeout, never a ticking clock.
 	import { onDestroy, onMount, tick } from 'svelte';
 	import { toast } from 'svelte-sonner';
 
 	import { previewDose, type MarkerPreview, type MarkerTimeline } from '$lib/apis/petal-markers';
 	import {
 		clock,
+		commitVow,
 		doseText,
 		markersError,
 		markersNow,
@@ -26,6 +32,7 @@
 		phaseAt,
 		offerGatherUndo,
 		refreshMarkers,
+		releaseVow,
 		setOutcome,
 		span,
 		writeMarker,
@@ -44,10 +51,16 @@
 		timer = undefined;
 		if (typeof document === 'undefined' || document.visibilityState !== 'visible') return;
 		const n = $markersNow;
-		if (!n?.status && !n?.integration) return; // nothing counts down → no timer
-		const edge = nextEdge(n, t);
-		const minute = (Math.floor(nowS() / 60) + 1) * 60;
-		const at = edge !== null ? Math.min(edge, minute) : minute;
+		const counting = !!(n?.status || n?.integration);
+		const v = n?.vow && !n.vow.ended_by && n.vow.until > t ? n.vow : null; // a passed vow waits for the next read
+		if (!counting && !v) return; // nothing counts down → no timer
+		// a vow turns its day (or ends) at one known moment: a single timeout, no minute hand
+		const edges = [counting ? nextEdge(n, t) : null, v ? vowEdge(v.at, v.until, t) : null].filter(
+			(x): x is number => x !== null
+		);
+		const edge = edges.length ? Math.min(...edges) : null;
+		const minute = counting ? (Math.floor(nowS() / 60) + 1) * 60 : null;
+		const at = Math.min(...[edge, minute].filter((x): x is number => x !== null));
 		timer = setTimeout(
 			async () => {
 				t = nowS();
@@ -85,7 +98,15 @@
 	});
 
 	// ── what the chip says ──────────────────────────────────────
+	const DAY_S = 86400;
+	const vowEdge = (from: number, until: number, now: number) =>
+		Math.min(until, from + (Math.floor((now - from) / DAY_S) + 1) * DAY_S);
 	$: n = $markersNow;
+	$: vow = n?.vow && !n.vow.ended_by && t < n.vow.until ? n.vow : null;
+	$: vowDay = vow ? Math.max(1, Math.floor((t - vow.at) / DAY_S) + 1) : 0; // day 1 = its first 24 h
+	$: vowTitle = vow
+		? `🔥 ${vow.vow} vow · day ${vowDay} of ${vow.total_days} · until ${clock(vow.until, t)} · today's replies hold their ✧ and 🌊`
+		: '';
 	$: current = [n?.status, ...(n?.also ?? [])].filter(
 		(s): s is MarkerTimeline => !!s && ['upcoming', 'peak', 'active'].includes(phaseAt(s, t))
 	);
@@ -116,10 +137,12 @@
 
 	// ── the panel ───────────────────────────────────────────────
 	let chipEl: HTMLButtonElement;
+	let vowEl: HTMLButtonElement;
+	let anchorEl: HTMLElement | null = null; // the chip that opened the panel
 	let panelEl: HTMLDivElement;
 	let doseEl: HTMLInputElement;
 	let open = false;
-	let mode: 'view' | 'form' = 'view';
+	let mode: 'view' | 'form' | 'vow' = 'view';
 	let busy = false;
 	let pos = { left: 8, bottom: 64, width: 352, maxH: 480 };
 
@@ -129,8 +152,9 @@
 	}
 
 	const place = () => {
-		if (!chipEl) return;
-		const r = chipEl.getBoundingClientRect();
+		const a = anchorEl ?? chipEl;
+		if (!a) return;
+		const r = a.getBoundingClientRect();
 		const vh = window.visualViewport?.height ?? window.innerHeight;
 		const vw = window.innerWidth;
 		// a mouse on a wide screen gets the compact panel; a phone keeps the thumb-sized one
@@ -146,7 +170,7 @@
 
 	const onOutside = (e: PointerEvent) => {
 		const el = e.target as Node;
-		if (panelEl?.contains(el) || chipEl?.contains(el)) return;
+		if (panelEl?.contains(el) || chipEl?.contains(el) || vowEl?.contains(el)) return;
 		close();
 	};
 	const onKey = (e: KeyboardEvent) => {
@@ -176,12 +200,15 @@
 	const close = () => {
 		open = false;
 		voidArm = null;
+		releasing = false;
+		reason = '';
 		unlisten();
 	};
 
 	const toggle = async () => {
 		if (open) return close();
 		t = nowS();
+		anchorEl = chipEl;
 		place();
 		open = true;
 		listen();
@@ -196,6 +223,61 @@
 	};
 
 	const focusDose = () => doseEl?.focus({ preventScroll: true });
+
+	// 🔥 the vow's chip opens the panel on its card
+	const toggleVow = () => {
+		if (open) return close();
+		t = nowS();
+		anchorEl = vowEl;
+		place();
+		open = true;
+		listen();
+		mode = 'view';
+		refreshMarkers();
+	};
+
+	// ── 🔥 the vow (8b · A13): committed as a ritual, released as a conscious act ──
+	const VOW_DAYS = [3, 7, 14, 21, 30];
+	let step: 1 | 2 = 1;
+	let vName = 'abstinence';
+	let vDays: number | null = null;
+	let vUntil = '';
+	let vWords = '';
+	let releasing = false;
+	let reason = '';
+	$: vEnd = vUntil ? Math.floor(new Date(vUntil).getTime() / 1000) : vDays ? t + vDays * DAY_S : null;
+	$: canRead = !!(vName.trim() && vWords.trim() && vEnd && vEnd > nowS() + 3600);
+	const daysOf = (end: number | null) => (end ? Math.max(1, Math.ceil((end - nowS()) / DAY_S)) : 0);
+	const openRitual = () => {
+		step = 1;
+		mode = 'vow';
+	};
+	const leaveRitual = () => {
+		step = 1;
+		if (current.length || ig || vow) mode = 'view';
+		else newForm();
+	};
+	const commit = () =>
+		act(async () => {
+			const end = vUntil ? vEnd : vDays ? nowS() + vDays * DAY_S : null; // its days count from the commit
+			if (!end) return;
+			await commitVow(vName, end, vWords);
+			step = 1;
+			vWords = '';
+			vDays = null;
+			vUntil = '';
+			mode = 'view';
+			toast.success('🔥 your vow is alive');
+		});
+	const release = () =>
+		act(async () => {
+			if (!vow || !reason.trim()) return;
+			await releaseVow(vow.id, reason);
+			releasing = false;
+			reason = '';
+			anchorEl = chipEl; // its chip leaves with it: the panel keeps to the trip's
+			toast.success('🔥 released · your reason rides beside it');
+		});
 
 	// ── the form (new status · or edit = amend) ─────────────────
 	let editing: MarkerTimeline | null = null;
@@ -584,6 +666,22 @@
 			{#if chip.tier}<span class="pmk-tier">{chip.tier}</span>{/if}
 		{/if}
 	</button>
+	{#if vow}
+		<button
+			type="button"
+			bind:this={vowEl}
+			class="pmk-chip pmk-vowchip"
+			class:open={open && anchorEl === vowEl}
+			title={vowTitle}
+			aria-label={vowTitle}
+			aria-expanded={open && anchorEl === vowEl}
+			on:click|preventDefault={toggleVow}
+		>
+			<span class="pmk-emoji" aria-hidden="true">🔥</span>
+			<span class="pmk-word">day {vowDay}</span>
+			<span class="pmk-left">of {vow.total_days}</span>
+		</button>
+	{/if}
 {/if}
 
 {#if open}
@@ -741,12 +839,92 @@
 				</section>
 			{/if}
 
+			{#if vow}
+				<section class="pmk-card vow" aria-label="your vow">
+					<header class="pmk-head">
+						<span class="pmk-big" aria-hidden="true">🔥</span>
+						<div class="pmk-title">
+							<div class="pmk-name">{vow.vow} vow</div>
+							<div class="pmk-soft">day {vowDay} of {vow.total_days} · until {clock(vow.until, t)}</div>
+						</div>
+					</header>
+					<div class="pmk-bar" aria-hidden="true">
+						<i class="pmk-seg vowseg" style="left:0%; width:100%"></i>
+						<i class="pmk-now" style="left:{Math.max(0, Math.min(100, ((t - vow.at) / Math.max(1, vow.until - vow.at)) * 100))}%"></i>
+					</div>
+					<p class="pmk-words">“{vow.words}”</p>
+					<div class="pmk-soft small">today's replies hold their ✧ and 🌊 while it lives · the past stays open</div>
+					{#if !releasing}
+						<div class="pmk-actions">
+							<button type="button" class="pmk-soft-btn ghost" disabled={busy} on:click={() => (releasing = true)}
+								>release · a conscious act</button
+							>
+						</div>
+					{:else}
+						<textarea class="pmk-field note" rows="2" placeholder="why you release it, in your own words…" bind:value={reason}
+						></textarea>
+						<div class="pmk-actions">
+							<button
+								type="button"
+								class="pmk-soft-btn"
+								on:click={() => {
+									releasing = false;
+									reason = '';
+								}}>keep my vow</button
+							>
+							<button type="button" class="pmk-go" disabled={busy || !reason.trim()} on:click={release}>release my vow</button>
+						</div>
+					{/if}
+				</section>
+			{/if}
+
 			<div class="pmk-actions foot">
 				<button type="button" class="pmk-go" disabled={busy} on:click={async () => { newForm(); await tick(); focusDose(); }}
 					>＋ status</button
 				>
 				{#if !ig}
 					<button type="button" class="pmk-soft-btn" disabled={busy} on:click={openIntegration}>🌙 open integration</button>
+				{/if}
+				{#if !vow}
+					<button type="button" class="pmk-soft-btn" disabled={busy} on:click={openRitual}>🔥 a vow</button>
+				{/if}
+			</div>
+		{:else if mode === 'vow'}
+			<div class="pmk-form" role="group" aria-label="a vow">
+				{#if step === 1}
+					<div class="pmk-k">🔥 a vow · sacred and deliberate</div>
+					<input class="pmk-field" aria-label="its name" placeholder="its name" maxlength="60" bind:value={vName} />
+					<div class="pmk-k">how long</div>
+					<div class="pmk-subs">
+						{#each VOW_DAYS as d (d)}
+							<button
+								type="button"
+								class="pmk-strain"
+								class:on={vDays === d && !vUntil}
+								on:click={() => {
+									vDays = d;
+									vUntil = '';
+								}}>{d} days</button
+							>
+						{/each}
+					</div>
+					<div class="pmk-row">
+						<span class="pmk-soft">or until</span>
+						<input class="pmk-field grow" type="datetime-local" aria-label="until" bind:value={vUntil} />
+					</div>
+					<textarea class="pmk-field note" rows="3" placeholder="your why, in your own words…" bind:value={vWords}></textarea>
+					<div class="pmk-actions foot">
+						<button type="button" class="pmk-go" disabled={!canRead} on:click={() => (step = 2)}>read it back</button>
+						<button type="button" class="pmk-soft-btn ghost" on:click={leaveRitual}>not now</button>
+					</div>
+				{:else}
+					<div class="pmk-k">🔥 {vName.trim()} · {daysOf(vEnd)} days</div>
+					<div class="pmk-soft">from now until {vEnd ? clock(vEnd, t) : ''}</div>
+					<p class="pmk-words">“{vWords.trim()}”</p>
+					<div class="pmk-actions foot">
+						<button type="button" class="pmk-go" disabled={busy} on:click={commit}>I commit</button>
+						<button type="button" class="pmk-soft-btn ghost" on:click={() => (step = 1)}>change it</button>
+					</div>
 				{/if}
 			</div>
 		{:else}
@@ -978,7 +1156,10 @@
 					{#if !showNote}
 						<button type="button" class="pmk-soft-btn ghost" on:click={() => (showNote = true)}>＋ note</button>
 					{/if}
-					{#if current.length || ig}
+					{#if !editing && !vow}
+						<button type="button" class="pmk-soft-btn ghost" on:click={openRitual}>🔥 a vow</button>
+					{/if}
+					{#if current.length || ig || vow}
 						<button type="button" class="pmk-soft-btn ghost" on:click={() => (mode = 'view')}>back</button>
 					{/if}
 				</div>
@@ -1042,6 +1223,16 @@
 	.pmk-chip[data-phase='integration'] {
 		border-color: oklch(0.622 0.186 calc(var(--p-h-accent, 352) - 36) / 0.4);
 		background: oklch(0.622 0.186 calc(var(--p-h-accent, 352) - 36) / 0.1);
+	}
+	/* 🔥 the vow (A13): ember-up from her accent, static like the rest */
+	.pmk-chip.pmk-vowchip {
+		border-color: oklch(0.72 0.17 calc(var(--p-h-accent, 352) + 53) / 0.4);
+		background: oklch(0.72 0.17 calc(var(--p-h-accent, 352) + 53) / 0.09);
+	}
+	.pmk-chip.pmk-vowchip:hover,
+	.pmk-chip.pmk-vowchip.open {
+		border-color: oklch(0.72 0.17 calc(var(--p-h-accent, 352) + 53) / 0.6);
+		background: oklch(0.72 0.17 calc(var(--p-h-accent, 352) + 53) / 0.15);
 	}
 	.pmk-emoji,
 	.pmk-big,
@@ -1185,6 +1376,16 @@
 	}
 	.pmk-seg.integ {
 		background: oklch(0.622 0.186 calc(var(--p-h-accent, 352) - 36) / 0.35);
+	}
+	.pmk-seg.vowseg {
+		background: oklch(0.72 0.17 calc(var(--p-h-accent, 352) + 53) / 0.3);
+	}
+	.pmk-words {
+		margin: 0;
+		color: var(--pearl, #f6eef3);
+		font-style: italic;
+		white-space: pre-wrap;
+		overflow-wrap: anywhere;
 	}
 	.pmk-now {
 		position: absolute;
