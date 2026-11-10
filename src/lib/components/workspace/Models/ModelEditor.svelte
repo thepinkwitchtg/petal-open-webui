@@ -1556,7 +1556,7 @@
 											</button>
 										{/if}
 									</div>
-									<PetalStates bind:meta={info.meta} bind:system disabled={readOnly || historical} /> <!-- 🌙 petal states (slice 9a) -->
+									<PetalStates bind:meta={info.meta} bind:system modelId={id || null} disabled={readOnly || historical} /> <!-- 🌙 petal states (slice 9a) -->
 									<!-- Previous labels retained for i18n extraction: {$i18n.t('Model Params')} -->
 									<div class="mt-2 space-y-0.5">
 										<button

@@ -339,7 +339,7 @@
 		return out;
 	}
 	$: under = notePieces(preview?.footnote);
-	$: names = new Map((draft?.gems ?? []).map((g: any) => [g.id, g]));
+	$: names = new Map<string, any>((draft?.gems ?? []).map((g: any): [string, any] => [g.id, g]));
 
 	const left = (s: number | null | undefined) => {
 		if (s == null) return '';
@@ -490,11 +490,11 @@
 								<input
 									class="w-full rounded-md bg-gray-50 px-2 py-1 font-mono text-[0.75rem] outline-hidden dark:bg-gray-850"
 									placeholder="opens with… (shown only around a line that speaks)"
-									value={draft.readout.head ?? ''}
+									value={draft?.readout?.head ?? ''}
 									on:input={(e) => setWrap('head', e.currentTarget.value)}
 								/>
 								{#each lines as l (l.id)}
-									{@const r = (preview?.readout ?? []).find((x) => x.id === l.id)}
+									{@const r = (preview?.readout ?? []).find((x: any) => x.id === l.id)}
 									<div class={l.retired ? 'opacity-60' : ''}>
 										<div class="flex items-center gap-2 text-[0.75rem]">
 											<span class="truncate {r?.shown ? 'text-gray-900 dark:text-gray-100' : 'text-gray-400 dark:text-gray-600'}">{r?.shown ? r.text : `resting · ${r?.why ?? '…'}`}</span>
@@ -519,7 +519,7 @@
 								<input
 									class="w-full rounded-md bg-gray-50 px-2 py-1 font-mono text-[0.75rem] outline-hidden dark:bg-gray-850"
 									placeholder="closes with…"
-									value={draft.readout.foot ?? ''}
+									value={draft?.readout?.foot ?? ''}
 									on:input={(e) => setWrap('foot', e.currentTarget.value)}
 								/>
 							</div>
@@ -529,7 +529,7 @@
 								<div class="space-y-1.5 border-t border-gray-100/60 pt-2 dark:border-gray-850/60">
 									<div class="text-[0.6875rem] text-gray-600 dark:text-gray-400">🪶 under her latest message · lines of the footnote</div>
 									{#each noteLines as l (l.id)}
-										{@const r = (preview?.readout ?? []).find((x) => x.id === l.id)}
+										{@const r = (preview?.readout ?? []).find((x: any) => x.id === l.id)}
 										<div class={l.retired ? 'opacity-60' : ''}>
 											<div class="flex items-center gap-2 text-[0.75rem]">
 												<span class="truncate {r?.shown ? 'text-gray-900 dark:text-gray-100' : 'text-gray-400 dark:text-gray-600'}">{r?.shown ? r.text : `resting · ${r?.why ?? '…'}`}</span>
@@ -562,10 +562,10 @@
 								<span class="text-gray-400 dark:text-gray-600">{preview?.placed?.[t] === 'token' ? 'placed' : preview?.placed?.[t] === 'appended' ? 'at the end' : preview?.placed?.[t] === 'unplaced' ? 'not placed' : 'quiet now'}</span>
 							{/each}
 						</div>
-						<pre class="max-h-96 overflow-y-auto whitespace-pre-wrap break-words rounded-md bg-gray-50 p-2 text-[0.75rem] text-gray-700 dark:bg-gray-850 dark:text-gray-300">{#each segs as s}{#if s.kind === 'gem'}<mark class="rounded-sm bg-pink-500/10 text-gray-900 shadow-[inset_2px_0_0_rgba(236,72,153,0.7)] dark:text-gray-100" title={names.get(s.gem)?.name ?? s.gem}>{s.text}</mark>{:else if s.kind === 'readout'}<mark class="rounded-sm bg-violet-500/10 text-gray-900 shadow-[inset_2px_0_0_rgba(139,92,246,0.7)] dark:text-gray-100">{s.text}</mark>{:else if s.kind === 'label'}<span class="text-pink-500 dark:text-pink-400">{s.text}</span>{:else if s.kind === 'slot'}<mark class="rounded-sm bg-pink-500/10 text-gray-900 dark:text-gray-100">{s.text}</mark>{:else}{s.text}{/if}{:else}{preview ? 'nothing from the forge right now' : '…'}{/each}</pre>
+						<pre class="max-h-96 overflow-y-auto whitespace-pre-wrap break-words rounded-md bg-gray-50 p-2 text-[0.75rem] text-gray-700 dark:bg-gray-850 dark:text-gray-300">{#each segs as s}{#if s.kind === 'gem'}<mark class="rounded-sm bg-pink-500/10 text-gray-900 shadow-[inset_2px_0_0_rgba(236,72,153,0.7)] dark:text-gray-100" title={names.get(s.gem ?? '')?.name ?? s.gem}>{s.text}</mark>{:else if s.kind === 'readout'}<mark class="rounded-sm bg-violet-500/10 text-gray-900 shadow-[inset_2px_0_0_rgba(139,92,246,0.7)] dark:text-gray-100">{s.text}</mark>{:else if s.kind === 'label'}<span class="text-pink-500 dark:text-pink-400">{s.text}</span>{:else if s.kind === 'slot'}<mark class="rounded-sm bg-pink-500/10 text-gray-900 dark:text-gray-100">{s.text}</mark>{:else}{s.text}{/if}{:else}{preview ? 'nothing from the forge right now' : '…'}{/each}</pre>
 						{#if under.length}
 							<div class="mt-2 mb-1 text-[0.6875rem] text-gray-600 dark:text-gray-400">🪶 under her latest message · never in the prompt</div>
-							<pre class="max-h-64 overflow-y-auto whitespace-pre-wrap break-words rounded-md bg-gray-50 p-2 text-[0.75rem] text-gray-700 dark:bg-gray-850 dark:text-gray-300"><span class="italic text-gray-400 dark:text-gray-500">⟨her latest message⟩</span>{'\n\n'}{#each under as s}{#if s.kind === 'gem'}<mark class="rounded-sm bg-pink-500/10 text-gray-900 shadow-[inset_2px_0_0_rgba(236,72,153,0.7)] dark:text-gray-100" title={names.get(s.gem)?.name ?? s.gem}>{s.text}</mark>{:else if s.kind === 'note'}<mark class="rounded-sm bg-violet-500/10 text-gray-900 shadow-[inset_2px_0_0_rgba(196,181,253,0.8)] dark:text-gray-100">{s.text}</mark>{:else}<span class="text-gray-400 dark:text-gray-500">{s.text}</span>{/if}{/each}</pre>
+							<pre class="max-h-64 overflow-y-auto whitespace-pre-wrap break-words rounded-md bg-gray-50 p-2 text-[0.75rem] text-gray-700 dark:bg-gray-850 dark:text-gray-300"><span class="italic text-gray-400 dark:text-gray-500">⟨her latest message⟩</span>{'\n\n'}{#each under as s}{#if s.kind === 'gem'}<mark class="rounded-sm bg-pink-500/10 text-gray-900 shadow-[inset_2px_0_0_rgba(236,72,153,0.7)] dark:text-gray-100" title={names.get(s.gem ?? '')?.name ?? s.gem}>{s.text}</mark>{:else if s.kind === 'note'}<mark class="rounded-sm bg-violet-500/10 text-gray-900 shadow-[inset_2px_0_0_rgba(196,181,253,0.8)] dark:text-gray-100">{s.text}</mark>{:else}<span class="text-gray-400 dark:text-gray-500">{s.text}</span>{/if}{/each}</pre>
 						{/if}
 					</div>
 

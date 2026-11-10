@@ -21,6 +21,7 @@ import {
 	type MarkersNow,
 	type MarkerTimeline,
 	type MarkerVia,
+	type MarkerVow,
 	type After,
 	type Outcome,
 	type Quality
@@ -123,8 +124,9 @@ export const doseText = (dose: string | null, unit: string | null) => {
 
 // ── ✧ marks on replies, per chat (slices A11 · A11.1) ────────
 // ✧ an orbit is the primary gesture: one tap, its outcome open until she says held or leaked.
-// 🌊 a climax is reached from the ✧ menu, deliberate, and carries a quality (🔮 owned ·
-// 💗 received · 🕳 hollow) and an after-feel (fed · neutral · hollow) once she names them.
+// 🌊 a climax is reached from the ✧ menu, deliberate. its quality (🔮 owned · 💗 received ·
+// 🕳 hollow) and after-feel (fed · neutral · hollow) stay on the event, set later by Petal's
+// digestion layer: no picker sets them (A13).
 // both may live away from any chat (the diary); a temp chat keeps them without any link
 // (contract 0), so there the page only remembers what it tapped itself.
 export type ReplyMarks = {
@@ -214,10 +216,42 @@ const post = (body: Record<string, unknown>) =>
 const anchor = (chatId: string, messageId: string) =>
 	isSavedChatId(chatId) ? { chat_id: chatId, message_id: messageId, temp: false } : { temp: true };
 
-/** ✧ one tap on a reply: an orbit with its outcome open (it opens its own integration window) */
-export const castOrbit = async (chatId: string, messageId: string) => {
-	const { id } = await post({ kind: 'orbit', outcome: null, ...anchor(chatId, messageId) });
-	patchMarks(chatId, messageId, { orbit: { id, at: nowS(), outcome: null } });
+// ── 🔥 the vow's brake (8b · A13) ──────────────────────────
+/** the start of today, on her clock (the rig keeps the same one) */
+export const todayStart = (t: number = nowS()) => {
+	const d = new Date(t * 1000);
+	d.setHours(0, 0, 0, 0);
+	return Math.floor(d.getTime() / 1000);
+};
+
+/** the moment a new mark on a reply lands at: a reply from a past day is annotated at its own
+ * moment (so it sits on its day, and no integration window opens now); today's is the tap itself */
+export const markMoment = (msgAt: number | null | undefined): number | undefined =>
+	msgAt && msgAt < todayStart() ? Math.floor(msgAt) : undefined;
+
+/** while a vow is alive, today's moments hold back both 🌊 a climax and ✧ an orbit (an orbit is
+ * a climax held); a past day stays open. mirrors the server's own check (core._brake). */
+export const vowBrakes = (vow: MarkerVow | null | undefined, moment: number = nowS()) =>
+	!!vow && !vow.ended_by && nowS() < vow.until && moment >= todayStart();
+
+/** 🔥 a vow, committed (8b): its name, until when, her words · it begins now, never backdated */
+export const commitVow = async (vow: string, until: number, words: string) => {
+	const r = await post({ kind: 'vow.start', vow: vow.trim(), until, words: words.trim() });
+	await refreshMarkers();
+	return r;
+};
+
+/** 🔥 a release: a conscious act, her reason kept beside it */
+export const releaseVow = async (id: string, reason: string) => {
+	await post({ kind: 'vow.release', ref: id, reason: reason.trim() });
+	await refreshMarkers();
+};
+
+/** ✧ one tap on a reply: an orbit with its outcome open (it opens its own integration window) ·
+ * `at` = markMoment(the reply's time): only a past day's reply carries its own moment */
+export const castOrbit = async (chatId: string, messageId: string, at?: number) => {
+	const { id } = await post({ kind: 'orbit', outcome: null, ...(at ? { at } : {}), ...anchor(chatId, messageId) });
+	patchMarks(chatId, messageId, { orbit: { id, at: at ?? nowS(), outcome: null } });
 	refreshMarkers();
 	return id;
 };
@@ -269,9 +303,20 @@ export const markAs = async (
 	chatId: string,
 	messageId: string,
 	cur: ReplyMarks | null,
-	target: 'held' | 'leaked' | 'climax'
+	target: 'held' | 'leaked' | 'climax',
+	moment?: number // a reply without a mark yet: markMoment(its time)
 ) => {
-	if (target === 'climax') {
+	if (!cur?.orbit && !cur?.climax) {
+		const kind = target === 'climax' ? 'climax' : 'orbit';
+		const extra = target === 'climax' ? { quality: null, after: null } : { outcome: target };
+		const { id } = await post({ kind, ...extra, ...(moment ? { at: moment } : {}), ...anchor(chatId, messageId) });
+		const at = moment ?? nowS();
+		patchMarks(
+			chatId,
+			messageId,
+			target === 'climax' ? { climax: { id, at, quality: null, after: null } } : { orbit: { id, at, outcome: target } }
+		);
+	} else if (target === 'climax') {
 		if (cur?.climax || !cur?.orbit) return;
 		const at = cur.orbit.at;
 		const { id } = await post({ kind: 'climax', quality: null, after: null, at, ...anchor(chatId, messageId) });

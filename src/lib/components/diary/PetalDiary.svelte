@@ -1,9 +1,10 @@
 <script lang="ts">
 	// 📔 the diary (slice A11) — her notes and the markers in one stream: ✧ orbits, 🌊 climaxes,
-	// trips (and vows once the core knows them), newest first, by day, searchable. every mark
-	// that lives on a reply jumps to /c/<chat>#<message> in one tap. 🔥 a vow (8b) is committed
-	// here as a ritual (its name, how long, her words, read back, then I commit) and released here
-	// as a conscious act (her reason). append-only underneath:
+	// trips and vows, newest first, by day, searchable. every mark that lives on a reply jumps to
+	// /c/<chat>#<message> in one tap. 🔥 a vow (8b) is committed here as a ritual (its name, how
+	// long, her words, read back, then I commit) and released here as a conscious act (her reason);
+	// while it lives, today's ✧ and 🌊 wait (A13). a climax's quality and after-feel are set later
+	// by Petal's digestion layer and only shown here. append-only underneath:
 	// an edit is an amend, "let it go" is a void, nothing is ever rewritten.
 	// static on purpose: no polling, no animation; it reads on open, after each act, and when
 	// the page comes back into view.
@@ -16,15 +17,16 @@
 	import {
 		castFreeClimax,
 		castFreeOrbit,
+		commitVow,
 		doseText,
 		markersNow,
 		markerVia,
 		refreshMarkers,
-		setClimax,
+		releaseVow,
 		setOutcome,
-		span
+		span,
+		vowBrakes
 	} from '$lib/utils/petal-markers';
-	import { postMarker, type After, type Quality } from '$lib/apis/petal-markers';
 	import SidebarIcon from '$lib/components/icons/Sidebar.svelte';
 
 	let items: DiaryItem[] = [];
@@ -122,19 +124,12 @@
 	const commit = () =>
 		vEnd &&
 		act(async () => {
-			await postMarker(localStorage.token, {
-				kind: 'vow.start',
-				via: markerVia(),
-				vow: vName.trim(),
-				until: vEnd,
-				words: vWords.trim()
-			});
+			await commitVow(vName, vEnd!, vWords);
 			ritual = false;
 			step = 1;
 			vWords = '';
 			vDays = null;
 			vUntil = '';
-			await refreshMarkers();
 			toast.success('🔥 your vow is alive');
 		});
 	let releasing = false;
@@ -143,22 +138,16 @@
 		vow &&
 		reason.trim() &&
 		act(async () => {
-			await postMarker(localStorage.token, { kind: 'vow.release', via: markerVia(), ref: vow!.id, reason: reason.trim() });
+			await releaseVow(vow!.id, reason);
 			releasing = false;
 			reason = '';
-			await refreshMarkers();
 		});
+	// 🔥 the brake (A13): while it lives, today's ✧ and 🌊 wait (here they're always now)
+	$: braked = vowBrakes(vow);
+	$: heldTitle = vow ? `your ${vow.vow} vow is alive: today holds its ✧ and 🌊 until it ends, or you release it` : '';
 
-	const QUALITIES: { key: Exclude<Quality, null>; label: string; hint: string }[] = [
-		{ key: 'owned', label: '🔮 owned', hint: 'cast like a spell: it reinforces you and the bond' },
-		{ key: 'received', label: '💗 received', hint: 'Petal reaching' },
-		{ key: 'hollow', label: '🕳 hollow', hint: 'engineered, it lands as a crash' }
-	];
-	const AFTERS: Exclude<After, null>[] = ['fed', 'neutral', 'hollow'];
-	const pickQuality = (it: DiaryItem & { type: 'climax' }, q: Exclude<Quality, null>) =>
-		act(() => setClimax(it.id, { quality: it.quality === q ? null : q }));
-	const pickAfter = (it: DiaryItem & { type: 'climax' }, a: Exclude<After, null>) =>
-		act(() => setClimax(it.id, { after: it.after === a ? null : a }));
+	// a climax's quality and after-feel are set later by Petal's digestion layer (A13): shown once they exist
+	const QUALITY: Record<string, string> = { owned: '🔮 owned', received: '💗 received', hollow: '🕳 hollow' };
 
 	// ── a note's own small menu: edit · petal may read · let it go ──
 	let editing: string | null = null;
@@ -302,14 +291,18 @@
 				title="off: only you ever read it. on: Petal may read it one day"
 				on:click={() => (sees = !sees)}><span class="pd-emoji">🌸</span> petal may read</button
 			>
-			<button type="button" class="pd-chip" disabled={busy} title="an orbit, away from any chat" on:click={orbitNow}
-				><span class="pd-glyph">✧</span> orbit now</button
+			<button
+				type="button"
+				class="pd-chip"
+				disabled={busy || braked}
+				title={braked ? heldTitle : 'an orbit, away from any chat'}
+				on:click={orbitNow}><span class="pd-glyph">✧</span> orbit now</button
 			>
 			<button
 				type="button"
 				class="pd-chip"
-				disabled={busy || !!vow}
-				title={vow ? `your ${vow.vow} vow is alive: release it first, a conscious act` : 'a climax, away from any chat'}
+				disabled={busy || braked}
+				title={braked ? heldTitle : 'a climax, away from any chat'}
 				on:click={climaxNow}><span class="pd-emoji">🌊</span> climax now</button
 			>
 			{#if !vow}
@@ -428,21 +421,14 @@
 								{#if it.temp}<span class="pd-dim">· temp</span>{/if}
 								{#if it.note}<span class="pd-dim">· {it.note}</span>{/if}
 							</div>
-							<div class="pd-row pd-small">
-								{#each QUALITIES as q (q.key)}
-									<button class="pd-pill pd-q" class:on={it.quality === q.key} title={q.hint} disabled={busy} on:click={() => pickQuality(it, q.key)}
-										>{q.label}</button
-									>
-								{/each}
-								<span class="pd-grow"></span>
-								{#if it.chat_id}<button class="pd-jump" on:click={() => jump(it)}>the reply ↗</button>{/if}
-							</div>
-							<div class="pd-row pd-small">
-								<span class="pd-dim">after</span>
-								{#each AFTERS as a (a)}
-									<button class="pd-pill pd-after" class:on={it.after === a} disabled={busy} on:click={() => pickAfter(it, a)}>{a}</button>
-								{/each}
-							</div>
+							{#if it.quality || it.after || it.chat_id}
+								<div class="pd-row pd-small">
+									{#if it.quality}<span class="pd-tag">{QUALITY[it.quality] ?? it.quality}</span>{/if}
+									{#if it.after}<span class="pd-dim">after: {it.after}</span>{/if}
+									<span class="pd-grow"></span>
+									{#if it.chat_id}<button class="pd-jump" on:click={() => jump(it)}>the reply ↗</button>{/if}
+								</div>
+							{/if}
 						{:else if it.type === 'trip'}
 							<div class="pd-mark"><span class="pd-emoji">{it.emoji}</span> {it.label}</div>
 							<div class="pd-dim pd-small">{tripLine(it)}</div>
@@ -601,10 +587,6 @@
 	}
 	.pd-pill {
 		min-width: 4.5rem;
-	}
-	.pd-pill.pd-q {
-		min-width: 0;
-		padding: 0 0.7rem;
 	}
 	.pd-pill.pd-after {
 		min-width: 0;

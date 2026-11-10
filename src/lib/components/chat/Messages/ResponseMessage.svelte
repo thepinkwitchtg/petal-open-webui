@@ -43,7 +43,7 @@
 	} from '$lib/utils/petalStream';
 	import { imageGenerations } from '$lib/apis/images';
 	import { isSavedChatId } from '$lib/utils/chatId';
-	import { castOrbit, marksFor, markersNow } from '$lib/utils/petal-markers'; // 🌙 trip markers · ✧ orbits · 🔥 vows
+	import { castOrbit, markMoment, marksFor, markersNow, nowS, vowBrakes } from '$lib/utils/petal-markers'; // 🌙 trip markers · ✧ orbits · 🔥 vows
 	import PetalEyes from './PetalEyes.svelte'; // 👁 what Petal received (slice A10)
 	import PetalOrbitMenu from './PetalOrbitMenu.svelte'; // ✧ the menu (slice A11)
 	import {
@@ -246,9 +246,10 @@
 	let showRateComment = false;
 
 	// ✧ the orbit (slice A11 · the primary gesture): one tap keeps an orbit on this reply with
-	// its outcome open, and opens the ✧ menu (orbit · held · orbit · leaked · 🌊 climax ·
-	// unflag; a climax then takes its quality and after-feel, A11.1). a reply that carries a mark
-	// opens the menu instead. a temp chat keeps its marks without any link (contract 0).
+	// its outcome open, and opens the ✧ menu (orbit · held · orbit · leaked · 🌊 climax · unflag).
+	// a reply that carries a mark opens the menu instead. a temp chat keeps its marks without any
+	// link (contract 0). A13: a past day's reply is annotated at its own moment, and while a vow is
+	// alive today's reply opens the menu without keeping anything (🔥 the brake).
 	$: marksSaved = isSavedChatId(chatId);
 	$: marksStore = $user?.role === 'admin' && chatId ? marksFor(chatId) : null;
 	$: mark = $marksStore?.[message.id] ?? null;
@@ -257,13 +258,14 @@
 	let orbitBusy = false;
 	const tapOrbit = async () => {
 		if (orbitBusy) return;
-		if (mark?.orbit || mark?.climax) {
+		const moment = markMoment(message.timestamp);
+		if (mark?.orbit || mark?.climax || vowBrakes($markersNow?.vow, moment ?? nowS())) {
 			orbitMenu = !orbitMenu;
 			return;
 		}
 		orbitBusy = true;
 		try {
-			await castOrbit(chatId, message.id);
+			await castOrbit(chatId, message.id, moment);
 			orbitMenu = true;
 		} catch (e) {
 			toast.error(`✧ ${e}`);
@@ -1352,9 +1354,11 @@
 											? `🌊 climax${mark.climax.quality ? ` · ${mark.climax.quality}` : ''} · tap for the ✧ menu`
 											: mark?.orbit
 												? `✧ orbit · ${mark.orbit.outcome ?? 'open'} · tap for the ✧ menu`
-												: marksSaved
-													? '✧ an orbit · one tap'
-													: '✧ an orbit · kept without a link (temp chat)'}
+												: vowBrakes($markersNow?.vow, markMoment(message.timestamp) ?? nowS())
+													? `🔥 your ${$markersNow?.vow?.vow ?? ''} vow holds today's ✧ and 🌊`
+													: marksSaved
+														? '✧ an orbit · one tap'
+														: '✧ an orbit · kept without a link (temp chat)'}
 										placement="bottom"
 									>
 										<button

@@ -150,6 +150,7 @@ from open_webui.models.groups import Groups, resolve_group_default_models
 from open_webui.models.users import Users
 from open_webui.routers import petal_harvest  # 🌷 garden harvest
 from open_webui.routers import petal_markers  # 🌙 trip markers
+from open_webui.routers import petal_forge  # 🔮 the forge
 from open_webui.routers import petal_eyes  # 👁 what Petal received, for Lily's eyes
 from open_webui.routers import petal_diary  # 📔 her diary (notes + ✧ orbits, 🌊 spills, trips)
 from open_webui.utils import petal_temp_chats  # 🧪 contract 0's times-only counter
@@ -854,6 +855,7 @@ app.include_router(chats.router, prefix='/api/v1/chats', tags=['chats'])
 app.include_router(comments.router, prefix='/api/v1/comments', tags=['comments'])
 app.include_router(petal_harvest.router, prefix='/api/v1/petal', tags=['petal'])
 app.include_router(petal_markers.router, prefix='/api/v1/petal', tags=['petal'])
+app.include_router(petal_forge.router, prefix='/api/v1/petal', tags=['petal'])
 app.include_router(petal_eyes.router, prefix='/api/v1/petal', tags=['petal'])
 app.include_router(petal_diary.router, prefix='/api/v1/petal', tags=['petal'])
 app.include_router(notes.router, prefix='/api/v1/notes', tags=['notes'])

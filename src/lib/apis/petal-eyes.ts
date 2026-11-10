@@ -59,6 +59,23 @@ export const getEyes = (token: string, chat_id: string, message_id: string) =>
 		`${BASE}?${new URLSearchParams({ chat_id, message_id })}`
 	);
 
+// 🧵 the rendered view (A13): the round through vLLM's own chat template, asked live, kept nowhere
+export type Rendered = {
+	text: string; // /tokenize → /detokenize: every special token kept
+	count: number; // tokens
+	max_model_len: number | null;
+	asked: string; // host:port of the vLLM that rendered it
+	how: string; // 'connection N' · 'PETAL_EYES_TOKENIZE_URL' · 'the record (…)'
+	settings: Record<string, unknown>; // the template settings it was rendered with
+	model: string | null;
+};
+
+export const getRendered = (token: string, chat_id: string, message_id: string, round: number) =>
+	call<Rendered>(
+		token,
+		`${BASE}/rendered?${new URLSearchParams({ chat_id, message_id, round: String(round) })}`
+	);
+
 export const getWellspring = (token: string, req_sha: string, at?: number) =>
 	call<WellFound>(
 		token,

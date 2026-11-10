@@ -188,6 +188,19 @@ logging.basicConfig(stream=sys.stdout, level=GLOBAL_LOG_LEVEL)
 log = logging.getLogger(__name__)
 
 
+def _petal_footnote(metadata: dict) -> dict:
+    """Petal · the forge's footnote (W's filter writes metadata['petal_footnote']), made plain JSON so
+    an odd value can never cost the reply its final save · {} when there's none (or it won't serialize)."""
+    note = metadata.get('petal_footnote')
+    if not (isinstance(note, dict) and note):
+        return {}
+    try:
+        return {'petal_footnote': json.loads(json.dumps(note, ensure_ascii=False, default=str))}
+    except Exception as e:
+        log.warning(f'🌸 petal footnote not kept on the reply ({e!r})')
+        return {}
+
+
 def _is_tool_result_error(value: Any) -> bool:
     if isinstance(value, str):
         text = value.strip().lower()
@@ -6552,6 +6565,9 @@ async def streaming_chat_response_handler(response, ctx):
                             ),
                             # Petal · the state lines she saw in the conversation (slice A8) → the ledger
                             **({'petal_state': metadata['petal_state']} if metadata.get('petal_state') else {}),
+                            # Petal · the forge's footnote beside them (W's filter: note · mode · preset ·
+                            # gems · lines · forge · at), so L keeps the note and the message side by side
+                            **_petal_footnote(metadata),
                             **({'usage': usage} if usage else {}),
                         },
                     )

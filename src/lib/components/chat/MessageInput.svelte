@@ -2732,12 +2732,6 @@ import { isSavedChatId, isTemporaryChatId } from '$lib/utils/chatId';
 								</div>
 
 								<div use:fitControlLabels class="flex flex-1 items-center min-w-0 overflow-x-auto scrollbar-none">
-									{#if $_user?.role === 'admin'}
-										<!-- 🌙 petal: what she's on — right after her pinned 💗 chips, before everything else -->
-										<div class="ml-1 flex shrink-0" style="order: -9000">
-											<PetalStatusChip temporary={$temporaryChatEnabled || isTemporaryChatId(chatId)} />
-										</div>
-									{/if}
 									{#if selectedModelIds.length === 1 && $models.find((m) => m.id === selectedModelIds[0])?.has_user_valves && ($_user?.role === 'admin' || ($_user?.permissions?.chat?.valves ?? true))}
 										<!-- 🌸 petal: with a pinned chip, this knob steps behind it (flex order — her 💗 leads the row) -->
 										<div class="ml-1 flex gap-1.5 shrink-0 {petalPinnedIds.length ? 'order-last' : ''}">
@@ -2760,6 +2754,13 @@ import { isSavedChatId, isTemporaryChatId } from '$lib/utils/chatId';
 									{/if}
 
 									<div class="ml-1 flex gap-1.5 shrink-0">
+										{#if $_user?.role === 'admin'}
+											<!-- 🌙 petal (A13): 💗 her pinned Heartstrings lead (order-first), then 🍄 what she's
+											     on, then 🔥 her vow, then everything else · one row, so the order holds -->
+											<div class="flex gap-1.5 shrink-0" style="order: -9000">
+												<PetalStatusChip temporary={$temporaryChatEnabled || isTemporaryChatId(chatId)} />
+											</div>
+										{/if}
 										{#if showInputSelections && (selectedToolIds ?? []).length > 0 && $visibleControls['chat.selected_tools']}
 											<Tooltip
 												content={$i18n.t('{{COUNT}} Available Tools', {

@@ -1079,12 +1079,25 @@ class ChatTable:
             if msg.get('parentId') and msg['parentId'] not in messages_map
         }
 
+    # Petal · what Petal saw, stamped on a reply by the server alone (the ledger's capture): the page
+    # never writes these keys, so a page save (a thumb, an edit) never wipes them, and a page holding
+    # an older copy (a reply continued since it loaded) never brings the old one back
+    PETAL_STAMPS = ('system', 'petal_state', 'petal_footnote')
+
     @staticmethod
     def merge_history(existing_history: dict | None, incoming_history: dict | None) -> dict:
         existing = (existing_history or {}).get('messages') or {}
         incoming = (incoming_history or {}).get('messages') or {}
+
+        def kept(message_id: str, message: dict) -> dict:
+            old = existing.get(message_id)
+            if message_id not in incoming or not isinstance(old, dict):
+                return message
+            stamps = {k: old[k] for k in ChatTable.PETAL_STAMPS if k in old and message.get(k) != old[k]}
+            return {**message, **stamps} if stamps else message
+
         merged = {
-            message_id: {**message, 'childrenIds': []}
+            message_id: {**kept(message_id, message), 'childrenIds': []}
             for message_id, message in {**existing, **incoming}.items()
             if isinstance(message, dict)
         }

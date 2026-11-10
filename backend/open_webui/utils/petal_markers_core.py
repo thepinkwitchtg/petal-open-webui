@@ -18,8 +18,9 @@ after-feel (fed · neutral · hollow), both amendable; like an orbit it may live
 chat (from the diary, or a temp chat: kept without a link).
 🔥 a vow (contract 9.2, slice 8b) is sacred and deliberate: `vow.start {vow, until, words}` is
 committed with her words, `vow.release {ref, reason}` is a conscious act, and `vow.end` is
-written by the first reader once `until` passes. while a vow is alive, a climax on today's
-moments waits for a release (the brake); annotating the past stays open.
+written by the first reader once `until` passes. while a vow is alive, today's moments hold back
+both 🌊 a climax and ✧ an orbit (an orbit is a climax held) until it ends or a conscious release
+(the brake, A13); annotating a past day stays open.
 auto-transitions: the first reader that notices a boundary was crossed writes the
 matching line (via "auto"), so the log tells the story too. no timers, no daemons.
 
@@ -993,6 +994,15 @@ def _count(v: Any, name: str) -> int:
     return v
 
 
+def _brake(view: 'View', at: int, now: int) -> None:
+    """🔥 the vow's brake (8b · A13): while a vow is alive, today's moments (from the rig's local
+    midnight on) hold back both a climax and an orbit; a past day stays open for annotation."""
+    v = view.vow_at(now)
+    if v and at >= _local_midnight(now):
+        raise MarkerError(f"🔥 your {v['vow']} vow is alive (day {v['day']} of {v['total_days']}): today's moments "
+                          'hold their ✧ and 🌊 until it ends, or until you release it, a conscious act')
+
+
 def new_lines(view: View, body: dict, now: int) -> list[dict]:
     """validate one request → the line(s) to append. raises MarkerError with a showable reason."""
     if not isinstance(body, dict):
@@ -1078,10 +1088,7 @@ def new_lines(view: View, body: dict, now: int) -> list[dict]:
         if message_id and any(e.get('message_id') == message_id and e.get('chat_id') == chat_id
                               for e in view.of_kind('climax')):
             raise MarkerError('this reply already carries a climax')
-        v = view.vow_at(at)  # 8b · the brake: today's moments wait for a conscious release
-        if v and at >= _local_midnight(now):
-            raise MarkerError(f"🔥 your {v['vow']} vow is alive (day {v['day']} of {v['total_days']}): "
-                              'release it first, a conscious act, to mark a climax today')
+        _brake(view, at, now)  # 8b · today's moments wait for the vow's end or a conscious release
         ev.update(chat_id=chat_id, message_id=message_id, quality=quality, after=after,
                   note=_s(body.get('note'), 'note', 2000))
 
@@ -1098,6 +1105,7 @@ def new_lines(view: View, body: dict, now: int) -> list[dict]:
         if message_id and any(e.get('message_id') == message_id and e.get('chat_id') == chat_id
                               for e in view.of_kind('orbit')):
             raise MarkerError('this reply already carries an orbit')
+        _brake(view, at, now)  # A13 · an orbit is a climax held: the vow holds it back too
         ev.update(chat_id=chat_id, message_id=message_id, outcome=outcome, note=_s(body.get('note'), 'note', 2000))
 
     elif kind == 'vow.start':
@@ -1734,16 +1742,25 @@ def _self_test() -> None:
         check(nv and nv['id'] == v1 and nv['day'] == 4 and nv['total_days'] == 14 and nv['words'] == 'my charge aims at the trip',
               'now: day 4 of 14, with her words')
         t_now = b0 + 3 * D_ + 2 * H
-        try:
-            write(g3, {'kind': 'climax', 'via': 'owui'}, now=t_now)
-            check(False, 'the brake: a climax today waits for a release')
-        except MarkerError as e:
-            check('release it first' in str(e), 'the brake: a climax today waits for a release')
+        o_past = write(g3, {'kind': 'orbit', 'via': 'owui', 'chat_id': 'c', 'message_id': 'm0', 'at': b0 + 2 * D_},
+                       now=t_now)['id']  # a past day of the vow: open for annotation
+        for body, why in (({'kind': 'climax'}, 'the brake: a climax today waits for the end or a release'),
+                          ({'kind': 'orbit'}, 'A13 · the brake holds an orbit too (a climax held)'),
+                          ({'kind': 'orbit', 'chat_id': 'c', 'message_id': 'm1', 'at': _local_midnight(t_now) + 60},
+                           "A13 · today's reply, even from this morning, holds its ✧"),
+                          ({'kind': 'climax', 'chat_id': 'c', 'message_id': 'm1', 'at': _local_midnight(t_now) + 60},
+                           "today's reply holds its 🌊 too")):
+            try:
+                write(g3, {'via': 'owui', **body}, now=t_now)
+                check(False, why)
+            except MarkerError as e:
+                check('until you release it' in str(e) and 'vow is alive (day 4 of 14)' in str(e), why)
         write(g3, {'kind': 'climax', 'via': 'owui', 'at': b0 - H}, now=t_now)
         write(g3, {'kind': 'climax', 'via': 'owui', 'at': b0 + 2 * D_ + H}, now=t_now)
-        check(len(build(g3).of_kind('climax')) == 2, 'annotating the past stays open (before the vow, or a past day of it)')
-        write(g3, {'kind': 'orbit', 'via': 'owui'}, now=t_now)
-        check(len(build(g3).of_kind('orbit')) == 1, 'an orbit is honored during a vow')
+        check(len(build(g3).of_kind('climax')) == 2 and len(build(g3).of_kind('orbit')) == 1,
+              'annotating the past stays open (before the vow, or a past day of it): climaxes and orbits alike')
+        write(g3, {'kind': 'amend', 'via': 'owui', 'ref': o_past, 'fields': {'outcome': 'held'}}, now=t_now)
+        check(build(g3).events[o_past]['outcome'] == 'held', 'an orbit already kept still takes its outcome during a vow')
         for bad, why in (({'kind': 'vow.release', 'ref': v1}, 'a release carries her reason'),
                          ({'kind': 'vow.end', 'ref': v1}, 'a vow never ends from a client'),
                          ({'kind': 'amend', 'ref': v1, 'fields': {'until': b0 + 2 * D_}}, 'its length is never bargained')):

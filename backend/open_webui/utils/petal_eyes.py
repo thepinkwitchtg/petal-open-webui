@@ -22,6 +22,9 @@ a record: {at, chat_id, message_id, model, req_sha, payload, parts, round, to}
 
             extra keys ride along as they are ({'tokens': 32, 'memory_ids': [...]}, a pull …)
   to      — host:port the bytes went to (so a missing wellspring record can say where they went)
+
+🧵 the rendered view (A13): a kept round asked again of the live vLLM (/tokenize then /detokenize,
+with the same chat-template settings), so her eyes read every special token too. kept nowhere.
 """
 
 import asyncio
@@ -444,4 +447,134 @@ def wellspring_view(rec: Any) -> dict:
         'flags': [f if isinstance(f, str) else json.dumps(f, ensure_ascii=False) for f in flags] if flags else flags,
         'meta': {k: rec[k] for k in _WELL_META if rec.get(k) is not None},
         'keys': list(rec.keys())[:80],
+    }
+
+
+# ── 🧵 the rendered view: her payload through vLLM's own chat template (A13) ─────────────────
+# the request exactly as sent goes to vLLM's POST /tokenize with the same chat-template settings
+# (add_generation_prompt · continue_final_message · chat_template(_kwargs) · tools …), and the tokens
+# come back through POST /detokenize: every special token, the thinking switch and the tool block the
+# template writes, in the order Petal reads them. asked live, kept nowhere.
+#   where: the OWUI connection the bytes went to (matched by host:port, its /v1 dropped), or
+#   $PETAL_EYES_TOKENIZE_URL (+ $PETAL_EYES_TOKENIZE_KEY) when a tap in between won't pass /tokenize.
+#   only a vLLM on this rig is asked on its own (her payload never leaves the rig for a view); the
+#   override is her explicit choice. a gentle stop in progress (contract 8) waits for Petal.
+TOKENIZE_URL = os.getenv('PETAL_EYES_TOKENIZE_URL') or ''
+TOKENIZE_KEY = os.getenv('PETAL_EYES_TOKENIZE_KEY') or ''
+_TEMPLATE_KEYS = (
+    'add_generation_prompt', 'continue_final_message', 'add_special_tokens',
+    'chat_template', 'chat_template_kwargs', 'tools', 'mm_processor_kwargs',
+)  # fmt: skip
+
+
+class RenderError(Exception):
+    def __init__(self, status: int, detail: str):
+        super().__init__(detail)
+        self.status, self.detail = status, detail
+
+
+def render_body(payload: dict) -> dict:
+    """the /tokenize body for a chat payload: its messages + its own template settings, nothing more."""
+    msgs = payload.get('messages') if isinstance(payload, dict) else None
+    if not isinstance(msgs, list) or not msgs:
+        raise RenderError(422, 'this request carries no chat messages to render (the responses API?)')
+    body: dict = {'messages': msgs, 'add_generation_prompt': True, 'return_token_strs': False}
+    if payload.get('model'):
+        body['model'] = payload['model']
+    for k in _TEMPLATE_KEYS:
+        if payload.get(k) is not None:
+            body[k] = payload[k]
+    if body.get('continue_final_message') and 'add_generation_prompt' not in payload:
+        body['add_generation_prompt'] = False  # vLLM refuses the two together
+    return body
+
+
+def _root(url: str) -> str:
+    b = (url or '').strip().rstrip('/')
+    return b[: -len('/v1')] if b.endswith('/v1') else b
+
+
+async def _where(to: Optional[str]) -> tuple[str, str, str]:
+    """→ (root, key, how): the override, else the connection her bytes went to, else the record's host."""
+    if TOKENIZE_URL:
+        return _root(TOKENIZE_URL), TOKENIZE_KEY, 'PETAL_EYES_TOKENIZE_URL'
+    if not to:
+        raise RenderError(409, 'this record does not say where its bytes went')
+    from open_webui.routers.openai import get_openai_runtime_config  # late: openai.py imports this file
+
+    _, urls, keys, _ = await get_openai_runtime_config()
+    for i, u in enumerate(urls or []):
+        if _host(u) == to:
+            return _root(u), (keys[i] if i < len(keys or []) else '') or '', f'connection {i}'
+    return f'http://{to}', '', 'the record (no connection holds this host now)'
+
+
+def _why(status: int, text: str, root: str) -> str:
+    try:
+        j = json.loads(text)
+    except ValueError:
+        j = None
+    msg = None
+    if isinstance(j, dict):
+        e = j.get('error')
+        msg = (e.get('message') if isinstance(e, dict) else e) or j.get('message') or j.get('detail')
+    if status == 404 and (msg in (None, 'Not Found')):
+        return f'{root} has no /tokenize (a tap in between? set PETAL_EYES_TOKENIZE_URL to vLLM itself)'
+    if status == 404 and isinstance(msg, str) and 'does not exist' in msg:
+        return f'vLLM serves another model now · {msg}'
+    return f'vLLM answered {status}: {(msg if isinstance(msg, str) else text)[:600]}'
+
+
+async def render(rec: dict) -> dict:
+    """one kept round, rendered by the live vLLM · → {text, count, max_model_len, asked, how, settings, model}."""
+    import aiohttp
+
+    from open_webui.utils import petal_gentle_stop as gentle  # late: same reason as above
+
+    body = render_body(rec.get('payload') or {})
+    root, key, how = await _where(rec.get('to'))
+    host = (urlparse(root).hostname or '').lower()
+    if how != 'PETAL_EYES_TOKENIZE_URL' and host not in gentle.LOCAL_HOSTS:
+        raise RenderError(409, f'the rendered view only asks a vLLM on this rig · this reply went to {rec.get("to")}')
+    headers = {'Content-Type': 'application/json', **({'Authorization': f'Bearer {key}'} if key else {})}
+    async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=60)) as s:
+        if gentle.read_stop() is not None and await gentle._ok(s, gentle.LAUNCHER_HEALTH):
+            raise RenderError(503, '🌙 Petal is being tucked in (a gentle stop) · the rendered view waits until she is back')
+        try:
+            async with s.post(f'{root}/tokenize', data=json.dumps(body, ensure_ascii=False).encode('utf-8'), headers=headers) as r:
+                text = await r.text()
+                if r.status >= 400:
+                    raise RenderError(502, _why(r.status, text, root))
+                tok = json.loads(text)
+            tokens = tok.get('tokens') if isinstance(tok, dict) else None
+            if not isinstance(tokens, list):
+                raise RenderError(502, f'{root}/tokenize answered without tokens')
+            det = {'tokens': tokens, **({'model': body['model']} if body.get('model') else {})}
+            async with s.post(f'{root}/detokenize', data=json.dumps(det).encode('utf-8'), headers=headers) as r:
+                text = await r.text()
+                if r.status >= 400:
+                    raise RenderError(502, _why(r.status, text, root))
+                prompt = json.loads(text).get('prompt')
+        except RenderError:
+            raise
+        except (aiohttp.ClientError, asyncio.TimeoutError) as e:
+            raise RenderError(502, f'vLLM at {root} did not answer ({type(e).__name__}) · is she awake?')
+        except ValueError:
+            raise RenderError(502, f'{root} answered something that is not JSON')
+    tools = body.get('tools')
+    settings = {k: body[k] for k in _TEMPLATE_KEYS if k in body and k not in ('tools', 'chat_template')}
+    if isinstance(tools, list):
+        settings['tools'] = len(tools)
+    if body.get('chat_template'):
+        settings['chat_template'] = f'her own · {len(str(body["chat_template"])):,} chars'
+    if rec.get('payload', {}).get('tool_choice') is not None:
+        settings['tool_choice'] = rec['payload']['tool_choice']
+    return {
+        'text': prompt if isinstance(prompt, str) else '',
+        'count': tok.get('count', len(tokens)),
+        'max_model_len': tok.get('max_model_len'),
+        'asked': _host(root) or root,
+        'how': how,
+        'settings': settings,
+        'model': body.get('model'),
     }
