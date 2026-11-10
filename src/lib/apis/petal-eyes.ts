@@ -9,21 +9,38 @@ export type EyesRecord = {
 	chat_id: string;
 	message_id: string;
 	model: string | null; // the OWUI model she chatted with (payload.model is the upstream name)
-	req_sha: string; // sha256 of the exact bytes sent · petal-spill keeps the same hash
+	req_sha: string; // sha256 of the exact bytes sent · petal-wellspring keeps the same hash
 	round: number; // 2+ = a tool follow-up or a continue for the same reply
 	to: string | null; // host:port the bytes went to
 	payload: Record<string, any>;
 	parts: EyesPart[];
 };
 
-export type SpillView = {
+// 🫗 petal-wellspring (A11.1 · the source tap, every raw character before OWUI prettifies it)
+export type WellMeta = {
+	id?: string;
+	at?: number;
+	route?: string;
+	path?: string;
+	caller?: string;
+	model?: string;
+	status?: number;
+	ms?: number;
+	cut?: boolean;
+	streamed?: boolean;
+	finish?: string;
+};
+
+export type WellView = {
 	content: string | null;
 	reasoning: string | null;
-	flags: unknown;
+	raw: string | null;
+	flags: string[] | null;
+	meta: WellMeta;
 	keys: string[];
 };
 
-export type SpillFound = { path: string; view: SpillView; record: unknown };
+export type WellFound = { path: string; view: WellView; record: unknown };
 
 const BASE = `${WEBUI_API_BASE_URL}/petal/eyes`;
 
@@ -42,8 +59,8 @@ export const getEyes = (token: string, chat_id: string, message_id: string) =>
 		`${BASE}?${new URLSearchParams({ chat_id, message_id })}`
 	);
 
-export const getSpill = (token: string, req_sha: string, at?: number) =>
-	call<SpillFound>(
+export const getWellspring = (token: string, req_sha: string, at?: number) =>
+	call<WellFound>(
 		token,
-		`${BASE}/spill?${new URLSearchParams({ req_sha, ...(at ? { at: String(at) } : {}) })}`
+		`${BASE}/wellspring?${new URLSearchParams({ req_sha, ...(at ? { at: String(at) } : {}) })}`
 	);

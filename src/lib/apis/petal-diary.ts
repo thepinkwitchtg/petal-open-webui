@@ -1,5 +1,5 @@
 import { WEBUI_API_BASE_URL } from '$lib/constants';
-import type { Outcome } from '$lib/apis/petal-markers';
+import type { After, Outcome, Quality } from '$lib/apis/petal-markers';
 
 // 📔 her diary (slice A11) — admin-only router at /api/v1/petal/diary
 
@@ -20,8 +20,10 @@ export type DiaryOrbit = Base & {
 	chat_id: string | null;
 	message_id: string | null;
 };
-export type DiarySpill = Base & {
-	type: 'spill';
+export type DiaryClimax = Base & {
+	type: 'climax';
+	quality: Quality;
+	after: After;
 	note: string | null;
 	chat_id: string | null;
 	message_id: string | null;
@@ -42,8 +44,28 @@ export type DiaryTrip = Base & {
 	mutated: boolean;
 	purged: boolean;
 };
-export type DiaryVow = Base & { type: 'vow'; kind: string; [k: string]: unknown };
-export type DiaryItem = DiaryNote | DiaryOrbit | DiarySpill | DiaryTrip | DiaryVow;
+// 8b · 🔥 a vow (its start, carrying how it stands) and its end (released or fulfilled)
+export type DiaryVow = Base & {
+	type: 'vow';
+	vow: string;
+	words: string;
+	until: number;
+	total_days: number;
+	ended_by: 'release' | 'fulfilled' | null;
+	reason: string | null;
+	alive: boolean;
+	day: number | null;
+};
+export type DiaryVowEnd = Base & {
+	type: 'vow_end';
+	vow: string;
+	how: 'released' | 'fulfilled';
+	reason: string | null;
+	days_kept: number;
+	total_days: number;
+	ref: string;
+};
+export type DiaryItem = DiaryNote | DiaryOrbit | DiaryClimax | DiaryTrip | DiaryVow | DiaryVowEnd;
 
 const BASE = `${WEBUI_API_BASE_URL}/petal/diary`;
 

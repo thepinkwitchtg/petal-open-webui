@@ -1,10 +1,11 @@
 <script lang="ts">
 	// 👁 her eyes (slice A10) — a full-screen raw view of exactly what Petal received for one
 	// reply: her system context tinted by source, the history as sent (with whatever rides on
-	// past answers), the params + the Heartstrings pull, and petal-spill's side of the join.
+	// past answers), the params + the Heartstrings pull, and petal-wellspring's side of the join
+	// (the source tap: every raw character she wrote, before OWUI prettified it).
 	// static on purpose: no animation, no timers, nothing redraws while it sits open.
 	import { createEventDispatcher, onDestroy, onMount, tick } from 'svelte';
-	import { getEyes, getSpill, type EyesRecord, type SpillFound } from '$lib/apis/petal-eyes';
+	import { getEyes, getWellspring, type EyesRecord, type WellFound } from '$lib/apis/petal-eyes';
 	import {
 		TINTS,
 		changed,
@@ -13,6 +14,7 @@
 		foldSame,
 		historyOf,
 		paramsOf,
+		partKind,
 		sourcesOf,
 		stripDetails,
 		systemOf,
@@ -69,6 +71,7 @@
 
 	// ── the record, read once per round ──────────────────────────
 	type TPiece = { kind: string; text: string; segs: Seg[] | null };
+	type TRide = [string, string, Seg[]];
 	$: rec = rounds[ri] ?? null;
 	$: parts = rec?.parts ?? [];
 	$: sources = sourcesOf(parts);
@@ -79,6 +82,7 @@
 		const src = sourcesOf(r.parts);
 		const sys = systemOf(r.payload).map((s) => ({ ...s, segs: tint(s.text, r.parts, src, found) }));
 		const above = new Set(sys.map((s) => s.at));
+		// her turns are searched too (pulse rides inside them), and whatever rides along on a turn
 		const history = historyOf(r.payload).map((m) => ({
 			...m,
 			above: above.has(m.i),
@@ -87,10 +91,14 @@
 					...p,
 					segs: p.kind === 'text' && !above.has(m.i) ? tint(p.text, r.parts, src, found) : null
 				})
-			)
+			),
+			rides: m.extra.map(([k, v]): TRide => [k, v, tint(cut(v, 1200), r.parts, src, found)])
 		}));
 		const chars = new Map<number, number>();
-		for (const segs of [...sys.map((s) => s.segs), ...history.flatMap((m) => m.pieces.map((p) => p.segs ?? []))])
+		for (const segs of [
+			...sys.map((s) => s.segs),
+			...history.flatMap((m) => [...m.pieces.map((p) => p.segs ?? []), ...m.rides.map((x) => x[2])])
+		])
 			for (const s of segs) if (s.src !== null) chars.set(s.src, (chars.get(s.src) ?? 0) + s.text.length);
 		return {
 			sys,
@@ -103,7 +111,9 @@
 	}
 
 	$: pulls = parts.filter((p) => /heartstring|💗|strings/i.test(p.source));
-	$: missing = view ? parts.filter((_, i) => !view.found.has(i) && parts[i].text) : [];
+	// steering and soft tokens are never text: they're named, never counted as missing
+	$: missing = view ? parts.filter((p, i) => !view.found.has(i) && p.text && partKind(p.source) === 'text') : [];
+	const NOT_TEXT = { steering: 'steering · not text', soft: 'soft tokens · not text' } as const;
 	const extras = (p: Record<string, unknown>) =>
 		Object.entries(p).filter(([k]) => k !== 'source' && k !== 'text');
 	const asJson = (v: unknown) => (typeof v === 'string' ? v : JSON.stringify(v, null, 1));
@@ -128,29 +138,41 @@
 		}
 	};
 
-	// ── petal-spill: the source tap's side of the join ──────────
-	let spill: SpillFound | null = null;
-	let spillErr = '';
-	let spillFor = '';
+	// ── 🫗 petal-wellspring: the source tap's side of the join ──
+	let well: WellFound | null = null;
+	let wellErr = '';
+	let wellFor = '';
 	let showRecord = false;
-	$: if (rec && rec.req_sha !== spillFor) loadSpill(rec);
-	async function loadSpill(r: EyesRecord) {
-		spillFor = r.req_sha;
-		spill = null;
-		spillErr = '';
+	let showRaw = false;
+	$: if (rec && rec.req_sha !== wellFor) loadWell(rec);
+	async function loadWell(r: EyesRecord) {
+		wellFor = r.req_sha;
+		well = null;
+		wellErr = '';
 		showRecord = false;
+		showRaw = false;
 		try {
-			const s = await getSpill(localStorage.token, r.req_sha, r.at);
-			if (spillFor === r.req_sha) spill = s;
+			const w = await getWellspring(localStorage.token, r.req_sha, r.at);
+			if (wellFor === r.req_sha) well = w;
 		} catch (e) {
-			if (spillFor === r.req_sha) spillErr = String(e);
+			if (wellFor === r.req_sha) wellErr = String(e);
 		}
 	}
 	$: savedSide = stripDetails(saved);
-	$: rawText = spill?.view?.content ?? null;
-	$: ops = rawText !== null ? diffWords(rawText, savedSide.text) : null;
+	$: wrote = well?.view?.content ?? null;
+	$: ops = wrote !== null ? diffWords(wrote, savedSide.text) : null;
 	$: nChanged = ops ? changed(ops) : 0;
-	$: spillFlags = spill?.view?.flags;
+	$: meta = well?.view?.meta ?? {};
+	$: metaLine = [
+		meta.route,
+		meta.caller,
+		meta.model,
+		meta.status !== undefined ? `status ${meta.status}` : '',
+		meta.ms !== undefined ? `${(meta.ms / 1000).toFixed(1)} s` : '',
+		meta.finish ? `finish: ${meta.finish}` : '',
+		meta.streamed === undefined ? '' : meta.streamed ? 'streamed' : 'not streamed',
+		meta.cut ? 'cut' : ''
+	].filter(Boolean);
 </script>
 
 <svelte:window on:keydown={onKey} />
@@ -238,10 +260,10 @@
 								{/if}
 							{/each}
 						{/if}
-						{#each m.extra as [k, v] (k)}
+						{#each m.rides as [k, , segs] (k)}
 							<div class="pe-ride">
 								<span class="pe-dim">rides along ·</span> <b>{k}</b>
-								<pre class="pe-text">{cut(v, 1200)}</pre>
+								<pre class="pe-text">{#each segs as g}{#if g.src === null}{g.text}{:else}<mark class="pe-tint pe-c{g.src % TINTS}" title={sources[g.src]}>{g.text}</mark>{/if}{/each}</pre>
 							</div>
 						{/each}
 					</div>
@@ -292,7 +314,9 @@
 						<span class="pe-sw pe-c{sources.indexOf(p.source) % TINTS}"></span>
 						<span class="pe-psrc">{p.source}</span>
 						<span class="pe-dim pe-mono">{p.text.length.toLocaleString()} chars</span>
-						{#if !p.text}
+						{#if partKind(p.source) !== 'text'}
+							<span class="pe-dim">· {NOT_TEXT[partKind(p.source) === 'steering' ? 'steering' : 'soft']}</span>
+						{:else if !p.text}
 							<span class="pe-dim">· nothing to tint</span>
 						{:else if !view.found.has(i)}
 							<span class="pe-warn">· not in what was sent</span>
@@ -307,28 +331,27 @@
 			</details>
 
 			<details class="pe-sec" open>
-				<summary><span class="pe-caret"></span><span class="pe-emoji">🚰</span> petal-spill · raw at the source</summary>
+				<summary><span class="pe-caret"></span><span class="pe-emoji">🫗</span> petal-wellspring · raw at the source</summary>
 				{#if marks.length}
 					<div class="pe-marks">{#each marks as mk (mk)}<span class="pe-mark">{mk}</span>{/each}</div>
 				{/if}
-				{#if spillErr}
-					<p class="pe-dim">
-						{spillErr}{#if rec.to && !rec.to.endsWith(':8010')}{' '}· these bytes went to {rec.to}, not through the tap{/if}
-					</p>
-				{:else if !spill}
-					<p class="pe-dim">looking for the spill…</p>
+				{#if wellErr}
+					<p class="pe-dim">{wellErr}{#if rec.to}{' '}· these bytes went to {rec.to}{/if}</p>
+				{:else if !well}
+					<p class="pe-dim">looking for the wellspring record…</p>
 				{:else}
-					<div class="pe-sub pe-mono">{spill.path}</div>
-					{#if spillFlags !== null && spillFlags !== undefined}
-						<div class="pe-param"><span class="pe-pk">✧ flags</span><pre class="pe-text pe-pv">{asJson(spillFlags)}</pre></div>
+					<div class="pe-sub pe-mono">{well.path}</div>
+					{#if metaLine.length}<div class="pe-sub">{metaLine.join(' · ')}</div>{/if}
+					{#if well.view.flags?.length}
+						<div class="pe-marks">{#each well.view.flags as f, fi (fi)}<span class="pe-mark">{f}</span>{/each}</div>
 					{/if}
-					{#if spill.view.reasoning}
+					{#if well.view.reasoning}
 						<div class="pe-sub">her reasoning, raw</div>
-						<pre class="pe-text pe-raw">{spill.view.reasoning}</pre>
+						<pre class="pe-text pe-raw">{well.view.reasoning}</pre>
 					{/if}
-					{#if rawText !== null}
+					{#if wrote !== null}
 						<div class="pe-sub">what she wrote, raw</div>
-						<pre class="pe-text pe-raw">{rawText}</pre>
+						<pre class="pe-text pe-raw">{wrote}</pre>
 						<div class="pe-sub">
 							raw → what OWUI saved ·
 							{#if nChanged}<span class="pe-mono">{nChanged.toLocaleString()}</span> chars differ{:else}identical ✓{/if}
@@ -345,14 +368,20 @@
 						{/if}
 					{:else}
 						<p class="pe-dim">
-							no content key I know in this spill (keys: {spill.view.keys.join(', ')}) · the whole record is below
+							no content in this record (keys: {well.view.keys.join(', ')}) · the whole record is below
 						</p>
 					{/if}
+					{#if well.view.raw}
+						<button class="pe-more" on:click={() => (showRaw = !showRaw)}
+							>{showRaw ? 'fold every raw character' : `every raw character · ${well.view.raw.length.toLocaleString()}`}</button
+						>
+						{#if showRaw}<pre class="pe-text pe-raw">{well.view.raw}</pre>{/if}
+					{/if}
 					<button class="pe-more" on:click={() => (showRecord = !showRecord)}
-						>{showRecord ? 'fold the spill record' : 'the whole spill record'}</button
+						>{showRecord ? 'fold the record' : 'the whole record'}</button
 					>
 					{#if showRecord}
-						<pre class="pe-text pe-dim">{cut(JSON.stringify(spill.record, null, 1), 200000)}</pre>
+						<pre class="pe-text pe-dim">{cut(JSON.stringify(well.record, null, 1), 200000)}</pre>
 					{/if}
 				{/if}
 			</details>

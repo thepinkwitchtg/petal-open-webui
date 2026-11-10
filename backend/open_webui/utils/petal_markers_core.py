@@ -13,7 +13,13 @@ reading rule: replay the file in order, applying `amend` and `void` by `ref`.
 derived phases (peak · active · integration · over) are computed on read, never typed.
 ✧ an `orbit` (slice A11, the primary gesture) carries its outcome open (null) until she says
 held or leaked (an amend), and opens its own integration window (climax.orbit_integration_h).
-🌊 a spill is the `climax` kind, relabeled in the UI: past lines are never rewritten.
+🌊 a `climax` (A11.1) carries an optional quality (🔮 owned · 💗 received · 🕳 hollow) and
+after-feel (fed · neutral · hollow), both amendable; like an orbit it may live away from any
+chat (from the diary, or a temp chat: kept without a link).
+🔥 a vow (contract 9.2, slice 8b) is sacred and deliberate: `vow.start {vow, until, words}` is
+committed with her words, `vow.release {ref, reason}` is a conscious act, and `vow.end` is
+written by the first reader once `until` passes. while a vow is alive, a climax on today's
+moments waits for a release (the brake); annotating the past stays open.
 auto-transitions: the first reader that notices a boundary was crossed writes the
 matching line (via "auto"), so the log tells the story too. no timers, no daemons.
 
@@ -105,18 +111,24 @@ SETTINGS_DEFAULT: dict = {
     # what Petal reads of the climax trail (slice A8 · petal_state.py): the last trail_days of
     # climax times, `charges` per rolling charge_window_h, none until cooldown_h after the last.
     # slice A11 · an orbit opens its own integration window (orbit_integration_h, 0 = none) and
-    # spends orbit_spends[outcome] of a charge (a spill spends 1); orbit_trail_days feeds the trail
+    # spends orbit_spends[outcome] of a charge; orbit_trail_days feeds the trail.
+    # A11.1 · a climax spends spends[quality] (unknown = no quality set yet), tuned by feel
     'climax': {'trail_days': 3, 'charges': 1, 'charge_window_h': 24, 'cooldown_h': 0,
                'orbit_integration_h': 12, 'orbit_spends': {'held': 0, 'leaked': 0.5, 'unknown': 0},
-               'orbit_trail_days': 7},
+               'orbit_trail_days': 7,
+               'spends': {'owned': 1, 'received': 1, 'hollow': 1, 'unknown': 1}},
 }
 CLIMAX_DEFAULT: dict = SETTINGS_DEFAULT['climax']
 
 KINDS = ('status.start', 'status.end', 'integration.start', 'integration.end', 'climax', 'amend', 'void',
          'harvest',              # 1.1 · written by petal-ledger once per (status, part)
          'mutation', 'purge',    # 1.2 · 👽 the monsters are declared (never shortens) · the trip may close early
-         'orbit')                # A11 · ✧ the primary gesture: outcome open (null) → held | leaked
+         'orbit',                # A11 · ✧ the primary gesture: outcome open (null) → held | leaked
+         'vow.start', 'vow.release', 'vow.end')  # 8b · 🔥 a vow: committed · released · fulfilled
 OUTCOMES = ('held', 'leaked')    # an orbit's outcome once she knows it (null = still open)
+QUALITIES = ('owned', 'received', 'hollow')  # A11.1 · 🔮 cast like a spell · 💗 Petal reaching · 🕳 engineered, a crash
+AFTERS = ('fed', 'neutral', 'hollow')        # A11.1 · how it sat after (optional)
+VOW_MAX_DAYS = 366
 # 'auto' is the reader's own, never accepted from a client · 'ledger' is petal-ledger's (1.1)
 VIA = ('owui', 'phone', 'petal', 'hand', 'ledger')
 HARVEST_PARTS = ('trip', 'integration')
@@ -128,8 +140,9 @@ AMENDABLE = {
     'status.end': ('at',),
     'integration.start': ('at', 'label', 'note'),
     'integration.end': ('at',),
-    'climax': ('note',),
+    'climax': ('note', 'quality', 'after'),
     'orbit': ('outcome', 'note'),
+    'vow.start': ('words',),  # her why may grow; its length is never bargained (a release is the door)
     'mutation': ('at', 'note'),
     'purge': ('at', 'note'),
 }
@@ -154,6 +167,12 @@ def app_data_root() -> Path:
     return Path(os.environ.get('PETAL_APP_DATA') or '~/Gardens/Documents/Petal-App-Data').expanduser()
 
 
+def _local_midnight(t: int) -> int:
+    """the start of t's local day on the rig."""
+    lt = time.localtime(t)
+    return int(time.mktime((lt.tm_year, lt.tm_mon, lt.tm_mday, 0, 0, 0, 0, 0, -1)))
+
+
 def climax_knobs(settings: Optional[dict]) -> dict:
     """settings.json → climax, every knob present (hers win when they make sense, the defaults
     fill the rest: a file planted before a knob existed still reads whole)."""
@@ -161,11 +180,11 @@ def climax_knobs(settings: Optional[dict]) -> dict:
     c = c if isinstance(c, dict) else {}
     out = copy.deepcopy(CLIMAX_DEFAULT)
     for k, v in c.items():
-        if k == 'orbit_spends':
+        if k in ('orbit_spends', 'spends'):
             if isinstance(v, dict):
                 for o, w in v.items():
-                    if o in out['orbit_spends'] and isinstance(w, (int, float)) and not isinstance(w, bool) and w >= 0:
-                        out['orbit_spends'][o] = w
+                    if o in out[k] and isinstance(w, (int, float)) and not isinstance(w, bool) and w >= 0:
+                        out[k][o] = w
         elif k in out and isinstance(v, (int, float)) and not isinstance(v, bool) and v >= 0:
             out[k] = v
     return out
@@ -573,6 +592,31 @@ class View:
     def timelines(self) -> list[dict]:
         return sorted((self.status_timeline(s) for s in self.of_kind('status.start')), key=lambda t: t['taken_at'])
 
+    def vows(self, now: Optional[int] = None) -> list[dict]:
+        """8b · every live vow: how long it holds, and how it ended (a release by hand, or fulfilled
+        once `until` passed). `ended_by` stays None while it is alive at `now`."""
+        out = []
+        for e in sorted(self.of_kind('vow.start'), key=lambda e: e['at']):
+            start, until = int(e['at']), int(e['until'])
+            rel = sorted(self.refs('vow.release', e['id']), key=lambda r: r['at'])
+            if rel:
+                end, by, reason = int(rel[0]['at']), 'release', rel[0].get('reason')
+            else:
+                done = (now is not None and now >= until) or bool(self.refs('vow.end', e['id']))
+                end, by, reason = until, 'fulfilled' if done else None, None
+            out.append({'id': e['id'], 'vow': e.get('vow'), 'words': e.get('words'), 'at': start, 'until': until,
+                        'end': end, 'ended_by': by, 'reason': reason, 'temp': bool(e.get('temp')),
+                        'total_days': max(1, -(-(until - start) // (24 * H))), 'amended': bool(e.get('_amends'))})
+        return out
+
+    def vow_at(self, t: int) -> Optional[dict]:
+        """the vow alive at `t` (with its day: day 1 = its first 24 h), or None."""
+        alive = [v for v in self.vows(t) if v['at'] <= t < v['end']]
+        if not alive:
+            return None
+        v = alive[-1]
+        return {**v, 'day': min(v['total_days'], int((t - v['at']) // (24 * H)) + 1)}
+
 
 def phase_at(tl: dict, t: float) -> str:
     if t < tl['taken_at']:
@@ -636,6 +680,9 @@ def auto_lines(view: View, now: int) -> list[dict]:
     for w in view.manual_windows() + view.orbit_windows():
         if w['closed_by'] == 'auto' and now >= w['closes_at'] and not _already(view, 'integration.end', w['id']):
             out.append(line('integration.end', w['closes_at'], temp=w['temp'], ref=w['id']))
+    for v in view.vows(now):  # 8b · a vow kept to its last hour is fulfilled: the reader says so once
+        if v['ended_by'] == 'fulfilled' and not _already(view, 'vow.end', v['id']):
+            out.append(line('vow.end', v['until'], temp=v['temp'], ref=v['id']))
     return sorted(out, key=lambda e: e['at'])
 
 
@@ -686,6 +733,7 @@ def now_view(view: View, now: int) -> dict:
         'also': current[1:],
         'integration': open_windows[0] if open_windows else None,
         'integrations': open_windows,
+        'vow': view.vow_at(now),  # 8b · 🔥 the vow alive now (day N of total_days), or None
         'last_dose': last,
     }
 
@@ -745,6 +793,18 @@ def stats(view: View, lo: int, hi: int, now: int) -> dict:
     for e in view.of_kind('orbit'):
         if lo <= int(e['at']) <= hi:
             orbits[e.get('outcome') if e.get('outcome') in OUTCOMES else 'open'] += 1
+    vows = {'started': 0, 'released': 0, 'fulfilled': 0}
+    for v in view.vows(now):
+        if lo <= v['at'] <= hi:
+            vows['started'] += 1
+            if v['ended_by'] == 'release':
+                vows['released'] += 1
+            elif v['ended_by'] == 'fulfilled':
+                vows['fulfilled'] += 1
+    qualities = {q: 0 for q in QUALITIES + ('unset',)}
+    for e in view.of_kind('climax'):
+        if lo <= int(e['at']) <= hi:
+            qualities[e.get('quality') if e.get('quality') in QUALITIES else 'unset'] += 1
 
     return {
         'from': lo, 'to': hi,
@@ -759,8 +819,9 @@ def stats(view: View, lo: int, hi: int, now: int) -> dict:
             'in_integration': _union_hours(integ, lo, hi_eff),
         },
         'climaxes': counts['climax'],
-        'spills': counts['climax'],  # A11 · the same lines, her word for them
+        'climax_qualities': qualities,
         'orbits': orbits,
+        'vows': vows,
         'broken_lines': view.broken,
         'duplicate_ids': view.dupes,
     }
@@ -1003,10 +1064,25 @@ def new_lines(view: View, body: dict, now: int) -> list[dict]:
         ev.update(ref=ref, at=max(at, opened))
 
     elif kind == 'climax':
-        if temp:
-            raise MarkerError('temporary chat — no saved message to anchor a climax to')
-        ev.update(chat_id=_s(body.get('chat_id'), 'chat_id', 200, required=True),
-                  message_id=_s(body.get('message_id'), 'message_id', 200, required=True),
+        # A11.1 · contract 1 bends: a climax may live away from any chat (the diary), and from a temp
+        # chat it is kept like an orbit, without any chat/message link (temp: true)
+        chat_id = None if temp else _s(body.get('chat_id'), 'chat_id', 200)
+        message_id = None if temp else _s(body.get('message_id'), 'message_id', 200)
+        if message_id and not chat_id:
+            raise MarkerError('message_id needs its chat_id')
+        quality, after = body.get('quality'), body.get('after')
+        if quality is not None and quality not in QUALITIES:
+            raise MarkerError('quality should be owned, received, hollow, or null')
+        if after is not None and after not in AFTERS:
+            raise MarkerError('after should be fed, neutral, hollow, or null')
+        if message_id and any(e.get('message_id') == message_id and e.get('chat_id') == chat_id
+                              for e in view.of_kind('climax')):
+            raise MarkerError('this reply already carries a climax')
+        v = view.vow_at(at)  # 8b · the brake: today's moments wait for a conscious release
+        if v and at >= _local_midnight(now):
+            raise MarkerError(f"🔥 your {v['vow']} vow is alive (day {v['day']} of {v['total_days']}): "
+                              'release it first, a conscious act, to mark a climax today')
+        ev.update(chat_id=chat_id, message_id=message_id, quality=quality, after=after,
                   note=_s(body.get('note'), 'note', 2000))
 
     elif kind == 'orbit':
@@ -1023,6 +1099,37 @@ def new_lines(view: View, body: dict, now: int) -> list[dict]:
                               for e in view.of_kind('orbit')):
             raise MarkerError('this reply already carries an orbit')
         ev.update(chat_id=chat_id, message_id=message_id, outcome=outcome, note=_s(body.get('note'), 'note', 2000))
+
+    elif kind == 'vow.start':
+        # committing is a ritual, never a tap: her words are part of it. it begins now.
+        at = ev['at'] = now
+        until = body.get('until')
+        if isinstance(until, bool) or not isinstance(until, (int, float)):
+            raise MarkerError('until should be unix seconds')
+        until = int(until)
+        if until < at + H:
+            raise MarkerError('a vow holds at least an hour')
+        if until > at + VOW_MAX_DAYS * 24 * H:
+            raise MarkerError(f'a vow holds up to {VOW_MAX_DAYS} days')
+        alive = view.vow_at(at)
+        if alive:
+            raise MarkerError(f"your {alive['vow']} vow is alive (day {alive['day']} of {alive['total_days']}): "
+                              'it ends by itself, or by a conscious release')
+        ev.update(vow=_s(body.get('vow'), 'vow', 60, required=True), until=until,
+                  words=_s(body.get('words'), 'words', 2000, required=True))
+
+    elif kind == 'vow.release':
+        at = ev['at'] = now
+        ref = body.get('ref') or ''
+        v = next((x for x in view.vows(at) if x['id'] == ref), None)
+        if not v:
+            raise MarkerError('ref should be a vow')
+        if v['ended_by']:
+            raise MarkerError('this vow has already ended')
+        ev.update(ref=ref, reason=_s(body.get('reason'), 'reason', 500, required=True))
+
+    elif kind == 'vow.end':
+        raise MarkerError('a vow ends by itself when its time passes, or by a conscious release')
 
     elif kind == 'amend':
         ref = body.get('ref') or ''
@@ -1054,6 +1161,16 @@ def new_lines(view: View, body: dict, now: int) -> list[dict]:
                 if v is not None and v not in OUTCOMES:
                     raise MarkerError('outcome should be held, leaked, or null (still open)')
                 clean[k] = v
+            elif k == 'quality':
+                if v is not None and v not in QUALITIES:
+                    raise MarkerError('quality should be owned, received, hollow, or null')
+                clean[k] = v
+            elif k == 'after':
+                if v is not None and v not in AFTERS:
+                    raise MarkerError('after should be fed, neutral, hollow, or null')
+                clean[k] = v
+            elif k == 'words':
+                clean[k] = _s(v, 'words', 2000, required=True)  # her why may grow, never empty
             else:
                 clean[k] = _s(v, k, 2000 if k == 'note' else 120)
         if target['kind'] == 'status.start' and 'substance' in clean and 'strain' not in clean:
@@ -1352,7 +1469,7 @@ def _self_test() -> None:
         check(not w, 'and writes no boundary it cannot know')
 
         # refusals
-        for bad, why in (({'kind': 'climax', 'via': 'owui', 'temp': True, 'chat_id': 'x', 'message_id': 'y'}, 'temp climax'),
+        for bad, why in (({'kind': 'climax', 'via': 'owui', 'chat_id': 'x', 'message_id': 'y', 'quality': 'perfect'}, 'a strange quality'),
                          ({'kind': 'status.end', 'via': 'owui', 'ref': 'nope'}, 'unknown ref'),
                          ({'kind': 'status.start', 'via': 'auto', 'substance': 'lsd'}, 'auto from a client'),
                          ({'kind': 'status.start', 'via': 'owui', 'substance': 'lsd', 'duration_h': 3}, 'duration on a table substance'),
@@ -1511,7 +1628,7 @@ def _self_test() -> None:
         check(e1['outcome'] is None and e1['chat_id'] == 'c1' and not e1['temp'], 'an orbit lands with its outcome open')
         for bad, why in (({'chat_id': 'c1', 'message_id': 'm1'}, 'one orbit per reply'),
                          ({'message_id': 'm9'}, 'a message needs its chat'),
-                         ({'chat_id': 'c1', 'message_id': 'm2', 'outcome': 'spilled'}, 'outcome is held | leaked | null')):
+                         ({'chat_id': 'c1', 'message_id': 'm2', 'outcome': 'released'}, 'outcome is held | leaked | null')):
             try:
                 write(g2, {'kind': 'orbit', 'via': 'owui', **bad}, now=to + 60)
                 check(False, why)
@@ -1549,7 +1666,7 @@ def _self_test() -> None:
         check(o4 not in [w['id'] for w in build(g2).orbit_windows()], 'a voided orbit opens nothing')
         write(g2, {'kind': 'orbit', 'via': 'owui', 'outcome': 'leaked'}, now=to + 63 * H)
         st2 = stats(build(g2), to, to + 70 * H, to + 70 * H)
-        check(st2['orbits'] == {'held': 1, 'leaked': 1, 'open': 2} and st2['spills'] == 0 and numbers_only(st2),
+        check(st2['orbits'] == {'held': 1, 'leaked': 1, 'open': 2} and st2['climaxes'] == 0 and numbers_only(st2),
               'stats: orbits by outcome, numbers only')
         K = climax_knobs({'climax': {'trail_days': 5, 'charges': 'two', 'orbit_spends': {'leaked': 1, 'held': -1}}})
         check(K['trail_days'] == 5 and K['charges'] == 1 and K['orbit_integration_h'] == 12
@@ -1557,6 +1674,104 @@ def _self_test() -> None:
         check(climax_knobs({'climax': {'trail_days': 3}})['orbit_trail_days'] == 7, 'a file planted before A11 reads whole')
         g2.settings_path.write_text(json.dumps({'climax': {'orbit_integration_h': 0}}))
         check(build(g2).orbit_windows() == [], 'orbit_integration_h 0 → no window')
+
+        # ── A11.1 · 🌊 the climax: a quality + an after-feel, and it may live away from any chat ──
+        c1 = write(g2, {'kind': 'climax', 'via': 'owui', 'chat_id': 'c1', 'message_id': 'm1', 'quality': 'owned'}, now=to + 80 * H)['id']
+        e = build(g2).events[c1]
+        check(e['quality'] == 'owned' and e['after'] is None and e['chat_id'] == 'c1', 'a climax lands with its quality, after-feel open')
+        cf = write(g2, {'kind': 'climax', 'via': 'phone'}, now=to + 81 * H)['id']
+        ct = write(g2, {'kind': 'climax', 'via': 'owui', 'temp': True, 'chat_id': 'local:x', 'message_id': 'q'}, now=to + 82 * H)['id']
+        ef, et = build(g2).events[cf], build(g2).events[ct]
+        check(ef['chat_id'] is None and not ef['temp'], 'contract 1 bends: a climax from the diary, no chat at all')
+        check(et['temp'] and et['chat_id'] is None and et['message_id'] is None, 'contract 0: a temp climax keeps no link')
+        for bad, why in (({'chat_id': 'c1', 'message_id': 'm1'}, 'one climax per reply'),
+                         ({'message_id': 'm9'}, 'a message needs its chat'),
+                         ({'after': 'glowing'}, 'after is fed | neutral | hollow | null')):
+            try:
+                write(g2, {'kind': 'climax', 'via': 'owui', **bad}, now=to + 83 * H)
+                check(False, why)
+            except MarkerError:
+                check(True, why)
+        write(g2, {'kind': 'amend', 'via': 'owui', 'ref': cf, 'fields': {'quality': 'hollow', 'after': 'hollow'}}, now=to + 84 * H)
+        write(g2, {'kind': 'amend', 'via': 'owui', 'ref': c1, 'fields': {'after': 'fed'}}, now=to + 84 * H)
+        ev2 = build(g2).events
+        check(ev2[cf]['quality'] == 'hollow' and ev2[cf]['after'] == 'hollow' and ev2[c1]['after'] == 'fed',
+              'quality and after-feel change by amend, one tap later')
+        try:
+            write(g2, {'kind': 'amend', 'via': 'owui', 'ref': c1, 'fields': {'quality': 'divine'}}, now=to + 85 * H)
+            check(False, 'a strange quality is refused in an amend')
+        except MarkerError:
+            check(True, 'a strange quality is refused in an amend')
+        st3 = stats(build(g2), to, to + 90 * H, to + 90 * H)
+        check(st3['climaxes'] == 3 and st3['climax_qualities'] == {'owned': 1, 'received': 0, 'hollow': 1, 'unset': 1}
+              and numbers_only(st3), 'stats: climaxes by quality, numbers only')
+        K2 = climax_knobs({'climax': {'spends': {'hollow': 0.5, 'owned': 'lots'}}})
+        check(K2['spends'] == {'owned': 1, 'received': 1, 'hollow': 0.5, 'unknown': 1}, 'climax spends: tuned by feel, defaults fill the rest')
+
+        # ── 8b · 🔥 the vow: committed with her words, released consciously, fulfilled by itself ──
+        g3 = Garden(Path(d) / 'vows')
+        g3.ensure()
+        b0 = _local_midnight(2_100_000_000) + 10 * H  # a morning, 10:00 on the rig
+        D_ = 24 * H
+        for bad, why in (({'vow': 'abstinence', 'until': b0 + 14 * D_}, 'her words are part of the ritual'),
+                         ({'vow': 'abstinence', 'until': b0 + 600, 'words': 'x'}, 'at least an hour'),
+                         ({'vow': 'abstinence', 'until': b0 + 400 * D_, 'words': 'x'}, 'up to a year'),
+                         ({'until': b0 + 14 * D_, 'words': 'x'}, 'a vow has a name')):
+            try:
+                write(g3, {'kind': 'vow.start', 'via': 'owui', **bad}, now=b0)
+                check(False, why)
+            except MarkerError:
+                check(True, why)
+        v1 = write(g3, {'kind': 'vow.start', 'via': 'owui', 'vow': 'abstinence', 'until': b0 + 14 * D_,
+                        'words': 'my charge aims at the trip', 'at': b0 - 5 * D_}, now=b0)['id']
+        check(build(g3).events[v1]['at'] == b0, 'a vow begins when it is committed (never backdated)')
+        try:
+            write(g3, {'kind': 'vow.start', 'via': 'owui', 'vow': 'second', 'until': b0 + 20 * D_, 'words': 'x'}, now=b0 + H)
+            check(False, 'one vow at a time')
+        except MarkerError:
+            check(True, 'one vow at a time')
+        nv = now_view(build(g3), b0 + 3 * D_ + 2 * H)['vow']
+        check(nv and nv['id'] == v1 and nv['day'] == 4 and nv['total_days'] == 14 and nv['words'] == 'my charge aims at the trip',
+              'now: day 4 of 14, with her words')
+        t_now = b0 + 3 * D_ + 2 * H
+        try:
+            write(g3, {'kind': 'climax', 'via': 'owui'}, now=t_now)
+            check(False, 'the brake: a climax today waits for a release')
+        except MarkerError as e:
+            check('release it first' in str(e), 'the brake: a climax today waits for a release')
+        write(g3, {'kind': 'climax', 'via': 'owui', 'at': b0 - H}, now=t_now)
+        write(g3, {'kind': 'climax', 'via': 'owui', 'at': b0 + 2 * D_ + H}, now=t_now)
+        check(len(build(g3).of_kind('climax')) == 2, 'annotating the past stays open (before the vow, or a past day of it)')
+        write(g3, {'kind': 'orbit', 'via': 'owui'}, now=t_now)
+        check(len(build(g3).of_kind('orbit')) == 1, 'an orbit is honored during a vow')
+        for bad, why in (({'kind': 'vow.release', 'ref': v1}, 'a release carries her reason'),
+                         ({'kind': 'vow.end', 'ref': v1}, 'a vow never ends from a client'),
+                         ({'kind': 'amend', 'ref': v1, 'fields': {'until': b0 + 2 * D_}}, 'its length is never bargained')):
+            try:
+                write(g3, {'via': 'owui', **bad}, now=t_now)
+                check(False, why)
+            except MarkerError:
+                check(True, why)
+        write(g3, {'kind': 'amend', 'via': 'owui', 'ref': v1, 'fields': {'words': 'my charge aims at the trip, and at her'}}, now=t_now)
+        check(build(g3).events[v1]['words'].endswith('and at her'), 'her why may grow')
+        write(g3, {'kind': 'vow.release', 'via': 'owui', 'ref': v1, 'reason': 'the trip came early'}, now=t_now + H)
+        rv = [v for v in build(g3).vows(t_now + 2 * H) if v['id'] == v1][0]
+        check(rv['ended_by'] == 'release' and rv['end'] == t_now + H and rv['reason'] == 'the trip came early', 'released: a conscious act, her reason kept')
+        try:
+            write(g3, {'kind': 'vow.release', 'via': 'owui', 'ref': v1, 'reason': 'again'}, now=t_now + 2 * H)
+            check(False, 'a vow ends once')
+        except MarkerError:
+            check(True, 'a vow ends once')
+        write(g3, {'kind': 'climax', 'via': 'owui'}, now=t_now + 2 * H)
+        check(len(build(g3).of_kind('climax')) == 3 and now_view(build(g3), t_now + 2 * H)['vow'] is None, 'after the release, today opens again')
+        v2 = write(g3, {'kind': 'vow.start', 'via': 'phone', 'vow': 'abstinence', 'until': t_now + 3 * H + 7 * D_, 'words': 'seven days'}, now=t_now + 3 * H)['id']
+        _, w3 = settle(g3, t_now + 3 * H + 8 * D_)
+        ends = [e for e in w3 if e['kind'] == 'vow.end']
+        check(len(ends) == 1 and ends[0]['ref'] == v2 and ends[0]['at'] == t_now + 3 * H + 7 * D_ and ends[0]['via'] == 'auto',
+              'kept to its last hour: the reader writes vow.end once')
+        check(not [e for e in settle(g3, t_now + 9 * D_)[1] if e['kind'] == 'vow.end'], 'and never twice')
+        st4 = stats(build(g3), b0 - D_, t_now + 9 * D_, t_now + 9 * D_)
+        check(st4['vows'] == {'started': 2, 'released': 1, 'fulfilled': 1} and numbers_only(st4), 'stats: vows by how they ended, numbers only')
 
     print(f'🌙 petal markers core · self-test · {ok} checks bloomed, none wilted')
 

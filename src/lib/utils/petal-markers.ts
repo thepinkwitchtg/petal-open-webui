@@ -21,7 +21,9 @@ import {
 	type MarkersNow,
 	type MarkerTimeline,
 	type MarkerVia,
-	type Outcome
+	type After,
+	type Outcome,
+	type Quality
 } from '$lib/apis/petal-markers';
 
 export const markersNow = writable<MarkersNow | null>(null);
@@ -119,14 +121,15 @@ export const doseText = (dose: string | null, unit: string | null) => {
 	return /[a-zµ]/i.test(dose) || !unit ? dose : `${dose} ${unit}`;
 };
 
-// ── ✧ marks on replies, per chat (slice A11) ─────────────────
+// ── ✧ marks on replies, per chat (slices A11 · A11.1) ────────
 // ✧ an orbit is the primary gesture: one tap, its outcome open until she says held or leaked.
-// 🌊 a spill is the climax kind (past ✧ lines stay climax), reached from the ✧ menu:
-// deliberate, never hidden, never shamed. a temp chat keeps its orbits without any link
+// 🌊 a climax is reached from the ✧ menu, deliberate, and carries a quality (🔮 owned ·
+// 💗 received · 🕳 hollow) and an after-feel (fed · neutral · hollow) once she names them.
+// both may live away from any chat (the diary); a temp chat keeps them without any link
 // (contract 0), so there the page only remembers what it tapped itself.
 export type ReplyMarks = {
 	orbit?: { id: string; at: number; outcome: Outcome };
-	spill?: { id: string; at: number };
+	climax?: { id: string; at: number; quality: Quality; after: After };
 };
 type Marks = Record<string, ReplyMarks>;
 
@@ -148,7 +151,7 @@ export const marksFor = (chatId: string) => {
 			getMarkers(localStorage.token, { kind: 'orbit', chat_id: chatId }),
 			getMarkers(localStorage.token, { kind: 'climax', chat_id: chatId })
 		])
-			.then(([orbits, spills]) => {
+			.then(([orbits, climaxes]) => {
 				const m: Marks = {};
 				for (const o of orbits)
 					if (o.message_id)
@@ -156,8 +159,12 @@ export const marksFor = (chatId: string) => {
 							...m[o.message_id],
 							orbit: { id: o.id, at: o.at, outcome: o.outcome ?? null }
 						};
-				for (const c of spills)
-					if (c.message_id) m[c.message_id] = { ...m[c.message_id], spill: { id: c.id, at: c.at } };
+				for (const c of climaxes)
+					if (c.message_id)
+						m[c.message_id] = {
+							...m[c.message_id],
+							climax: { id: c.id, at: c.at, quality: c.quality ?? null, after: c.after ?? null }
+						};
 				into.update((cur) => {
 					// a tap that landed while we were asking wins over the older read
 					const out: Marks = { ...m };
@@ -181,21 +188,35 @@ const patchMarks = (
 		if (drop) delete cur[drop];
 		Object.assign(cur, patch ?? {});
 		const out = { ...m, [messageId]: cur };
-		if (!cur.orbit && !cur.spill) delete out[messageId];
+		if (!cur.orbit && !cur.climax) delete out[messageId];
 		return out;
 	});
+
+/** every open chat's view of one mark, patched in place (the diary and the chip act by id) */
+const patchById = (id: string, fn: (v: ReplyMarks) => ReplyMarks) => {
+	for (const st of markStores.values())
+		st.update((m) => {
+			let hit = false;
+			const out: Marks = {};
+			for (const [k, v] of Object.entries(m)) {
+				if (v.orbit?.id === id || v.climax?.id === id) {
+					hit = true;
+					out[k] = fn(v);
+				} else out[k] = v;
+			}
+			return hit ? out : m;
+		});
+};
 
 const post = (body: Record<string, unknown>) =>
 	postMarker(localStorage.token, { via: markerVia(), ...body });
 
+const anchor = (chatId: string, messageId: string) =>
+	isSavedChatId(chatId) ? { chat_id: chatId, message_id: messageId, temp: false } : { temp: true };
+
 /** ✧ one tap on a reply: an orbit with its outcome open (it opens its own integration window) */
 export const castOrbit = async (chatId: string, messageId: string) => {
-	const saved = isSavedChatId(chatId);
-	const { id } = await post({
-		kind: 'orbit',
-		outcome: null,
-		...(saved ? { chat_id: chatId, message_id: messageId, temp: false } : { temp: true })
-	});
+	const { id } = await post({ kind: 'orbit', outcome: null, ...anchor(chatId, messageId) });
 	patchMarks(chatId, messageId, { orbit: { id, at: nowS(), outcome: null } });
 	refreshMarkers();
 	return id;
@@ -208,21 +229,24 @@ export const castFreeOrbit = async () => {
 	return id;
 };
 
+/** 🌊 a climax away from any chat (the diary's quick button · contract 1 bends for it, A11.1) */
+export const castFreeClimax = async () => {
+	const { id } = await post({ kind: 'climax', quality: null, after: null, temp: false });
+	refreshMarkers();
+	return id;
+};
+
 /** held · leaked · or back to open (null), from the ✧ menu, the chip or the diary */
 export const setOutcome = async (orbitId: string, outcome: Outcome) => {
 	await post({ kind: 'amend', ref: orbitId, fields: { outcome } });
-	for (const st of markStores.values())
-		st.update((m) => {
-			let hit = false;
-			const out: Marks = {};
-			for (const [k, v] of Object.entries(m)) {
-				if (v.orbit?.id === orbitId) {
-					hit = true;
-					out[k] = { ...v, orbit: { ...v.orbit, outcome } };
-				} else out[k] = v;
-			}
-			return hit ? out : m;
-		});
+	patchById(orbitId, (v) => (v.orbit ? { ...v, orbit: { ...v.orbit, outcome } } : v));
+	refreshMarkers();
+};
+
+/** a climax's quality and/or after-feel (null clears one), from the ✧ menu or the diary */
+export const setClimax = async (climaxId: string, fields: { quality?: Quality; after?: After }) => {
+	await post({ kind: 'amend', ref: climaxId, fields });
+	patchById(climaxId, (v) => (v.climax ? { ...v, climax: { ...v.climax, ...fields } } : v));
 	refreshMarkers();
 };
 
@@ -238,34 +262,29 @@ export const unflagMark = async (
 	refreshMarkers();
 };
 
-/** 🌊 it was a spill: the spill is written at the orbit's moment, then the orbit steps aside */
-export const orbitToSpill = async (
+/** the ✧ menu's choice for a reply: orbit · held, orbit · leaked, or 🌊 climax. from an orbit,
+ * held/leaked is one amend (tap the lit one again → open); switching between orbit and climax
+ * writes the new mark at the old one's moment, then the old one steps aside (a void). */
+export const markAs = async (
 	chatId: string,
 	messageId: string,
-	orbit: { id: string; at: number }
+	cur: ReplyMarks | null,
+	target: 'held' | 'leaked' | 'climax'
 ) => {
-	const { id } = await post({ kind: 'climax', chat_id: chatId, message_id: messageId, at: orbit.at, temp: false });
-	await post({ kind: 'void', ref: orbit.id, reason: 'it was a spill' });
-	patchMarks(chatId, messageId, { spill: { id, at: orbit.at } }, 'orbit');
-	refreshMarkers();
-};
-
-/** ✧ it was an orbit after all: the orbit is written at the spill's moment, the spill steps aside */
-export const spillToOrbit = async (
-	chatId: string,
-	messageId: string,
-	spill: { id: string; at: number }
-) => {
-	const { id } = await post({
-		kind: 'orbit',
-		chat_id: chatId,
-		message_id: messageId,
-		outcome: null,
-		at: spill.at,
-		temp: false
-	});
-	await post({ kind: 'void', ref: spill.id, reason: 'it was an orbit' });
-	patchMarks(chatId, messageId, { orbit: { id, at: spill.at, outcome: null } }, 'spill');
+	if (target === 'climax') {
+		if (cur?.climax || !cur?.orbit) return;
+		const at = cur.orbit.at;
+		const { id } = await post({ kind: 'climax', quality: null, after: null, at, ...anchor(chatId, messageId) });
+		await post({ kind: 'void', ref: cur.orbit.id, reason: 'it was a climax' });
+		patchMarks(chatId, messageId, { climax: { id, at, quality: null, after: null } }, 'orbit');
+	} else if (cur?.orbit) {
+		return setOutcome(cur.orbit.id, cur.orbit.outcome === target ? null : target);
+	} else if (cur?.climax) {
+		const at = cur.climax.at;
+		const { id } = await post({ kind: 'orbit', outcome: target, at, ...anchor(chatId, messageId) });
+		await post({ kind: 'void', ref: cur.climax.id, reason: 'it was an orbit' });
+		patchMarks(chatId, messageId, { orbit: { id, at, outcome: target } }, 'climax');
+	} else return;
 	refreshMarkers();
 };
 
