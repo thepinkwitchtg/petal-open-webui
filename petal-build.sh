@@ -42,6 +42,9 @@ if [[ "$1" == "--skin" ]]; then
 	exit 0
 fi
 
+python3 "$HOME/Gardens/Transformation Sequences - Automation/petal_core/petal-amber/petal-amber.py" snapshot --kind prebuild \
+	|| { echo "🥀 amber snapshot failed — not building"; exit 1; }
+
 echo "🌸 building frontend..."
 NODE_OPTIONS="--max-old-space-size=8192" npm run build
 

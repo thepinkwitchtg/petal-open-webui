@@ -2810,7 +2810,7 @@ import { isSavedChatId, isTemporaryChatId } from '$lib/utils/chatId';
 											{@const filter = toggleFilters.find((f) => f.id === filterId)}
 											{@const petalEmoji = petalEmojiOf(filter)}
 											{@const filterOn = selectedFilterIds.includes(filterId)}
-											{#if showInputSelections && filter && $visibleControls['chat.selected_filters']}
+											{#if filter && (petalEmoji || showInputSelections) && $visibleControls['chat.selected_filters']}
 												<Tooltip
 													className={petalEmoji ? 'flex order-first' : 'flex'}
 													content={resolveLocalizedFunction(

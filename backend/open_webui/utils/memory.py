@@ -427,7 +427,7 @@ async def recall_memories(request, messages: list[dict], user, model: dict | Non
     except Exception:
         context_limit = 2000
 
-    messages = form_data['messages']
+    # ── petal: strip stale <memory_context> from the system msg (uses the passed-in list; upstream moved this fn out of middleware)
     if messages and messages[0].get('role') == 'system':
         content = messages[0].get('content', '')
         if isinstance(content, str) and MEMORY_CONTEXT_OPEN in content:
