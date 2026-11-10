@@ -5,7 +5,8 @@ one small place that assembles every live state line before a request goes to Pe
 
   1 · the climax line  — after a message carrying a 🌊 climax, once Lily has replied after it:
         "**status update:** [sat 23:40] Lily just climaxed."   (saved chats only · its quality and
-        after-feel ride along only if her template asks for {quality} / {after})
+        after-feel, set later by Petal's digestion layer, ride along only if her template asks for
+        {quality} / {after}; until they exist an empty one leaves no dangling dot)
       the orbit line   — after a message carrying a ✧ orbit (slice A11):
         "**status update:** [sat 23:40] Lily circulated an orbit." (+ " She held it." once she says)
   2 · her thumbs       — after a rated reply: "**status update:** Lily 👍 this reply", plus her
@@ -18,6 +19,9 @@ one small place that assembles every live state line before a request goes to Pe
 
       🔥 while a vow is alive (8b), retention lines take the trail's place: "retention: day 4 of
         her abstinence vow (14 days)" + "her words: “…”", and no charge is offered
+      her eyes see one part per block (A13): the framing, then the trail (or the vow) as ONE part.
+      when the trail retires into the forge readout, an empty system_block drops it (and its chip);
+      "{framing}" keeps only the framing for the ✧ notes
   4 · the chips (9.4, slice A12) — under each reply, named `emoji · system · what it did`:
         "👍🏻 thumbs · 2 thumbs · 1 note" when her thumbs rode along, and "🦋 climax trail · day 4 ·
         1 charge left" whenever the trail did (led by retention), "🔥 abstinence vow · day 4 of 14"
@@ -260,7 +264,10 @@ def conversation_notes(chain: list[dict], climaxes: dict, ratings: dict, tpl: di
         if c:
             q = fill(tpl, f"quality_{c['quality']}") if c.get('quality') in core.QUALITIES else ''
             a = fill(tpl, f"after_{c['after']}") if c.get('after') in core.AFTERS else ''
-            lines.append(('🌊 climax line', fill(tpl, 'status_climax', quality=q, after=a, **when(int(c['at'])))))
+            line = fill(tpl, 'status_climax', quality=q, after=a, **when(int(c['at'])))
+            if not (q and a):  # set later by her digestion layer: until then an empty one leaves no dangling dot
+                line = '\n'.join(_tidy(l).rstrip() for l in line.split('\n'))
+            lines.append(('🌊 climax line', line))
         o = (orbits or {}).get(m.get('id'))
         if o:
             outcome = fill(tpl, f"orbit_{o['outcome']}") if o.get('outcome') in core.OUTCOMES else ''
@@ -346,11 +353,27 @@ def system_block(climaxes: list, now: int, knobs: dict, tpl: dict, orbits: tuple
     framing, climaxes_line = fill(tpl, 'framing'), fill(tpl, 'climaxes_line', days=f'{days:g}', items=items)
     block = fill(tpl, 'system_block', framing=framing, trail='\n'.join(trail), climaxes=climaxes_line, charges=charge_line)
     block = '\n'.join(l for l in block.splitlines() if l.strip())
-    parts = [{'source': '🌸 petal-state', 'text': framing}] + [{'source': '🔥 vow' if vow else '🦋 climax trail', 'text': t} for t in trail]
-    if '{climaxes}' in (tpl.get('system_block') or ''):
-        parts.append({'source': '🦋 climax trail', 'text': climaxes_line})
-    parts.append({'source': '🦋 climax trail', 'text': charge_line})
-    return block, [p for p in parts if p['text'].strip() and p['text'] in block]
+    # one part per block (her eyes' parts view): the framing, then the trail as ONE part however many
+    # lines it holds (retention · orbits · last orbit · the charge), or the vow's lines in its place
+    parts = [{'source': '🌸 petal-state', 'text': framing}] if framing.strip() and framing in block else []
+    pieces = trail + ([climaxes_line] if '{climaxes}' in (tpl.get('system_block') or '') else []) + [charge_line]
+    span = _block_of(block, framing, [p for p in pieces if p.strip()])
+    if span:
+        parts.append({'source': '🔥 vow' if vow else '🦋 climax trail', 'text': span})
+    return block, parts
+
+
+def _block_of(block: str, framing: str, pieces: list[str]) -> str:
+    """the trail's stretch of the block, as Petal reads it: everything but the framing when that leaves
+    one unbroken stretch (her own header lines ride inside), else first piece → last piece."""
+    found = [(block.find(p), p) for p in pieces if p in block]
+    if not found:
+        return ''
+    rest = block.replace(framing, '', 1).strip('\n') if framing.strip() and framing in block else block
+    if rest and rest in block and all(p in rest for _, p in found):
+        return rest
+    start = min(i for i, _ in found)
+    return block[start:max(i + len(p) for i, p in found)]
 
 
 def _prepend(message: dict, text: str) -> None:
