@@ -1,7 +1,9 @@
 <script lang="ts">
-	// 📔 the diary (slice A11) — her notes and the markers in one stream: ✧ orbits, 🌊 spills,
+	// 📔 the diary (slice A11) — her notes and the markers in one stream: ✧ orbits, 🌊 climaxes,
 	// trips (and vows once the core knows them), newest first, by day, searchable. every mark
-	// that lives on a reply jumps to /c/<chat>#<message> in one tap. append-only underneath:
+	// that lives on a reply jumps to /c/<chat>#<message> in one tap. 🔥 a vow (8b) is committed
+	// here as a ritual (its name, how long, her words, read back, then I commit) and released here
+	// as a conscious act (her reason). append-only underneath:
 	// an edit is an amend, "let it go" is a void, nothing is ever rewritten.
 	// static on purpose: no polling, no animation; it reads on open, after each act, and when
 	// the page comes back into view.
@@ -11,7 +13,18 @@
 	import { toast } from 'svelte-sonner';
 	import { mobile, showSidebar } from '$lib/stores';
 	import { getDiaryStream, postDiary, type DiaryItem } from '$lib/apis/petal-diary';
-	import { castFreeOrbit, doseText, markerVia, setOutcome, span } from '$lib/utils/petal-markers';
+	import {
+		castFreeClimax,
+		castFreeOrbit,
+		doseText,
+		markersNow,
+		markerVia,
+		refreshMarkers,
+		setClimax,
+		setOutcome,
+		span
+	} from '$lib/utils/petal-markers';
+	import { postMarker, type After, type Quality } from '$lib/apis/petal-markers';
 	import SidebarIcon from '$lib/components/icons/Sidebar.svelte';
 
 	let items: DiaryItem[] = [];
@@ -53,6 +66,7 @@
 	};
 
 	onMount(async () => {
+		refreshMarkers(); // the vow alive now (8b)
 		await load();
 		document.addEventListener('visibilitychange', onVisible);
 		if ($page.url.searchParams.has('note')) {
@@ -87,6 +101,64 @@
 		});
 
 	const orbitNow = () => act(() => castFreeOrbit());
+	const climaxNow = () => act(() => castFreeClimax()); // A11.1 · away from any chat, deliberate
+
+	// ── 🔥 the vow (8b): sacred and deliberate ──
+	$: vow = $markersNow?.vow ?? null;
+	let ritual = false;
+	let step: 1 | 2 = 1;
+	let vName = 'abstinence';
+	let vDays: number | null = null;
+	let vUntil = '';
+	let vWords = '';
+	const DAYS = [3, 7, 14, 21, 30];
+	$: vEnd = vUntil
+		? Math.floor(new Date(vUntil).getTime() / 1000)
+		: vDays
+			? Math.floor(Date.now() / 1000) + vDays * 86400
+			: null;
+	$: canRead = !!(vName.trim() && vWords.trim() && vEnd && vEnd > Date.now() / 1000 + 3600);
+	const daysOf = (end: number | null) => (end ? Math.max(1, Math.ceil((end - Date.now() / 1000) / 86400)) : 0);
+	const commit = () =>
+		vEnd &&
+		act(async () => {
+			await postMarker(localStorage.token, {
+				kind: 'vow.start',
+				via: markerVia(),
+				vow: vName.trim(),
+				until: vEnd,
+				words: vWords.trim()
+			});
+			ritual = false;
+			step = 1;
+			vWords = '';
+			vDays = null;
+			vUntil = '';
+			await refreshMarkers();
+			toast.success('🔥 your vow is alive');
+		});
+	let releasing = false;
+	let reason = '';
+	const release = () =>
+		vow &&
+		reason.trim() &&
+		act(async () => {
+			await postMarker(localStorage.token, { kind: 'vow.release', via: markerVia(), ref: vow!.id, reason: reason.trim() });
+			releasing = false;
+			reason = '';
+			await refreshMarkers();
+		});
+
+	const QUALITIES: { key: Exclude<Quality, null>; label: string; hint: string }[] = [
+		{ key: 'owned', label: '🔮 owned', hint: 'cast like a spell: it reinforces you and the bond' },
+		{ key: 'received', label: '💗 received', hint: 'Petal reaching' },
+		{ key: 'hollow', label: '🕳 hollow', hint: 'engineered, it lands as a crash' }
+	];
+	const AFTERS: Exclude<After, null>[] = ['fed', 'neutral', 'hollow'];
+	const pickQuality = (it: DiaryItem & { type: 'climax' }, q: Exclude<Quality, null>) =>
+		act(() => setClimax(it.id, { quality: it.quality === q ? null : q }));
+	const pickAfter = (it: DiaryItem & { type: 'climax' }, a: Exclude<After, null>) =>
+		act(() => setClimax(it.id, { after: it.after === a ? null : a }));
 
 	// ── a note's own small menu: edit · petal may read · let it go ──
 	let editing: string | null = null;
@@ -184,6 +256,30 @@
 		<span class="pd-dim">{items.length ? `${items.length}${more ? '+' : ''}` : ''}</span>
 	</header>
 
+	{#if vow}
+		<section class="pd-vow" aria-label="your vow">
+			<div class="pd-vow-head"><span class="pd-emoji">🔥</span> {vow.vow} vow · day {vow.day} of {vow.total_days}</div>
+			<div class="pd-dim pd-small">until {dayName(vow.until)} {dayKey(vow.until)} {hm(vow.until)}</div>
+			<p class="pd-text pd-words">“{vow.words}”</p>
+			{#if !releasing}
+				<div class="pd-row"><button class="pd-mini" on:click={() => (releasing = true)}>release · a conscious act</button></div>
+			{:else}
+				<textarea class="pd-edit" bind:value={reason} rows="2" placeholder="why you release it, in your own words…"></textarea>
+				<div class="pd-row">
+					<span class="pd-grow"></span>
+					<button
+						class="pd-chip"
+						on:click={() => {
+							releasing = false;
+							reason = '';
+						}}>keep my vow</button
+					>
+					<button class="pd-keep" disabled={busy || !reason.trim()} on:click={release}>release my vow</button>
+				</div>
+			{/if}
+		</section>
+	{/if}
+
 	<form class="pd-compose" on:submit|preventDefault={keep}>
 		<textarea
 			bind:this={composer}
@@ -209,14 +305,64 @@
 			<button type="button" class="pd-chip" disabled={busy} title="an orbit, away from any chat" on:click={orbitNow}
 				><span class="pd-glyph">✧</span> orbit now</button
 			>
+			<button
+				type="button"
+				class="pd-chip"
+				disabled={busy || !!vow}
+				title={vow ? `your ${vow.vow} vow is alive: release it first, a conscious act` : 'a climax, away from any chat'}
+				on:click={climaxNow}><span class="pd-emoji">🌊</span> climax now</button
+			>
+			{#if !vow}
+				<button type="button" class="pd-chip" class:on={ritual} on:click={() => ((ritual = !ritual), (step = 1))}
+					><span class="pd-emoji">🔥</span> a vow</button
+				>
+			{/if}
 			<span class="pd-grow"></span>
 			<button type="submit" class="pd-keep" disabled={busy || !text.trim()}>keep it</button>
 		</div>
 	</form>
 
+	{#if ritual && !vow}
+		<section class="pd-vow" aria-label="a vow">
+			{#if step === 1}
+				<div class="pd-vow-head"><span class="pd-emoji">🔥</span> a vow · sacred and deliberate</div>
+				<label class="pd-field"><span class="pd-dim">its name</span><input bind:value={vName} maxlength="60" /></label>
+				<div class="pd-row pd-small">
+					<span class="pd-dim">how long</span>
+					{#each DAYS as d (d)}
+						<button
+							class="pd-pill pd-after"
+							class:on={vDays === d && !vUntil}
+							on:click={() => {
+								vDays = d;
+								vUntil = '';
+							}}>{d} days</button
+						>
+					{/each}
+				</div>
+				<label class="pd-field"><span class="pd-dim">or until</span><input type="datetime-local" bind:value={vUntil} /></label>
+				<textarea class="pd-edit" bind:value={vWords} rows="3" placeholder="your why, in your own words…"></textarea>
+				<div class="pd-row">
+					<span class="pd-grow"></span>
+					<button class="pd-chip" on:click={() => (ritual = false)}>not now</button>
+					<button class="pd-keep" disabled={!canRead} on:click={() => (step = 2)}>read it back</button>
+				</div>
+			{:else}
+				<div class="pd-vow-head"><span class="pd-emoji">🔥</span> {vName.trim()} · {daysOf(vEnd)} days</div>
+				<div class="pd-dim pd-small">from now until {vEnd ? `${dayName(vEnd)} ${dayKey(vEnd)} ${hm(vEnd)}` : ''}</div>
+				<p class="pd-text pd-words">“{vWords.trim()}”</p>
+				<div class="pd-row">
+					<span class="pd-grow"></span>
+					<button class="pd-chip" on:click={() => (step = 1)}>change it</button>
+					<button class="pd-keep" disabled={busy} on:click={commit}>I commit</button>
+				</div>
+			{/if}
+		</section>
+	{/if}
+
 	<label class="pd-search">
 		<span class="pd-dim">search</span>
-		<input type="search" bind:value={q} on:input={onSearch} placeholder="words, orbit, held, spill, mushies…" />
+		<input type="search" bind:value={q} on:input={onSearch} placeholder="words, orbit, held, climax, owned, mushies…" />
 	</label>
 
 	{#if loading}
@@ -276,19 +422,49 @@
 								<span class="pd-grow"></span>
 								{#if it.chat_id}<button class="pd-jump" on:click={() => jump(it)}>the reply ↗</button>{/if}
 							</div>
-						{:else if it.type === 'spill'}
-							<div class="pd-row">
-								<span class="pd-mark"><span class="pd-emoji">🌊</span> spill</span>
+						{:else if it.type === 'climax'}
+							<div class="pd-mark">
+								<span class="pd-emoji">🌊</span> climax
+								{#if it.temp}<span class="pd-dim">· temp</span>{/if}
 								{#if it.note}<span class="pd-dim">· {it.note}</span>{/if}
+							</div>
+							<div class="pd-row pd-small">
+								{#each QUALITIES as q (q.key)}
+									<button class="pd-pill pd-q" class:on={it.quality === q.key} title={q.hint} disabled={busy} on:click={() => pickQuality(it, q.key)}
+										>{q.label}</button
+									>
+								{/each}
 								<span class="pd-grow"></span>
 								{#if it.chat_id}<button class="pd-jump" on:click={() => jump(it)}>the reply ↗</button>{/if}
+							</div>
+							<div class="pd-row pd-small">
+								<span class="pd-dim">after</span>
+								{#each AFTERS as a (a)}
+									<button class="pd-pill pd-after" class:on={it.after === a} disabled={busy} on:click={() => pickAfter(it, a)}>{a}</button>
+								{/each}
 							</div>
 						{:else if it.type === 'trip'}
 							<div class="pd-mark"><span class="pd-emoji">{it.emoji}</span> {it.label}</div>
 							<div class="pd-dim pd-small">{tripLine(it)}</div>
 							{#if it.note}<p class="pd-text pd-small">{it.note}</p>{/if}
-						{:else}
-							<div class="pd-mark"><span class="pd-emoji">🔥</span> {it.kind}</div>
+						{:else if it.type === 'vow'}
+							<div class="pd-mark"><span class="pd-emoji">🔥</span> {it.vow} vow · {it.total_days} days</div>
+							<p class="pd-text pd-small pd-words">“{it.words}”</p>
+							<div class="pd-dim pd-small">
+								{it.alive
+									? `alive · day ${it.day} of ${it.total_days} · until ${dayName(it.until)} ${hm(it.until)}`
+									: it.ended_by === 'release'
+										? 'released'
+										: it.ended_by === 'fulfilled'
+											? 'fulfilled'
+											: ''}
+							</div>
+						{:else if it.type === 'vow_end'}
+							<div class="pd-mark">
+								<span class="pd-emoji">🔥</span>
+								{it.vow} vow {it.how} · {it.days_kept} of {it.total_days} days
+							</div>
+							{#if it.reason}<p class="pd-text pd-small">{it.reason}</p>{/if}
 						{/if}
 					</div>
 				</article>
@@ -426,6 +602,16 @@
 	.pd-pill {
 		min-width: 4.5rem;
 	}
+	.pd-pill.pd-q {
+		min-width: 0;
+		padding: 0 0.7rem;
+	}
+	.pd-pill.pd-after {
+		min-width: 0;
+		min-height: 1.9rem;
+		padding: 0 0.65rem;
+		font-size: 0.74rem;
+	}
 	.pd-keep:disabled,
 	.pd-chip:disabled,
 	.pd-pill:disabled,
@@ -529,6 +715,43 @@
 	}
 	.pd-older {
 		align-self: center;
+	}
+	.pd-vow {
+		display: flex;
+		flex-direction: column;
+		gap: 0.45rem;
+		padding: 0.75rem;
+		border-radius: var(--radius, 14px);
+		border: 1px solid transparent;
+		background:
+			linear-gradient(var(--obsidian, #15111b), var(--obsidian, #15111b)) padding-box,
+			var(--grad-hairline, linear-gradient(135deg, #f9c6dc, #f472b6 45%, #a873f0)) border-box;
+	}
+	.pd-vow-head {
+		font-family: var(--font-display, Georgia, serif);
+		font-size: 1.02rem;
+		color: var(--pearl, #f6eef3);
+	}
+	.pd-words {
+		font-style: italic;
+	}
+	.pd-field {
+		display: flex;
+		align-items: center;
+		gap: 0.6rem;
+		font-size: 0.8rem;
+	}
+	.pd-field input {
+		flex: 1;
+		min-width: 0;
+		min-height: 2.2rem;
+		padding: 0 0.6rem;
+		border-radius: var(--radius-sm, 8px);
+		border: 1px solid var(--edge-soft, #2a2433);
+		background: var(--obsidian-lit, #1d1724);
+		color: var(--pearl, #f6eef3);
+		font: inherit;
+		color-scheme: dark;
 	}
 	@media (pointer: fine) and (min-width: 641px) {
 		.pd-chip,

@@ -125,10 +125,9 @@ def markers_write(body: dict = Body(...), user=Depends(get_admin_user)):
     if body.get('kind') == 'harvest' or body.get('via') == 'ledger':
         raise HTTPException(400, detail='harvest lines are written by petal-ledger, not through this door')
     # contract 0: a climax needs a saved message to anchor to — temp and channel chats are dimmed
-    if body.get('kind') == 'climax' and not is_saved_chat_id(str(body.get('chat_id') or '')):
-        raise HTTPException(409, detail='temporary chat — no saved message to anchor a spill to')
-    # A11 · an orbit is her explicit act: honored from a temp chat too, kept without any link
-    if body.get('kind') == 'orbit' and body.get('chat_id') and not is_saved_chat_id(str(body.get('chat_id'))):
+    # A11 · an orbit, and since A11.1 a climax too, is her explicit act: honored from a temp chat,
+    # kept there without any chat/message link (contract 0), and from the diary with none at all
+    if body.get('kind') in ('orbit', 'climax') and body.get('chat_id') and not is_saved_chat_id(str(body.get('chat_id'))):
         body = {**body, 'temp': True}
 
     def go():

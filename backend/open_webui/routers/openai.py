@@ -1575,7 +1575,7 @@ async def generate_chat_completion(
         payload.pop('stream_options', None)
 
     # 🌸👁 slice A10: serialized once, these exact bytes are sent, and her eyes keep them
-    # (req_sha = sha256(bytes), the same hash petal-spill keeps at the source)
+    # (req_sha = sha256(bytes), the same hash petal-wellspring keeps at the source)
     payload = JSONCodec.dumps(payload).encode('utf-8')
     petal_eyes.see(metadata, payload, model=form_data.get('model'), url=request_url)
 

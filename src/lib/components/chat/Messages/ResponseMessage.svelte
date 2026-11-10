@@ -43,7 +43,7 @@
 	} from '$lib/utils/petalStream';
 	import { imageGenerations } from '$lib/apis/images';
 	import { isSavedChatId } from '$lib/utils/chatId';
-	import { castOrbit, marksFor } from '$lib/utils/petal-markers'; // 🌙 trip markers · ✧ orbits
+	import { castOrbit, marksFor, markersNow } from '$lib/utils/petal-markers'; // 🌙 trip markers · ✧ orbits · 🔥 vows
 	import PetalEyes from './PetalEyes.svelte'; // 👁 what Petal received (slice A10)
 	import PetalOrbitMenu from './PetalOrbitMenu.svelte'; // ✧ the menu (slice A11)
 	import {
@@ -246,9 +246,9 @@
 	let showRateComment = false;
 
 	// ✧ the orbit (slice A11 · the primary gesture): one tap keeps an orbit on this reply with
-	// its outcome open, and opens the ✧ menu (held · leaked · 🌊 it was a spill · unflag). a
-	// reply that carries a mark opens the menu instead. a temp chat keeps its orbit without
-	// any link (contract 0); a 🌊 spill needs a saved message, so there it stays dimmed.
+	// its outcome open, and opens the ✧ menu (orbit · held · orbit · leaked · 🌊 climax ·
+	// unflag; a climax then takes its quality and after-feel, A11.1). a reply that carries a mark
+	// opens the menu instead. a temp chat keeps its marks without any link (contract 0).
 	$: marksSaved = isSavedChatId(chatId);
 	$: marksStore = $user?.role === 'admin' && chatId ? marksFor(chatId) : null;
 	$: mark = $marksStore?.[message.id] ?? null;
@@ -257,7 +257,7 @@
 	let orbitBusy = false;
 	const tapOrbit = async () => {
 		if (orbitBusy) return;
-		if (mark?.orbit || mark?.spill) {
+		if (mark?.orbit || mark?.climax) {
 			orbitMenu = !orbitMenu;
 			return;
 		}
@@ -1348,8 +1348,8 @@
 
 								{#if $user?.role === 'admin' && message.done}
 									<Tooltip
-										content={mark?.spill
-											? '🌊 a spill · tap for the ✧ menu'
+										content={mark?.climax
+											? `🌊 climax${mark.climax.quality ? ` · ${mark.climax.quality}` : ''} · tap for the ✧ menu`
 											: mark?.orbit
 												? `✧ orbit · ${mark.orbit.outcome ?? 'open'} · tap for the ✧ menu`
 												: marksSaved
@@ -1360,7 +1360,7 @@
 										<button
 											bind:this={orbitBtn}
 											aria-label="Orbit"
-											aria-pressed={!!(mark?.orbit || mark?.spill)}
+											aria-pressed={!!(mark?.orbit || mark?.climax)}
 											aria-expanded={orbitMenu}
 											class="{isLastMessage || mark || ($settings?.highContrastMode ?? false)
 												? 'visible'
@@ -1369,7 +1369,7 @@
 												: ''}"
 											on:click={tapOrbit}
 										>
-											{#if mark?.spill && !mark?.orbit}
+											{#if mark?.climax && !mark?.orbit}
 												<span
 													class="text-[0.95rem] leading-none"
 													style="font-family: var(--font-emoji, 'SamsungColorEmoji'), sans-serif"
@@ -1411,6 +1411,8 @@
 											messageId={message.id}
 											marks={mark}
 											saved={marksSaved}
+											vow={$markersNow?.vow ?? null}
+											msgAt={message.timestamp ?? null}
 											on:close={() => (orbitMenu = false)}
 										/>
 									{/if}
@@ -1449,7 +1451,9 @@
 											saved={message.content ?? ''}
 											marks={[
 												...(mark?.orbit ? [`✧ an orbit on this reply · ${mark.orbit.outcome ?? 'open'}`] : []),
-												...(mark?.spill ? ['🌊 a spill on this reply'] : [])
+												...(mark?.climax
+													? [`🌊 a climax on this reply${mark.climax.quality ? ` · ${mark.climax.quality}` : ''}${mark.climax.after ? ` · after: ${mark.climax.after}` : ''}`]
+													: [])
 											]}
 											on:close={() => (eyesOpen = false)}
 										/>

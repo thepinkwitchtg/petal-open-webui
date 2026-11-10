@@ -5,7 +5,7 @@ petal_diary 📔 — Lily's diary (slice A11). A thin door over utils/petal_diar
 Home: $PETAL_APP_DATA/petal-diary/diary.jsonl   (gold tier · 700/600 · append-only)
 Admin-only. Nothing here reaches Petal: `petal_sees` only marks what she may read one day.
 
-    GET  /api/v1/petal/diary/stream?q&before&limit  → { items: [note | orbit | spill | trip | vow], more }
+    GET  /api/v1/petal/diary/stream?q&before&limit  → { items: [note | orbit | climax | trip | vow | vow_end], more }
     POST /api/v1/petal/diary   { kind: note|amend|void, via, … }  → { id }
     GET  /api/v1/petal/diary/stats                   → numbers only
 """

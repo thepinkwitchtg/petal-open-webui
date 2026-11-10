@@ -24,7 +24,10 @@
 
 	const STATES = '{{states}}';
 	const READOUT = '{{readout}}';
-	const tokenOf = (slot: string) => (slot === 'states' ? STATES : slot === 'readout' ? READOUT : `{{slot:${slot}}}`);
+	const FOOTNOTE = 'footnote'; // rides under her latest message, never in a prompt
+	const tokenOf = (slot: string) =>
+		slot === 'states' ? STATES : slot === 'readout' ? READOUT : slot === FOOTNOTE ? '🪶 footnote' : `{{slot:${slot}}}`;
+	const slotRank = (s: string) => (s === 'states' ? 0 : s === FOOTNOTE ? 2 : 1);
 	const clone = (x: any) => (x == null ? x : JSON.parse(JSON.stringify(x)));
 	const same = (a: any, b: any) => JSON.stringify(a) === JSON.stringify(b);
 	const ord = (x: any) => (typeof x?.order === 'number' ? x.order : 100);
@@ -53,7 +56,7 @@
 	$: admin = $user?.role === 'admin';
 	$: if (admin && installed === null && !loading) load();
 	$: gems = [...(draft?.gems ?? [])].sort(
-		(a, b) => slotOf(a).localeCompare(slotOf(b)) || ord(a) - ord(b)
+		(a, b) => slotRank(slotOf(a)) - slotRank(slotOf(b)) || slotOf(a).localeCompare(slotOf(b)) || ord(a) - ord(b)
 	);
 	$: worn = (g: any) => {
 		const w = Array.isArray(g.wearers) && g.wearers.length ? g.wearers : ['*'];
@@ -62,9 +65,11 @@
 	$: here = gems.filter((g) => worn(g) && (showRetired || !g.retired));
 	$: retiredCount = gems.filter((g) => worn(g) && g.retired).length;
 	$: knobs = (draft?.knobs ?? []).filter((k: any) => showRetired || !k.retired);
-	$: lines = [...(draft?.readout?.lines ?? [])]
+	$: allLines = [...(draft?.readout?.lines ?? [])]
 		.sort((a, b) => ord(a) - ord(b))
 		.filter((l) => showRetired || !l.retired);
+	$: lines = allLines.filter((l) => l.slot !== FOOTNOTE);
+	$: noteLines = allLines.filter((l) => l.slot === FOOTNOTE);
 	$: empty = !!draft && !draft.gems?.length && !draft.knobs?.length && !draft.readout?.lines?.length;
 	$: dirty = !!saved && !same(saved, draft);
 	$: live = preview?.gems_live ?? [];
@@ -270,7 +275,7 @@
 		}
 	};
 	$: tokens = [
-		...new Set([...gems.filter((g) => !g.retired).map(slotOf), ...(draft?.readout?.lines?.length ? ['readout'] : [])])
+		...new Set([...gems.filter((g) => !g.retired && slotOf(g) !== FOOTNOTE).map(slotOf), ...(lines.length ? ['readout'] : [])])
 	].sort((a, b) => (a === 'states' ? -1 : b === 'states' ? 1 : a === 'readout' ? 1 : b === 'readout' ? -1 : a.localeCompare(b)));
 
 	// what Petal reads · the forge's own string, with each live gem and the readout tinted
@@ -316,6 +321,24 @@
 		return out;
 	}
 	$: segs = segmentsOf(preview, previewDoc);
+	// the note under her latest message · head, her lines (the state), the gems' words (the steer), foot
+	function notePieces(fn: any): Seg[] {
+		const text: string = fn?.text ?? '';
+		if (!text) return [];
+		const out: Seg[] = [];
+		let i = 0;
+		for (const it of fn.items ?? []) {
+			const w = String(it.text ?? '');
+			const at = w ? text.indexOf(w, i) : -1;
+			if (at < 0) continue;
+			if (at > i) out.push({ kind: 'plain', text: text.slice(i, at) });
+			out.push({ kind: it.kind === 'gem' ? 'gem' : 'note', gem: it.id, text: w });
+			i = at + w.length;
+		}
+		if (i < text.length) out.push({ kind: 'plain', text: text.slice(i) });
+		return out;
+	}
+	$: under = notePieces(preview?.footnote);
 	$: names = new Map((draft?.gems ?? []).map((g: any) => [g.id, g]));
 
 	const left = (s: number | null | undefined) => {
@@ -329,14 +352,20 @@
 		if (w.state === 'iced') return `iced by ${(w.replaced_by ?? []).map((id: string) => names.get(id)?.name ?? id).join(', ')}`;
 		if (w.state === 'asleep' && w.absent?.length) return `asleep · ${w.absent.join(', ')} missing`;
 		if (w.state === 'live' && !w.chars) return 'live · no words yet';
+		if (w.state === 'waiting') return 'waiting for her key';
+		if (w.state === 'set aside') return 'set aside · she leads';
 		return w.state;
 	};
+	const whereWords = (g: any, w: any) =>
+		g.key != null
+			? `;${g.key} at the start of her message picks it · 🪶 under her message`
+			: `when ${w?.words ?? (g.when ? '…' : 'always')} · ${slotOf(g) === FOOTNOTE ? '🪶 under her message' : tokenOf(slotOf(g))}`;
 	const jewel = (state: string | undefined, retired: boolean) =>
 		retired
 			? 'border border-dashed border-gray-400 dark:border-gray-600'
 			: state === 'live'
 				? 'bg-linear-to-br from-pink-300 to-fuchsia-500 shadow-[0_0_6px_rgba(236,72,153,0.55)]'
-				: state === 'iced'
+				: state === 'iced' || state === 'set aside'
 					? 'bg-linear-to-br from-violet-300 to-violet-600'
 					: 'border border-gray-400 dark:border-gray-600';
 	const when = (ts: number | null | undefined) => {
@@ -399,7 +428,7 @@
 									>
 								</div>
 								<div class="mt-0.5 text-[0.6875rem] text-gray-400 dark:text-gray-600">
-									when {w?.words ?? (g.when ? '…' : 'always')} · {tokenOf(slotOf(g))}
+									{whereWords(g, w)}
 								</div>
 								<Textarea
 									ariaLabel={`🌙 ${g.name || g.id}`}
@@ -455,7 +484,7 @@
 							</div>
 						{/if}
 
-						{#if draft?.readout?.lines?.length}
+						{#if lines.length}
 							<div class="space-y-1.5 border-t border-gray-100/60 pt-2 dark:border-gray-850/60">
 								<div class="text-[0.6875rem] text-gray-600 dark:text-gray-400">readout · {READOUT} · the live state, laid open</div>
 								<input
@@ -495,6 +524,34 @@
 								/>
 							</div>
 						{/if}
+
+							{#if noteLines.length}
+								<div class="space-y-1.5 border-t border-gray-100/60 pt-2 dark:border-gray-850/60">
+									<div class="text-[0.6875rem] text-gray-600 dark:text-gray-400">🪶 under her latest message · lines of the footnote</div>
+									{#each noteLines as l (l.id)}
+										{@const r = (preview?.readout ?? []).find((x) => x.id === l.id)}
+										<div class={l.retired ? 'opacity-60' : ''}>
+											<div class="flex items-center gap-2 text-[0.75rem]">
+												<span class="truncate {r?.shown ? 'text-gray-900 dark:text-gray-100' : 'text-gray-400 dark:text-gray-600'}">{r?.shown ? r.text : `resting · ${r?.why ?? '…'}`}</span>
+												<button
+													type="button"
+													class="ml-auto shrink-0 rounded-md px-2.5 py-1.5 text-[0.6875rem] text-gray-500 hover:bg-gray-50 hover:text-gray-900 dark:hover:bg-gray-850 dark:hover:text-gray-100"
+													on:click={() => setLine(l.id, { retired: !l.retired })}>{l.retired ? 'restore' : 'retire'}</button
+												>
+											</div>
+											<Textarea
+												ariaLabel={`footnote · ${l.id}`}
+												className="mt-0.5 w-full resize-none overflow-y-hidden rounded-md bg-gray-50 px-2 py-1 font-mono text-[0.75rem] outline-hidden dark:bg-gray-850"
+												rows={1}
+												value={l.words ?? ''}
+												disabled={disabled || !!l.retired}
+												onKeydown={oneLine}
+												onInput={onLineWords(l.id)}
+											/>
+										</div>
+									{/each}
+								</div>
+							{/if}
 					</fieldset>
 
 					<div class="border-t border-gray-100/60 pt-2 dark:border-gray-850/60">
@@ -506,6 +563,10 @@
 							{/each}
 						</div>
 						<pre class="max-h-96 overflow-y-auto whitespace-pre-wrap break-words rounded-md bg-gray-50 p-2 text-[0.75rem] text-gray-700 dark:bg-gray-850 dark:text-gray-300">{#each segs as s}{#if s.kind === 'gem'}<mark class="rounded-sm bg-pink-500/10 text-gray-900 shadow-[inset_2px_0_0_rgba(236,72,153,0.7)] dark:text-gray-100" title={names.get(s.gem)?.name ?? s.gem}>{s.text}</mark>{:else if s.kind === 'readout'}<mark class="rounded-sm bg-violet-500/10 text-gray-900 shadow-[inset_2px_0_0_rgba(139,92,246,0.7)] dark:text-gray-100">{s.text}</mark>{:else if s.kind === 'label'}<span class="text-pink-500 dark:text-pink-400">{s.text}</span>{:else if s.kind === 'slot'}<mark class="rounded-sm bg-pink-500/10 text-gray-900 dark:text-gray-100">{s.text}</mark>{:else}{s.text}{/if}{:else}{preview ? 'nothing from the forge right now' : '…'}{/each}</pre>
+						{#if under.length}
+							<div class="mt-2 mb-1 text-[0.6875rem] text-gray-600 dark:text-gray-400">🪶 under her latest message · never in the prompt</div>
+							<pre class="max-h-64 overflow-y-auto whitespace-pre-wrap break-words rounded-md bg-gray-50 p-2 text-[0.75rem] text-gray-700 dark:bg-gray-850 dark:text-gray-300"><span class="italic text-gray-400 dark:text-gray-500">⟨her latest message⟩</span>{'\n\n'}{#each under as s}{#if s.kind === 'gem'}<mark class="rounded-sm bg-pink-500/10 text-gray-900 shadow-[inset_2px_0_0_rgba(236,72,153,0.7)] dark:text-gray-100" title={names.get(s.gem)?.name ?? s.gem}>{s.text}</mark>{:else if s.kind === 'note'}<mark class="rounded-sm bg-violet-500/10 text-gray-900 shadow-[inset_2px_0_0_rgba(196,181,253,0.8)] dark:text-gray-100">{s.text}</mark>{:else}<span class="text-gray-400 dark:text-gray-500">{s.text}</span>{/if}{/each}</pre>
+						{/if}
 					</div>
 
 					{#if meta?.petal_states}

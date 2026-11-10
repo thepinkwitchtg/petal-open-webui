@@ -3,16 +3,25 @@ petal_state 🌸👁 — what Petal sees of Lily's state (slice A8 · the seed o
 
 one small place that assembles every live state line before a request goes to Petal:
 
-  1 · the spill line   — after a message carrying a 🌊 spill (the `climax` kind), once Lily has
-        replied after it: "**status update:** [sat 23:40] Lily just climaxed."   (saved chats only)
+  1 · the climax line  — after a message carrying a 🌊 climax, once Lily has replied after it:
+        "**status update:** [sat 23:40] Lily just climaxed."   (saved chats only · its quality and
+        after-feel ride along only if her template asks for {quality} / {after})
       the orbit line   — after a message carrying a ✧ orbit (slice A11):
         "**status update:** [sat 23:40] Lily circulated an orbit." (+ " She held it." once she says)
   2 · her thumbs       — after a rated reply: "**status update:** Lily 👍 this reply", plus her
         note when she left one. user setting `petalSight` (thumbs · notes), on by default
   3 · the trail        — in her system context, retention-first (slice A11):
-        "retention: day 4" (since the last spill) · "orbits_7d: 2 held · 1 leaked · 0 open" ·
-        "last_orbit: 5h ago" · the charges left / the next charge. a charge is spent by a spill,
-        plus orbit_spends[outcome] of an orbit (knobs: trip-markers/settings.json → "climax")
+        "retention: day 4" (since the last climax) · "orbits_7d: 2 held · 1 leaked · 0 open" ·
+        "last_orbit: 5h ago" · the charges left / the next charge. a charge is spent by a climax
+        (spends[quality]) and by orbit_spends[outcome] of an orbit (knobs: trip-markers/settings.json
+        → "climax")
+
+      🔥 while a vow is alive (8b), retention lines take the trail's place: "retention: day 4 of
+        her abstinence vow (14 days)" + "her words: “…”", and no charge is offered
+  4 · the chips (9.4, slice A12) — under each reply, named `emoji · system · what it did`:
+        "👍🏻 thumbs · 2 thumbs · 1 note" when her thumbs rode along, and "🦋 climax trail · day 4 ·
+        1 charge left" whenever the trail did (led by retention), "🔥 abstinence vow · day 4 of 14"
+        in its place during a vow. templates name them; tapping one shows the exact lines Petal got
 
 the in-conversation lines are prepended to the user turn that answered the marked reply, so
 they sit right after that message in the order Petal reads. nothing is ever written into the
@@ -48,10 +57,11 @@ TEMPLATES_DEFAULT: dict = {
         'planted once by OWUI, never overwritten: this file is yours.'
     ),
     '_about_trail': (
-        'slice A11 · {trail} in system_block is retention-first: retention · orbits · last_orbit. '
-        '{n} days since the last spill (day 1 = its first 24 h) · {held} {leaked} {open} orbits in the '
-        'last {days} days · {hours} or {ago} since the last orbit. {spills} brings back the old list of '
-        'spill times (spills_line). an older "trail" key in this file is retired: it rests here as yours.'
+        'the trail · {trail} in system_block is retention-first: retention · orbits · last_orbit. '
+        '{n} days since the last climax (day 1 = its first 24 h) · {held} {leaked} {open} orbits in the '
+        'last {days} days · {hours} or {ago} since the last orbit. {climaxes} brings back the list of '
+        'climax times (climaxes_line). status_climax may carry {quality} and {after} (quality_* and '
+        'after_* name them). an older "trail" key in this file is retired: it rests here as yours.'
     ),
     'status_climax': '**status update:** [{day} {time}] Lily just climaxed.',
     'status_thumb_up': '**status update:** Lily 👍 this reply',
@@ -69,11 +79,38 @@ TEMPLATES_DEFAULT: dict = {
     'orbit_held': ' She held it.',
     'orbit_leaked': ' It leaked.',
     'retention': 'retention: day {n}',
-    'retention_none': 'retention: no spill on record',
+    'retention_none': 'retention: no climax on record',
     'orbits': 'orbits_{days}d: {held} held · {leaked} leaked · {open} open',
     'last_orbit': 'last_orbit: {hours}h ago',
     'last_orbit_none': '',
-    'spills_line': 'spills · last {days} days (local): {items}',
+    'climaxes_line': 'climaxes · last {days} days (local): {items}',
+    # A11.1 · a climax's quality and after-feel, as {quality} / {after} in status_climax
+    'quality_owned': '🔮 owned',
+    'quality_received': '💗 received',
+    'quality_hollow': '🕳 hollow',
+    'after_fed': 'fed',
+    'after_neutral': 'neutral',
+    'after_hollow': 'hollow',
+    # A12 · the 9.4 chips under each reply (the naming law: emoji · system · what it did)
+    '_about_chips': (
+        'the chips under a reply. chip_thumbs: {thumbs} "2 thumbs" · {notes} "1 note" (empty at 0) · '
+        '{n_thumbs} {n_notes} as numbers. chip_trail: {retention} (chip_retention with {n}, or '
+        'chip_retention_none) · {charges} "1 charge left", or chip_next_charge · {left} {total} {held} '
+        '{leaked} {open} as numbers. an empty part never leaves a dangling dot.'
+    ),
+    'chip_thumbs': '👍🏻 thumbs · {thumbs} · {notes}',
+    'chip_trail': '🦋 climax trail · {retention} · {charges}',
+    'chip_retention': 'day {n}',
+    'chip_retention_none': 'no climax yet',
+    'chip_next_charge': 'next charge {day} {time}',
+    # 8b · 🔥 while a vow is alive, these stand where the trail stood (and no charge is offered)
+    '_about_vow': (
+        'during a vow, {trail} reads vow_line + vow_words: {n} day (day 1 = its first 24 h) · {total} days '
+        '· {vow} its name · {words} her why · {until_day} {until_time} when it ends. chip_vow names the chip.'
+    ),
+    'vow_line': 'retention: day {n} of her {vow} vow ({total} days)',
+    'vow_words': 'her words: “{words}”',
+    'chip_vow': '🔥 {vow} vow · day {n} of {total}',
 }
 CLIMAX_DEFAULT: dict = core.CLIMAX_DEFAULT  # one source: the core's settings defaults
 SIGHT_DEFAULT: dict = {'thumbs': True, 'notes': True, 'debug': False}
@@ -146,18 +183,24 @@ def _n(x: float):
     return int(x) if x == int(x) else x
 
 
-def spends(spills: list[int], orbits: list[dict], knobs: dict) -> list[tuple[int, float]]:
-    """what each event spent of a charge: a spill 1, an orbit orbit_spends[outcome or 'unknown']."""
-    w = knobs.get('orbit_spends') or {}
-    out = [(int(t), 1.0) for t in spills]
+def _at(e) -> int:
+    return int(e['at']) if isinstance(e, dict) else int(e)
+
+
+def spends(climaxes: list, orbits: list[dict], knobs: dict) -> list[tuple[int, float]]:
+    """what each event spent of a charge: a climax spends[quality or 'unknown'] (a bare time counts
+    as unknown), an orbit orbit_spends[outcome or 'unknown']."""
+    cw, ow = knobs.get('spends') or {}, knobs.get('orbit_spends') or {}
+    out = [(_at(c), float(cw.get((c.get('quality') if isinstance(c, dict) else None) or 'unknown', 1) or 0))
+           for c in climaxes]
     for o in orbits:
-        out.append((int(o['at']), float(w.get(o.get('outcome') or 'unknown', 0) or 0)))
+        out.append((int(o['at']), float(ow.get(o.get('outcome') or 'unknown', 0) or 0)))
     return sorted(p for p in out if p[1] > 0)
 
 
 def charges(spent: list, now: int, knobs: dict) -> dict:
-    """→ {'total', 'left', 'next'}: `charges` per rolling `charge_window_h`, spent by spills (1 each)
-    and the leaked fraction of orbits (`spends`; plain times count 1), none until `cooldown_h` has
+    """→ {'total', 'left', 'next'}: `charges` per rolling `charge_window_h`, spent by climaxes and
+    the leaked fraction of orbits (`spends`; plain times count 1), none until `cooldown_h` has
     passed since the last spend. 'next' = when a charge returns."""
     items = sorted((int(p), 1.0) if isinstance(p, (int, float)) else (int(p[0]), float(p[1])) for p in spent)
     items = [p for p in items if p[1] > 0]
@@ -215,7 +258,9 @@ def conversation_notes(chain: list[dict], climaxes: dict, ratings: dict, tpl: di
         lines = []
         c = climaxes.get(m.get('id'))
         if c:
-            lines.append(('🌊 spill line', fill(tpl, 'status_climax', **when(int(c['at'])))))
+            q = fill(tpl, f"quality_{c['quality']}") if c.get('quality') in core.QUALITIES else ''
+            a = fill(tpl, f"after_{c['after']}") if c.get('after') in core.AFTERS else ''
+            lines.append(('🌊 climax line', fill(tpl, 'status_climax', quality=q, after=a, **when(int(c['at'])))))
         o = (orbits or {}).get(m.get('id'))
         if o:
             outcome = fill(tpl, f"orbit_{o['outcome']}") if o.get('outcome') in core.OUTCOMES else ''
@@ -228,9 +273,11 @@ def conversation_notes(chain: list[dict], climaxes: dict, ratings: dict, tpl: di
             lines.append(('👍🏻 thumbs', line))
         lines = [(src, l) for src, l in lines if l.strip()]
         if lines:
+            thumb = any(src == '👍🏻 thumbs' for src, _ in lines)
             out.append({'answer_from_end': len(users) - 1 - users.index(answer), 'message_id': m.get('id'),
                         'text': '\n'.join(l for _, l in lines),
-                        'parts': [{'source': src, 'text': l} for src, l in lines]})
+                        'parts': [{'source': src, 'text': l} for src, l in lines],
+                        'thumbs': int(thumb), 'noted': int(thumb and bool(see['notes'] and r and r.get('comment')))})
     return out
 
 
@@ -239,49 +286,69 @@ def _ago(seconds: float) -> str:
     return f'{m}m' if m < 60 else f'{m // 60}h' if m < 48 * 60 else f'{m // (24 * 60)}d'
 
 
-def trail_lines(spills: list[int], orbits: list[dict], now: int, knobs: dict, tpl: dict) -> list[str]:
-    """the trail, retention-first (slice A11): retention · orbits in the last N days · the last orbit."""
-    out = []
-    last = max(spills) if spills else None
-    if last is not None:
-        out.append(fill(tpl, 'retention', n=int(max(0, now - last) // (24 * H)) + 1,
-                        hours=int(max(0, now - last) // H), **when(last)))
-    else:
-        out.append(fill(tpl, 'retention_none'))
+def trail_facts(climaxes: list, orbits: list[dict], now: int, knobs: dict) -> dict:
+    """one reading of the trail, shared by Petal's lines and the chip under the reply."""
+    last = max(_at(c) for c in climaxes) if climaxes else None
     days = knobs['orbit_trail_days']
     recent = [o for o in orbits if int(o['at']) >= now - days * 24 * H]
     count = {k: sum(1 for o in recent if (o.get('outcome') if o.get('outcome') in core.OUTCOMES else 'open') == k)
              for k in ('held', 'leaked', 'open')}
-    out.append(fill(tpl, 'orbits', days=f'{days:g}', **count))
-    if orbits:
-        lo = max(int(o['at']) for o in orbits)
-        out.append(fill(tpl, 'last_orbit', hours=int(max(0, now - lo) // H), ago=_ago(now - lo), **when(lo)))
-    else:
-        out.append(fill(tpl, 'last_orbit_none'))
+    return {
+        'last': last,
+        'n': int(max(0, now - last) // (24 * H)) + 1 if last is not None else None,  # day 1 = its first 24 h
+        'hours': int(max(0, now - last) // H) if last is not None else None,
+        'orbit_days': days, **count,
+        'last_orbit': max(int(o['at']) for o in orbits) if orbits else None,
+        'charges': charges(spends(climaxes, orbits, knobs), now, knobs),
+    }
+
+
+def trail_lines(climaxes: list, orbits: list[dict], now: int, knobs: dict, tpl: dict,
+                facts: Optional[dict] = None) -> list[str]:
+    """the trail, retention-first (slice A11): retention · orbits in the last N days · the last orbit."""
+    f = facts or trail_facts(climaxes, orbits, now, knobs)
+    out = [fill(tpl, 'retention', n=f['n'], hours=f['hours'], **when(f['last'])) if f['last'] is not None
+           else fill(tpl, 'retention_none')]
+    out.append(fill(tpl, 'orbits', days=f"{f['orbit_days']:g}", held=f['held'], leaked=f['leaked'], open=f['open']))
+    lo = f['last_orbit']
+    out.append(fill(tpl, 'last_orbit', hours=int(max(0, now - lo) // H), ago=_ago(now - lo), **when(lo))
+               if lo is not None else fill(tpl, 'last_orbit_none'))
     return [l for l in out if l.strip()]
 
 
-def system_block(times: list[int], now: int, knobs: dict, tpl: dict, orbits: tuple = ()) -> tuple[str, list]:
-    """→ (the block for her system context, its parts by source for her eyes) · `times` are the
-    spills (the climax kind), `orbits` the live orbit events."""
+def vow_lines(vow: dict, tpl: dict) -> list[str]:
+    """8b · what stands where the trail stood while a vow is alive."""
+    u = when(vow['until'])
+    kw = {'n': vow['day'], 'total': vow['total_days'], 'vow': vow.get('vow') or '', 'words': vow.get('words') or '',
+          'until_day': u['day'], 'until_time': u['time']}
+    return [l for l in (fill(tpl, 'vow_line', **kw), fill(tpl, 'vow_words', **kw)) if l.strip()]
+
+
+def system_block(climaxes: list, now: int, knobs: dict, tpl: dict, orbits: tuple = (),
+                 vow: Optional[dict] = None) -> tuple[str, list]:
+    """→ (the block for her system context, its parts by source for her eyes) · `climaxes` are the
+    live climax events (or bare times), `orbits` the live orbit events, `vow` the vow alive now."""
     orbits = list(orbits)
     days = knobs['trail_days']
-    recent = [t for t in sorted(times) if t >= now - days * 24 * H]
+    recent = [t for t in sorted(_at(c) for c in climaxes) if t >= now - days * 24 * H]
     items = fill(tpl, 'trail_join').join(fill(tpl, 'trail_item', **when(t)) for t in recent) or fill(tpl, 'trail_none')
-    ch = charges(spends(times, orbits, knobs), now, knobs)
+    facts = trail_facts(climaxes, orbits, now, knobs)
+    ch = facts['charges']
     if ch['left'] > 0:
         charge_line = fill(tpl, 'charges_left', left=ch['left'], total=ch['total'])
     elif ch['next']:
         charge_line = fill(tpl, 'next_charge', **when(ch['next']))
     else:
         charge_line = ''
-    trail = trail_lines(times, orbits, now, knobs, tpl)
-    framing, spills_line = fill(tpl, 'framing'), fill(tpl, 'spills_line', days=f'{days:g}', items=items)
-    block = fill(tpl, 'system_block', framing=framing, trail='\n'.join(trail), spills=spills_line, charges=charge_line)
+    trail = trail_lines(climaxes, orbits, now, knobs, tpl, facts)
+    if vow:  # 8b · retention lines in place of the trail, and no charge is offered
+        trail, charge_line = vow_lines(vow, tpl), ''
+    framing, climaxes_line = fill(tpl, 'framing'), fill(tpl, 'climaxes_line', days=f'{days:g}', items=items)
+    block = fill(tpl, 'system_block', framing=framing, trail='\n'.join(trail), climaxes=climaxes_line, charges=charge_line)
     block = '\n'.join(l for l in block.splitlines() if l.strip())
-    parts = [{'source': '🌸 petal-state', 'text': framing}] + [{'source': '🦋 climax trail', 'text': t} for t in trail]
-    if '{spills}' in (tpl.get('system_block') or ''):
-        parts.append({'source': '🦋 climax trail', 'text': spills_line})
+    parts = [{'source': '🌸 petal-state', 'text': framing}] + [{'source': '🔥 vow' if vow else '🦋 climax trail', 'text': t} for t in trail]
+    if '{climaxes}' in (tpl.get('system_block') or ''):
+        parts.append({'source': '🦋 climax trail', 'text': climaxes_line})
     parts.append({'source': '🦋 climax trail', 'text': charge_line})
     return block, [p for p in parts if p['text'].strip() and p['text'] in block]
 
@@ -318,9 +385,8 @@ async def apply(request, form_data: dict, user, metadata: dict, model: Optional[
 
     view, knobs = await asyncio.to_thread(read_markers)
     now = int(time.time())
-    climax_events = core.events_in(view, 0, now, kind='climax')  # 🌊 spills · live: voids honored, amends applied
+    climax_events = core.events_in(view, 0, now, kind='climax')  # 🌊 climaxes · live: voids honored, amends applied
     orbit_events = core.events_in(view, 0, now, kind='orbit')  # ✧ orbits (slice A11)
-    times = [int(e['at']) for e in climax_events]
 
     notes: list[dict] = []
     chat_id, user_mid = metadata.get('chat_id'), metadata.get('user_message_id')
@@ -344,7 +410,9 @@ async def apply(request, form_data: dict, user, metadata: dict, model: Optional[
             _prepend(target, n['text'])
             placed.append(n)
 
-    block, block_parts = system_block(times, now, knobs, tpl, orbit_events)
+    vow = view.vow_at(now)  # 8b · 🔥 a vow alive now takes the trail's place
+    block, block_parts = system_block(climax_events, now, knobs, tpl, orbit_events, vow)
+    facts = trail_facts(climax_events, orbit_events, now, knobs)
     if block:
         messages = add_or_update_system_message(block, messages, append=True)
     form_data['messages'] = messages
@@ -358,9 +426,71 @@ async def apply(request, form_data: dict, user, metadata: dict, model: Optional[
     added = {'system': block, 'notes': [{'answer_from_end': n['answer_from_end'], 'text': n['text']} for n in placed]}
     metadata['petal_state'] = added
 
+    # A12 · the 9.4 chips: what rode along, named; tapping one shows the exact lines
+    names = chip_names(facts, sum(n['thumbs'] for n in placed), sum(n['noted'] for n in placed), tpl, vow)
+    thumb_lines = []
+    for n in placed:
+        lines = [q['text'] for q in n['parts'] if q['source'] == '👍🏻 thumbs']
+        if lines:
+            where = 'the message you just sent' if n['answer_from_end'] == 0 else f"{n['answer_from_end']} turn(s) back"
+            thumb_lines.append(f'── before {where} ──\n' + '\n'.join(lines))
+    trail_doc = '\n'.join(q['text'] for q in block_parts if q['source'] in ('🦋 climax trail', '🔥 vow')) if block else ''
+    await _chips(metadata, names, {'thumbs': '\n\n'.join(thumb_lines), 'trail': trail_doc})
+
     if see['debug']:
         await _debug_chip(metadata, added)
-    return added
+    return {**added, 'chips': names}  # the captured petal_state (for the ledger) keeps its shape
+
+
+def _plural(n, one: str) -> str:
+    return f'{_n(n)} {one}' + ('' if n == 1 else 's')
+
+
+def _tidy(name: str) -> str:
+    """an empty part never leaves a dangling dot: 'a ·  · b · ' → 'a · b'"""
+    return ' · '.join(p for p in name.split(' · ') if p.strip())
+
+
+def chip_names(facts: dict, n_thumbs: int, n_notes: int, tpl: dict, vow: Optional[dict] = None) -> dict:
+    """the 9.4 names (A12): '👍🏻 thumbs · 2 thumbs · 1 note' · '🦋 climax trail · day 4 · 1 charge left'
+    (· '🔥 abstinence vow · day 4 of 14' in the trail's place during a vow, 8b)"""
+    ch = facts['charges']
+    retention = fill(tpl, 'chip_retention', n=facts['n']) if facts['n'] else fill(tpl, 'chip_retention_none')
+    if ch['left'] > 0:
+        charge = f"{_plural(ch['left'], 'charge')} left"
+    elif ch['next']:
+        charge = fill(tpl, 'chip_next_charge', **when(ch['next']))
+    else:
+        charge = ''
+    trail = _tidy(fill(tpl, 'chip_trail', retention=retention, charges=charge, n=facts['n'] or '',
+                       left=ch['left'], total=ch['total'], held=facts['held'], leaked=facts['leaked'], open=facts['open']))
+    thumbs = _tidy(fill(tpl, 'chip_thumbs', thumbs=_plural(n_thumbs, 'thumb'), notes=_plural(n_notes, 'note') if n_notes else '',
+                        n_thumbs=n_thumbs, n_notes=n_notes)) if n_thumbs else ''
+    if vow:
+        trail = _tidy(fill(tpl, 'chip_vow', vow=vow.get('vow') or '', n=vow['day'], total=vow['total_days']))
+    return {'thumbs': thumbs, 'trail': trail}
+
+
+async def _chips(metadata: dict, names: dict, docs: dict) -> None:
+    """the 9.4 chips under her reply: an attachment each, its document the exact lines Petal got."""
+    try:
+        from open_webui.socket.main import get_event_emitter
+
+        if not (metadata.get('chat_id') and metadata.get('message_id')):
+            return
+        emit = await get_event_emitter(metadata)
+        for key in ('thumbs', 'trail'):
+            name, doc = names.get(key), docs.get(key)
+            if not (name and doc):
+                continue
+            sid = f"petal-{key}-{metadata['message_id']}"
+            await emit({'type': 'source', 'data': {
+                'source': {'name': name, 'id': sid},
+                'document': [doc],
+                'metadata': [{'source': sid, 'name': name}],
+            }})
+    except Exception as e:
+        log.warning(f'🌸 petal state: chips skipped ({e!r})')
 
 
 async def _debug_chip(metadata: dict, added: dict) -> None:

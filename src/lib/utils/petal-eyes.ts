@@ -1,5 +1,5 @@
 // 👁 her eyes (slice A10) — the pure side of the raw view: tints, the history as sent, params,
-// and the word diff between what Petal wrote raw (petal-spill) and what OWUI saved.
+// and the word diff between what Petal wrote raw (petal-wellspring) and what OWUI saved.
 // no DOM, no stores: everything here is a function of the record.
 
 import type { EyesPart } from '$lib/apis/petal-eyes';
@@ -14,6 +14,15 @@ export const TINTS = 8; // palette slots in PetalEyes.svelte (.pe-c0 … .pe-c7)
 /** the legend: every distinct source, in the order the injectors spoke. */
 export const sourcesOf = (parts: EyesPart[]): string[] => [...new Set(parts.map((p) => p.source))];
 
+/** what a part is: text that rides in the request, or something that never was text
+ * (Heartstrings steers the activations, petal-soft speaks in soft tokens). A11.1 */
+export const partKind = (source: string): 'steering' | 'soft' | 'text' =>
+	/heartstring|💗|\bstrings\b/i.test(source)
+		? 'steering'
+		: /petal-soft|soft.?tokens?|\bscent\b/i.test(source)
+			? 'soft'
+			: 'text';
+
 const needleOf = (text: string, hay: string): string | null => {
 	if (!text) return null;
 	if (text.trim().length >= 3 && hay.includes(text)) return text;
@@ -21,19 +30,51 @@ const needleOf = (text: string, hay: string): string | null => {
 	return t.length >= 3 && hay.includes(t) ? t : null;
 };
 
+/** whitespace runs folded to one space, with the way back to the original offsets */
+const fold = (s: string) => {
+	let out = '';
+	const map: number[] = [];
+	let gap = false;
+	for (let i = 0; i < s.length; i++) {
+		if (/\s/.test(s[i])) {
+			if (!gap) {
+				out += ' ';
+				map.push(i);
+			}
+			gap = true;
+		} else {
+			out += s[i];
+			map.push(i);
+			gap = false;
+		}
+	}
+	return { out, map };
+};
+
 /** `text` split into segments, each part's every occurrence tinted by its source.
- * a smaller part inside a bigger one keeps its own tint (painted last). `found` collects
- * the indexes of the parts that were seen. */
+ * a smaller part inside a bigger one keeps its own tint (painted last). a part whose spacing
+ * changed on the way (a newline become a space…) is still found. `found` collects the indexes
+ * of the parts that were seen. */
 export function tint(text: string, parts: EyesPart[], sources: string[], found?: Set<number>): Seg[] {
 	if (!text) return [];
 	const spans: { s: number; e: number; src: number }[] = [];
+	let folded: { out: string; map: number[] } | null = null;
 	parts.forEach((p, pi) => {
-		const needle = needleOf(p.text, text);
-		if (!needle) return;
-		found?.add(pi);
 		const src = sources.indexOf(p.source);
-		for (let i = text.indexOf(needle); i !== -1; i = text.indexOf(needle, i + needle.length)) {
-			spans.push({ s: i, e: i + needle.length, src });
+		const needle = needleOf(p.text, text);
+		if (needle) {
+			found?.add(pi);
+			for (let i = text.indexOf(needle); i !== -1; i = text.indexOf(needle, i + needle.length))
+				spans.push({ s: i, e: i + needle.length, src });
+			return;
+		}
+		const nf = p.text ? fold(p.text.trim()).out : '';
+		if (nf.length < 3) return;
+		folded ??= fold(text);
+		const { out, map } = folded;
+		for (let i = out.indexOf(nf); i !== -1; i = out.indexOf(nf, i + nf.length)) {
+			found?.add(pi);
+			spans.push({ s: map[i], e: map[i + nf.length - 1] + 1, src });
 		}
 	});
 	if (!spans.length) return [{ text, src: null }];
