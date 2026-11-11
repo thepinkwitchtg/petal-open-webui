@@ -134,8 +134,8 @@ const renderAnnotation = (m: any): string => {
 	const a = m?.annotation;
 	if (!a) return '';
 	const bits: string[] = [];
-	if (a.rating === 1) bits.push('👍');
-	if (a.rating === -1) bits.push('👎');
+	if (a.rating === 1) bits.push('👍🏻');
+	if (a.rating === -1) bits.push('👎🏻');
 	if (a.reason) bits.push(`reason: ${a.reason}`);
 	if (Array.isArray(a.tags) && a.tags.length) bits.push(`tags: ${a.tags.join(', ')}`);
 	if (a.comment) bits.push(`note: ${String(a.comment).replace(/\n+/g, ' ')}`);

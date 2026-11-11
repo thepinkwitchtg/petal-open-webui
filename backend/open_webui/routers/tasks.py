@@ -1454,7 +1454,7 @@ async def petal_hush(request: Request, form_data: dict, user=Depends(get_verifie
 # what we rendered, keyed to her reply id — the page then sets it at the bottom of
 # the request's system message (under the persona, above the memories). the record
 # is what lets the ledger train on what Petal actually saw: chat history never holds
-# the note, so without it a 👍 would teach her answers to whispers that aren't there.
+# the note, so without it a 👍🏻 would teach her answers to whispers that aren't there.
 def _petal_hush_pin_prompt():
     text, src = _petal_lens_text('hush-pin.txt')
     return (text, src) if text else (PETAL_HUSH_PIN_PROMPT, 'built-in')

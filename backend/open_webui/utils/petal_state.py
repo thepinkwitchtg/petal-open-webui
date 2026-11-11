@@ -9,7 +9,7 @@ one small place that assembles every live state line before a request goes to Pe
         {quality} / {after}; until they exist an empty one leaves no dangling dot)
       the orbit line   — after a message carrying a ✧ orbit (slice A11):
         "**status update:** [sat 23:40] Lily circulated an orbit." (+ " She held it." once she says)
-  2 · her thumbs       — after a rated reply: "**status update:** Lily 👍 this reply", plus her
+  2 · her thumbs       — after a rated reply: "**status update:** Lily 👍🏻 this reply", plus her
         note when she left one. user setting `petalSight` (thumbs · notes), on by default
   3 · the trail        — in her system context, retention-first (slice A11):
         "retention: day 4" (since the last climax) · "orbits_7d: 2 held · 1 leaked · 0 open" ·
@@ -68,8 +68,8 @@ TEMPLATES_DEFAULT: dict = {
         'after_* name them). an older "trail" key in this file is retired: it rests here as yours.'
     ),
     'status_climax': '**status update:** [{day} {time}] Lily just climaxed.',
-    'status_thumb_up': '**status update:** Lily 👍 this reply',
-    'status_thumb_down': '**status update:** Lily 👎 this reply',
+    'status_thumb_up': '**status update:** Lily 👍🏻 this reply',
+    'status_thumb_down': '**status update:** Lily 👎🏻 this reply',
     'status_note': ' · her note: “{note}”',
     'system_block': '{framing}\n{trail}\n{charges}',
     'framing': 'quiet notes from the rig, for you alone: lines marked **status update:** in the conversation are never words to quote back.',
