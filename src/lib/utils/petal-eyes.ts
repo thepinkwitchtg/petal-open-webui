@@ -4,7 +4,8 @@
 
 import type { EyesPart } from '$lib/apis/petal-eyes';
 
-export type Seg = { text: string; src: number | null }; // src = index into the legend's sources
+// src = index into the legend's sources (the tint) · part = which part it is (its hover, A14)
+export type Seg = { text: string; src: number | null; part: number | null };
 export type Piece = { kind: 'text' | 'image' | 'other'; text: string };
 export type Msg = { i: number; role: string; pieces: Piece[]; extra: [string, string][] };
 export type Op = { op: '=' | '-' | '+'; text: string };
@@ -69,30 +70,31 @@ export function firstAt(hay: string, text: string): number {
  * of the parts that were seen. */
 export function tint(text: string, parts: EyesPart[], sources: string[], found?: Set<number>): Seg[] {
 	if (!text) return [];
-	const owner = ownersOf(text, parts, sources, found);
-	if (!owner) return [{ text, src: null }];
+	const owner = ownersOf(text, parts, found);
+	if (!owner) return [{ text, src: null, part: null }];
+	const srcOf = parts.map((p) => sources.indexOf(p.source));
 	const out: Seg[] = [];
 	let start = 0;
 	for (let i = 1; i <= text.length; i++) {
 		if (i === text.length || owner[i] !== owner[start]) {
-			out.push({ text: text.slice(start, i), src: owner[start] < 0 ? null : owner[start] });
+			const part = owner[start] < 0 ? null : owner[start];
+			out.push({ text: text.slice(start, i), src: part === null ? null : srcOf[part], part });
 			start = i;
 		}
 	}
 	return out;
 }
 
-/** per character: the source index that tints it (−1: none) · null when no part is in `text`. */
-function ownersOf(text: string, parts: EyesPart[], sources: string[], found?: Set<number>): Int16Array | null {
-	const spans: { s: number; e: number; src: number }[] = [];
+/** per character: the part that tints it (−1: none) · null when no part is in `text`. */
+function ownersOf(text: string, parts: EyesPart[], found?: Set<number>): Int16Array | null {
+	const spans: { s: number; e: number; pi: number }[] = [];
 	let folded: { out: string; map: number[] } | null = null;
 	parts.forEach((p, pi) => {
-		const src = sources.indexOf(p.source);
 		const needle = needleOf(p.text, text);
 		if (needle) {
 			found?.add(pi);
 			for (let i = text.indexOf(needle); i !== -1; i = text.indexOf(needle, i + needle.length))
-				spans.push({ s: i, e: i + needle.length, src });
+				spans.push({ s: i, e: i + needle.length, pi });
 			return;
 		}
 		const nf = p.text ? fold(p.text.trim()).out : '';
@@ -101,14 +103,64 @@ function ownersOf(text: string, parts: EyesPart[], sources: string[], found?: Se
 		const { out, map } = folded;
 		for (let i = out.indexOf(nf); i !== -1; i = out.indexOf(nf, i + nf.length)) {
 			found?.add(pi);
-			spans.push({ s: map[i], e: map[i + nf.length - 1] + 1, src });
+			spans.push({ s: map[i], e: map[i + nf.length - 1] + 1, pi });
 		}
 	});
 	if (!spans.length) return null;
 	const owner = new Int16Array(text.length).fill(-1);
 	spans.sort((a, b) => b.e - b.s - (a.e - a.s)); // biggest first, so the specific ones win
-	for (const sp of spans) owner.fill(sp.src, sp.s, sp.e);
+	for (const sp of spans) owner.fill(sp.pi, sp.s, sp.e);
 	return owner;
+}
+
+// ── A14 · what spoke: the hover (or tap) on a tinted string ──────────────────────
+/** the line of `text` around offset `at`, trimmed */
+export function lineAt(text: string, at: number): string {
+	const i = Math.max(0, Math.min(at, text.length));
+	const s = i > 0 ? text.lastIndexOf('\n', text[i] === '\n' ? i - 1 : i) + 1 : 0;
+	let e = text.indexOf('\n', i);
+	if (e < 0) e = text.length;
+	return text.slice(s, Math.max(s, e)).trim();
+}
+
+export type Speaker = { what: string; who: string; hit?: boolean }; // hit: an entry that holds her line
+const singular = (k: string) => (k.endsWith('ies') ? `${k.slice(0, -3)}y` : k.length > 3 && k.endsWith('s') ? k.slice(0, -1) : k);
+const entryWords = (e: unknown): string => {
+	if (!e || typeof e !== 'object') return '';
+	const o = e as Record<string, unknown>;
+	const w = ['text', 'words', 'line', 'content', 'body'].map((k) => o[k]).find((v) => typeof v === 'string');
+	return (w as string | undefined) ?? '';
+};
+const entryName = (e: unknown): string => {
+	if (!e || typeof e !== 'object') return '';
+	const o = e as Record<string, unknown>;
+	const name = ['name', 'label', 'title', 'key', 'id', 'gem'].map((k) => o[k]).find((v) => typeof v === 'string' && v);
+	return [typeof o.emoji === 'string' ? o.emoji : '', (name as string | undefined) ?? ''].filter(Boolean).join(' ');
+};
+
+/** what spoke where she points, from the part's own extras: the entry of a list (gems, lines…)
+ * whose words hold that line (or, a whole phrase, sit inside it), then the part's short plain
+ * extras (a gem's id, a mode, a token count). an injector names its speakers by what it puts
+ * beside its text. a lone token (an id like "skin") never claims a line it merely appears in. */
+export function speakersOf(p: EyesPart, line: string): Speaker[] {
+	const out: Speaker[] = [];
+	const hit = line.trim();
+	const phrase = (w: string) => w.length >= 8 && /\s/.test(w);
+	for (const [k, v] of Object.entries(p)) {
+		if (k === 'source' || k === 'text') continue;
+		if (Array.isArray(v)) {
+			if (hit.length < 3) continue;
+			for (const e of v) {
+				const w = (typeof e === 'string' ? e : entryWords(e)).trim();
+				if (!w || !(w.includes(hit) || (phrase(w) && hit.includes(w)))) continue;
+				out.push({ what: singular(k), who: (typeof e === 'string' ? '' : entryName(e)) || cut(w, 140), hit: true });
+				break;
+			}
+		} else if ((typeof v === 'string' || typeof v === 'number' || typeof v === 'boolean') && String(v).length <= 80) {
+			out.push({ what: k, who: String(v) });
+		}
+	}
+	return out;
 }
 
 const kb = (n: number) => (n < 1024 ? `${n} B` : `${(n / 1024).toFixed(n < 10240 ? 1 : 0)} KB`);
@@ -221,7 +273,7 @@ export function placesOf(payload: Record<string, any>, parts: EyesPart[]): { pla
 export const SPECIAL =
 	/<\|[^<>|\s]{1,48}\|>|<\/?(?:think|tool_call|tool_response|tools|answer)>|<\/?s>|\[\/?INST\]|<(?:start|end)_of_turn>|<bos>|<eos>/g;
 
-export type RSeg = { text: string; src: number | null; tpl: boolean; tok: boolean; n: number };
+export type RSeg = { text: string; src: number | null; part: number | null; tpl: boolean; tok: boolean; n: number };
 
 /** the rendered prompt in segments: special tokens (a run of the same one folded into one, ×n),
  * the template's own words (everything that isn't her messages' text), and the parts tinted by
@@ -263,7 +315,8 @@ export function renderedSegs(text: string, payload: Record<string, any>, parts: 
 			first = false;
 		}
 	}
-	const owner = ownersOf(text, parts, sources);
+	const owner = ownersOf(text, parts);
+	const srcOf = parts.map((p) => sources.indexOf(p.source));
 	const toks: [number, number][] = [];
 	for (const mt of text.matchAll(SPECIAL)) toks.push([mt.index!, mt.index! + mt[0].length]);
 	const segs: RSeg[] = [];
@@ -276,8 +329,8 @@ export function renderedSegs(text: string, payload: Record<string, any>, parts: 
 				inMsg[i] !== inMsg[start] ||
 				(owner ? owner[i] : -1) !== (owner ? owner[start] : -1);
 			if (!cut) continue;
-			const src = owner && inMsg[start] && owner[start] >= 0 ? owner[start] : null;
-			segs.push({ text: text.slice(start, i), src, tpl: !inMsg[start], tok: false, n: 1 });
+			const part = owner && inMsg[start] && owner[start] >= 0 ? owner[start] : null;
+			segs.push({ text: text.slice(start, i), src: part === null ? null : srcOf[part], part, tpl: !inMsg[start], tok: false, n: 1 });
 			start = i;
 		}
 	};
@@ -287,7 +340,7 @@ export function renderedSegs(text: string, payload: Record<string, any>, parts: 
 		const tok = text.slice(s, e);
 		const last = segs[segs.length - 1];
 		if (last?.tok && last.text === tok && at === s) last.n++;
-		else segs.push({ text: tok, src: null, tpl: !inMsg[s], tok: true, n: 1 });
+		else segs.push({ text: tok, src: null, part: null, tpl: !inMsg[s], tok: true, n: 1 });
 		at = e;
 	}
 	push(at, text.length);

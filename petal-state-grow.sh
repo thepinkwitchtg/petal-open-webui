@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 🌸 petal · offer the new words + knobs to your own files, once (slices A11 · A11.1 · A12 · 8b).
+# 🌸 petal · offer the new words + knobs to your own files, once (slices A11 · A11.1 · A12 · 8b · A14).
 #
 # petal-state/templates.json and trip-markers/settings.json were planted once and are never
 # overwritten by OWUI. new keys already work without this (the defaults fill in at read time),
@@ -7,7 +7,8 @@
 # if you say yes:
 #   · grow   — the missing keys are added at the end (the knobs inside "climax")
 #   · renew  — a line still holding an OLD default word for word (you never touched it) takes
-#              the new default: A11.1 retired the word "spill" from the trail
+#              the new default: A11.1 retired the word "spill" from the trail, and since nov 10
+#              her thumbs are porcelain (👍🏻 · 👎🏻)
 #   · retire — a key that was renamed (spills_line → climaxes_line) leaves, only if it still
 #              holds the old default; your own words are never changed, never removed
 #   · a dated backup lands beside each file before anything is written
@@ -39,6 +40,9 @@ RETIRED = {
         '(spills_line). an older "trail" key in this file is retired: it rests here as yours.'
     ],
     'spills_line': ['spills · last {days} days (local): {items}'],  # renamed: climaxes_line
+    # nov 10 · the porcelain thumbs: the A8 plant still says 👍 / 👎 in her file
+    'status_thumb_up': ['**status update:** Lily \U0001F44D this reply'],
+    'status_thumb_down': ['**status update:** Lily \U0001F44E this reply'],
 }
 
 def read(path):
