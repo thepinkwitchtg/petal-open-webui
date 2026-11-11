@@ -6,6 +6,10 @@
 	// source tap: every raw character she wrote, before OWUI prettified it).
 	// 🧵 the rendered tab (A13): the same request through vLLM's own chat template, asked live:
 	// every special token, the thinking switch, the tool block the template writes.
+	// A14 · for her hands and her reading: the legend stays at the top however far she scrolls;
+	// hovering a tinted string (a tap on the phone) says where it came from (its source, and the
+	// gem or readout line that spoke); her system context, then the parts, then the history;
+	// every section opens, and one she folds stays folded (remembered per section).
 	// static on purpose: no animation, no timers, nothing redraws while it sits open.
 	import { createEventDispatcher, onDestroy, onMount, tick } from 'svelte';
 	import {
@@ -23,11 +27,13 @@
 		diffWords,
 		foldSame,
 		historyOf,
+		lineAt,
 		paramsOf,
 		partKind,
 		placesOf,
 		renderedSegs,
 		sourcesOf,
+		speakersOf,
 		stripDetails,
 		systemOf,
 		thinkingOf,
@@ -80,7 +86,8 @@
 		if (e.key === 'Escape') {
 			e.preventDefault();
 			e.stopPropagation();
-			close();
+			if (pop) pop = null; // the little card first, then the eyes
+			else close();
 		}
 	};
 
@@ -140,6 +147,120 @@
 	let openParam: Record<string, boolean> = {};
 	let openX: Record<string, boolean> = {}; // a part's long extra, unfolded
 	let tab: 'sent' | 'rendered' = 'sent';
+
+	// ── A14 · every section opens: opening her eyes means wanting to read it all. a section she
+	// folds stays folded, remembered per section in this browser (nothing leaves it)
+	const FOLD_KEY = 'petal-eyes.folded';
+	const SECTIONS = ['system', 'parts', 'history', 'params', 'wellspring', 'prompt'] as const;
+	type SecId = (typeof SECTIONS)[number];
+	let opened = Object.fromEntries(SECTIONS.map((id) => [id, true])) as Record<SecId, boolean>;
+	try {
+		const folded = JSON.parse(localStorage.getItem(FOLD_KEY) ?? '[]');
+		if (Array.isArray(folded))
+			for (const id of folded) if ((SECTIONS as readonly string[]).includes(id)) opened[id as SecId] = false;
+	} catch {
+		/* no storage here: every section opens */
+	}
+	const keepFolds = (o: Record<SecId, boolean>) => {
+		try {
+			localStorage.setItem(FOLD_KEY, JSON.stringify(SECTIONS.filter((id) => !o[id])));
+		} catch {
+			/* nothing to remember with */
+		}
+	};
+	$: keepFolds(opened);
+
+	// ── A14 · what spoke: a tinted string, hovered (or tapped on the phone), names its source and
+	// the gem or readout line that spoke (from what its injector put beside its text). a click
+	// keeps the card open, with a way to its part. it moves only with her hand: no animation.
+	type Pop = { pi: number; frag: string; x: number; y: number; pinned: boolean };
+	let pop: Pop | null = null;
+	let popEl: HTMLDivElement;
+	let popPos = { left: 8, top: 8 };
+	let partEls: Record<number, HTMLElement> = {};
+	let partOpen: Record<number, boolean> = {};
+	let headH = 0; // the sticky top, so a part scrolled to lands below it
+
+	const caretAt = (x: number, y: number): { node: Node; offset: number } | null => {
+		const d = document as any;
+		const p = d.caretPositionFromPoint?.(x, y);
+		if (p?.offsetNode) return { node: p.offsetNode, offset: p.offset };
+		const r = d.caretRangeFromPoint?.(x, y);
+		return r ? { node: r.startContainer, offset: r.startOffset } : null;
+	};
+	/** the line under her hand, kept inside the tinted string itself */
+	const fragAt = (mark: HTMLElement, x: number, y: number) => {
+		const text = mark.textContent ?? '';
+		const c = caretAt(x, y);
+		if (!c || !mark.contains(c.node)) return lineAt(text, 0);
+		const r = document.createRange();
+		r.setStart(mark, 0);
+		r.setEnd(c.node, c.offset);
+		return lineAt(text, r.toString().length);
+	};
+	const markOf = (t: EventTarget | null) =>
+		t instanceof Element ? (t.closest('mark[data-part]') as HTMLElement | null) : null;
+
+	async function show(mark: HTMLElement, x: number, y: number, pinned: boolean) {
+		const pi = Number(mark.dataset.part);
+		if (!Number.isInteger(pi) || !parts[pi]) return;
+		const frag = fragAt(mark, x, y);
+		if (!pinned && pop && !pop.pinned && pop.pi === pi && pop.frag === frag) return; // the same line: nothing moves
+		pop = { pi, frag, x, y, pinned };
+		await tick();
+		if (!pop || !popEl) return;
+		const vw = window.innerWidth;
+		const vh = window.visualViewport?.height ?? window.innerHeight;
+		const left = Math.min(Math.max(8, x - 14), vw - popEl.offsetWidth - 8);
+		const below = y + 18;
+		popPos = { left, top: below + popEl.offsetHeight <= vh - 8 ? below : Math.max(8, y - popEl.offsetHeight - 12) };
+	}
+	function whispers(node: HTMLElement) {
+		const over = (e: PointerEvent) => {
+			if (e.pointerType !== 'mouse' || pop?.pinned) return;
+			const m = markOf(e.target);
+			if (m) show(m, e.clientX, e.clientY, false);
+		};
+		const out = (e: PointerEvent) => {
+			if (e.pointerType !== 'mouse' || !pop || pop.pinned) return;
+			if (markOf(e.relatedTarget) !== markOf(e.target)) pop = null;
+		};
+		const click = (e: MouseEvent) => {
+			if (popEl?.contains(e.target as Node)) return;
+			const m = markOf(e.target);
+			if (m && window.getSelection()?.isCollapsed !== false) {
+				if (pop?.pinned && pop.pi === Number(m.dataset.part)) pop = null;
+				else show(m, e.clientX, e.clientY, true);
+				return;
+			}
+			if (pop?.pinned) pop = null;
+		};
+		const away = () => pop && (pop = null);
+		node.addEventListener('pointerover', over);
+		node.addEventListener('pointermove', over);
+		node.addEventListener('pointerout', out);
+		node.addEventListener('click', click);
+		node.addEventListener('scroll', away, { passive: true });
+		window.addEventListener('resize', away);
+		return {
+			destroy() {
+				node.removeEventListener('pointerover', over);
+				node.removeEventListener('pointermove', over);
+				node.removeEventListener('pointerout', out);
+				node.removeEventListener('click', click);
+				node.removeEventListener('scroll', away);
+				window.removeEventListener('resize', away);
+			}
+		};
+	}
+	async function goPart(pi: number) {
+		pop = null;
+		tab = 'sent';
+		opened = { ...opened, parts: true };
+		partOpen = { ...partOpen, [pi]: true };
+		await tick();
+		partEls[pi]?.scrollIntoView({ block: 'start' });
+	}
 
 	const stamp = (at: number) => {
 		const d = new Date(at * 1000);
@@ -257,12 +378,40 @@
 
 <svelte:window on:keydown={onKey} />
 
-<div use:portal class="pe-root" role="dialog" aria-modal="true" aria-label="what Petal received">
-	<header class="pe-head">
+<div
+	use:portal
+	use:whispers
+	class="pe-root"
+	role="dialog"
+	aria-modal="true"
+	aria-label="what Petal received"
+	style="--pe-headh:{headH}px"
+>
+	<header class="pe-head" bind:offsetHeight={headH}>
 		<div class="pe-bar">
-			<div class="pe-title"><span class="pe-emoji" aria-hidden="true">👁</span> what Petal received</div>
+			<!-- the wordmark carries the gradient alone, so its words walk the whole way: white · candy · iris -->
+			<div class="pe-title">
+				<span class="pe-emoji" aria-hidden="true">👁</span> <span class="pe-word">what Petal received</span>
+			</div>
 			<button bind:this={closeEl} class="pe-x" aria-label="close" on:click={close}>✕</button>
 		</div>
+		{#if rec && view && !loading && !error}
+			<!-- A14 · the legend stays: it rides in the sticky top however far her system prompt scrolls -->
+			<div class="pe-legend">
+				<span class="pe-key"><span class="pe-sw pe-plain"></span>{tab === 'rendered' ? 'her messages' : 'unmarked'}</span>
+				{#if tab === 'rendered'}
+					<span class="pe-key"><span class="pe-sw pe-tplsw"></span>the template's own words</span>
+					<span class="pe-key"><span class="pe-tok">&lt;|special|&gt;</span>special token</span>
+				{/if}
+				{#each sources as s, i (s)}
+					<span class="pe-key"
+						><span class="pe-sw pe-c{i % TINTS}"></span>{s}{#if tab === 'sent' && view.chars.get(i)}<span class="pe-dim pe-count"
+								>{' '}{view.chars.get(i)?.toLocaleString()}</span
+							>{/if}</span
+					>
+				{/each}
+			</div>
+		{/if}
 	</header>
 
 	<div class="pe-body">
@@ -304,21 +453,6 @@
 				>
 			</div>
 
-			<div class="pe-legend">
-				<span class="pe-key"><span class="pe-sw pe-plain"></span>{tab === 'rendered' ? 'her messages' : 'unmarked'}</span>
-				{#if tab === 'rendered'}
-					<span class="pe-key"><span class="pe-sw pe-tplsw"></span>the template's own words</span>
-					<span class="pe-key"><span class="pe-tok">&lt;|special|&gt;</span>special token</span>
-				{/if}
-				{#each sources as s, i (s)}
-					<span class="pe-key"
-						><span class="pe-sw pe-c{i % TINTS}"></span>{s}{#if tab === 'sent' && view.chars.get(i)}<span class="pe-dim"
-								>{' '}{view.chars.get(i)?.toLocaleString()}</span
-							>{/if}</span
-					>
-				{/each}
-			</div>
-
 			{#if tab === 'rendered'}
 				{#if renderedErr}
 					<p class="pe-note">{renderedErr}</p>
@@ -340,7 +474,7 @@
 							she starts inside &lt;think&gt;{/if}
 					</div>
 					<pre class="pe-text pe-raw">{#each tailSegs as g}{#if g.tok}<span class="pe-tok">{g.text}{#if g.n > 1}<b>{' '}×{g.n}</b>{/if}</span>{:else}<span class="pe-tpl">{ws(g.text)}</span>{/if}{/each}</pre>
-					<details class="pe-sec" open>
+					<details class="pe-sec" bind:open={opened.prompt}>
 						<summary
 							><span class="pe-caret"></span>the whole prompt, as the template wrote it
 							<span class="pe-dim"
@@ -348,7 +482,7 @@
 									the template (shown as its words){/if}</span
 							></summary
 						>
-						<pre class="pe-text">{#each rview.segs as g}{#if g.tok}<span class="pe-tok" class:pe-tok-in={!g.tpl}>{g.text}{#if g.n > 1}<b>{' '}×{g.n}</b>{/if}</span>{:else if g.src !== null}<mark class="pe-tint pe-c{g.src % TINTS}" title={sources[g.src]}>{g.text}</mark>{:else if g.tpl}<span class="pe-tpl">{g.text}</span>{:else}{g.text}{/if}{/each}</pre>
+						<pre class="pe-text">{#each rview.segs as g}{#if g.tok}<span class="pe-tok" class:pe-tok-in={!g.tpl}>{g.text}{#if g.n > 1}<b>{' '}×{g.n}</b>{/if}</span>{:else if g.src !== null}<mark class="pe-tint pe-c{g.src % TINTS}" data-part={g.part}>{g.text}</mark>{:else if g.tpl}<span class="pe-tpl">{g.text}</span>{:else}{g.text}{/if}{/each}</pre>
 					</details>
 					<div class="pe-meta">
 						<button class="pe-more" on:click={copyRendered}>{copiedR ? '✓ copied' : '⧉ copy every character'}</button>
@@ -356,7 +490,22 @@
 					</div>
 				{/if}
 			{:else}
-				<details class="pe-sec" open>
+				<details class="pe-sec" bind:open={opened.system}>
+					<summary
+						><span class="pe-caret"></span>her system context
+						<span class="pe-dim">· {view.sysChars.toLocaleString()} chars</span></summary
+					>
+					{#each view.sys as s, i (i)}
+						{#if view.sys.length > 1}<div class="pe-sub">
+								{s.at === null ? 'instructions' : view.labels[s.at]}
+							</div>{/if}
+						<pre class="pe-text">{#each s.segs as g}{#if g.src === null}{g.text}{:else}<mark class="pe-tint pe-c{g.src % TINTS}" data-part={g.part}>{g.text}</mark>{/if}{/each}</pre>
+					{:else}
+						<p class="pe-dim">no system turn in this request</p>
+					{/each}
+				</details>
+
+				<details class="pe-sec" bind:open={opened.parts}>
 					<summary
 						><span class="pe-caret"></span>parts
 						<span class="pe-dim"
@@ -368,7 +517,7 @@
 						{@const pl = view.places[i]}
 						{@const kind = partKind(p.source)}
 						{@const xs = extras(p)}
-						<details class="pe-part">
+						<details class="pe-part" bind:this={partEls[i]} bind:open={partOpen[i]}>
 							<summary>
 								<span class="pe-caret"></span>
 								<span class="pe-sw pe-c{sources.indexOf(p.source) % TINTS}"></span>
@@ -412,22 +561,7 @@
 					{/each}
 				</details>
 
-				<details class="pe-sec" open>
-					<summary
-						><span class="pe-caret"></span>her system context
-						<span class="pe-dim">· {view.sysChars.toLocaleString()} chars</span></summary
-					>
-					{#each view.sys as s, i (i)}
-						{#if view.sys.length > 1}<div class="pe-sub">
-								{s.at === null ? 'instructions' : view.labels[s.at]}
-							</div>{/if}
-						<pre class="pe-text">{#each s.segs as g}{#if g.src === null}{g.text}{:else}<mark class="pe-tint pe-c{g.src % TINTS}" title={sources[g.src]}>{g.text}</mark>{/if}{/each}</pre>
-					{:else}
-						<p class="pe-dim">no system turn in this request</p>
-					{/each}
-				</details>
-
-				<details class="pe-sec">
+				<details class="pe-sec" bind:open={opened.history}>
 					<summary
 						><span class="pe-caret"></span>the history as sent
 						<span class="pe-dim">· {view.history.length} turn{view.history.length === 1 ? '' : 's'}</span></summary
@@ -444,7 +578,7 @@
 									{#if p.kind === 'image'}
 										<div class="pe-img">🖼 {p.text}</div>
 									{:else if p.segs}
-										<pre class="pe-text">{#each p.segs as g}{#if g.src === null}{g.text}{:else}<mark class="pe-tint pe-c{g.src % TINTS}" title={sources[g.src]}>{g.text}</mark>{/if}{/each}</pre>
+										<pre class="pe-text">{#each p.segs as g}{#if g.src === null}{g.text}{:else}<mark class="pe-tint pe-c{g.src % TINTS}" data-part={g.part}>{g.text}</mark>{/if}{/each}</pre>
 									{:else}
 										<pre class="pe-text pe-dim">{cut(p.text, 4000)}</pre>
 									{/if}
@@ -453,14 +587,14 @@
 							{#each m.rides as [k, , segs] (k)}
 								<div class="pe-ride">
 									<span class="pe-dim">rides along ·</span> <b>{k}</b>
-									<pre class="pe-text">{#each segs as g}{#if g.src === null}{g.text}{:else}<mark class="pe-tint pe-c{g.src % TINTS}" title={sources[g.src]}>{g.text}</mark>{/if}{/each}</pre>
+									<pre class="pe-text">{#each segs as g}{#if g.src === null}{g.text}{:else}<mark class="pe-tint pe-c{g.src % TINTS}" data-part={g.part}>{g.text}</mark>{/if}{/each}</pre>
 								</div>
 							{/each}
 						</div>
 					{/each}
 				</details>
 
-				<details class="pe-sec">
+				<details class="pe-sec" bind:open={opened.params}>
 					<summary
 						><span class="pe-caret"></span>params{#if pulls.length}{' '}+ the Heartstrings pull{/if}
 						<span class="pe-dim">· {view.params.length}</span></summary
@@ -492,7 +626,7 @@
 					{/each}
 				</details>
 
-				<details class="pe-sec" open>
+				<details class="pe-sec" bind:open={opened.wellspring}>
 					<summary><span class="pe-caret"></span><span class="pe-emoji">🫗</span> petal-wellspring · raw at the source</summary>
 					{#if marks.length}
 						<div class="pe-marks">{#each marks as mk (mk)}<span class="pe-mark">{mk}</span>{/each}</div>
@@ -550,6 +684,35 @@
 			{/if}
 		{/if}
 	</div>
+
+	{#if pop && parts[pop.pi]}
+		{@const pi = pop.pi}
+		{@const frag = pop.frag}
+		{@const p = parts[pi]}
+		{@const said = speakersOf(p, frag)}
+		{@const where = view?.places[pi]?.where ?? ''}
+		<div
+			bind:this={popEl}
+			class="pe-pop"
+			class:pinned={pop.pinned}
+			role="tooltip"
+			style="left:{popPos.left}px; top:{popPos.top}px"
+		>
+			<div class="pe-pop-src"><span class="pe-sw pe-c{sources.indexOf(p.source) % TINTS}"></span>{p.source}</div>
+			{#each said as sp, k (k)}
+				<div class="pe-pop-row"><span class="pe-dim">{sp.what}</span> {sp.who}</div>
+			{/each}
+			{#if frag && p.text.trim().includes('\n') && !said.some((sp) => sp.hit)}
+				<div class="pe-pop-row"><span class="pe-dim">the line</span> {cut(frag, 160)}</div>
+			{/if}
+			<div class="pe-pop-row pe-dim">{where ? `${where} · ` : ''}{plural(p.text.length, 'char')}</div>
+			{#if pop.pinned}
+				<button class="pe-more" on:click={() => goPart(pi)}>→ the part</button>
+			{:else}
+				<div class="pe-pop-row pe-dim pe-pop-hint">click to keep it open</div>
+			{/if}
+		</div>
+	{/if}
 </div>
 
 <style>
@@ -587,9 +750,19 @@
 	}
 	.pe-title {
 		flex: 1;
-		font-family: var(--font-display, Georgia, serif);
+		min-width: 0;
+		font-family: var(--font-display, 'Fraunces', Georgia, serif);
 		font-size: 1.15rem;
-		background: var(--grad-text, linear-gradient(100deg, #f9c6dc, #f472b6 46%, #a873f0));
+		font-weight: 400;
+	}
+	/* the wordmark, as both styles refs draw it (petal-gen's .wordmark · the skin's .p-wordmark): the
+	   gradient lives on the words alone, so they walk the whole chakra · candy-light → candy → iris.
+	   on the stretched title box it only ever reached pink */
+	.pe-word {
+		white-space: nowrap;
+		font-variation-settings: 'SOFT' 60;
+		letter-spacing: -0.01em;
+		background: var(--grad-text, linear-gradient(100deg, #ffe1f2 0%, #ff90cf 46%, #c07de0 100%));
 		-webkit-background-clip: text;
 		background-clip: text;
 		-webkit-text-fill-color: transparent;
@@ -666,6 +839,11 @@
 		gap: 0.35rem 0.8rem;
 		font-size: 0.75rem;
 	}
+	/* A14 · it rides in the sticky top, under the title */
+	.pe-head .pe-legend {
+		max-width: 64rem;
+		margin: 0.5rem auto 0;
+	}
 	.pe-key {
 		display: inline-flex;
 		align-items: center;
@@ -726,6 +904,7 @@
 		color: var(--mist, #cfc3cc);
 	}
 	.pe-tint {
+		cursor: help; /* hover says where it came from · a click keeps the card */
 		color: inherit;
 		border-radius: 3px;
 		background: oklch(0.72 0.13 var(--h) / 0.17);
@@ -976,9 +1155,74 @@
 		align-self: flex-start;
 		margin-top: 0.4rem;
 	}
+	/* A14 · a part scrolled to from the card lands below the sticky top */
+	.pe-part {
+		scroll-margin-top: calc(var(--pe-headh, 7rem) + 0.6rem);
+	}
+	/* A14 · the card: where a tinted string came from. still, opaque, above everything */
+	.pe-pop {
+		position: fixed;
+		z-index: 2;
+		max-width: min(24rem, calc(100vw - 16px));
+		padding: 0.5rem 0.65rem;
+		border-radius: 10px;
+		border: 1px solid transparent;
+		background:
+			linear-gradient(var(--obsidian-lit, #1d1724), var(--obsidian-lit, #1d1724)) padding-box,
+			var(--grad-hairline, linear-gradient(135deg, #ffcce9, #ff6ec0 45%, #b15cd1)) border-box;
+		color: var(--mist, #cfc3cc);
+		font-size: 0.75rem;
+		line-height: 1.45;
+		box-shadow: 0 10px 28px rgba(0, 0, 0, 0.45);
+		pointer-events: none; /* a hover card never steals her pointer */
+		display: flex;
+		flex-direction: column;
+		gap: 0.2rem;
+		overflow-wrap: anywhere;
+	}
+	.pe-pop.pinned {
+		pointer-events: auto;
+	}
+	.pe-pop-src {
+		display: flex;
+		align-items: center;
+		gap: 0.4rem;
+		color: var(--pearl, #f6eef3);
+		font-size: 0.8rem;
+	}
+	.pe-pop .pe-more {
+		align-self: flex-start;
+		margin-top: 0.2rem;
+	}
+	.pe-pop-hint {
+		font-size: 0.7rem;
+	}
+	@media (hover: none) {
+		.pe-pop-hint {
+			display: none;
+		}
+	}
+
 	@media (max-width: 640px) {
 		.pe-head {
 			padding: 0.55rem 0.65rem 0.45rem;
+		}
+		/* on the phone the legend stays one row (a swipe shows the rest; a tap on any tint names it) */
+		.pe-head .pe-legend {
+			flex-wrap: nowrap;
+			overflow-x: auto;
+			scrollbar-width: none;
+			margin-top: 0.4rem;
+		}
+		.pe-head .pe-legend::-webkit-scrollbar {
+			display: none;
+		}
+		.pe-head .pe-key {
+			flex-shrink: 0;
+			white-space: nowrap;
+		}
+		.pe-head .pe-count {
+			display: none;
 		}
 		.pe-body {
 			padding: 0.6rem 0.55rem 4rem;
