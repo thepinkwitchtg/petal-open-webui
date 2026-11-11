@@ -743,7 +743,7 @@
 		--h: 200;
 	}
 	.pe-c2 {
-		--h: 75;
+		--h: 228; /* steel blue · hue 75 is the warning's gold and the template's amber, never a source's */
 	}
 	.pe-c3 {
 		--h: 145;
