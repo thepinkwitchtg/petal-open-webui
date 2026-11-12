@@ -1871,6 +1871,8 @@ async def chat_completion(
                             'terminal_id': metadata.get('terminal_id'),
                             'features': metadata.get('features') or {},
                             'variables': metadata.get('variables') or {},
+                            # Petal · the mode chip's pick (A15) dresses the result turns handed on here too
+                            'petal_mode': metadata.get('petal_mode'),
                         },
                     )
             except Exception:

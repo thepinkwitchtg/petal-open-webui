@@ -288,6 +288,7 @@ async def process_pending_internal_messages(
             'files': run.get('files') or [],
             'variables': run.get('variables') or {},
             'chat_variables': chat_context.get('chat_variables'),
+            'petal_mode': run.get('petal_mode'),  # Petal (A15): the chat's mode dresses its result turn too
         }
         if run.get('terminal_id'):
             form_data['terminal_id'] = run['terminal_id']
@@ -368,6 +369,7 @@ async def delegate(
         'variables': copy.deepcopy(metadata.get('variables') or {}),
         'direct': bool(metadata.get('direct')),
         'folder_id': folder_id,
+        'petal_mode': metadata.get('petal_mode'),  # Petal (A15): the chat's mode, for the result turn
     }
     if not run.get('model_id'):
         return 'Error: model context is required.'
