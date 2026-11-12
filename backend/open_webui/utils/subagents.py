@@ -148,6 +148,8 @@ def get_pending_run(metadata: dict, model_id: str | None = None) -> dict:
         'terminal_id': metadata.get('terminal_id'),
         'features': metadata.get('features') or {},
         'variables': metadata.get('variables') or {},
+        # Petal · the mode chip's pick (A15) dresses the result turns handed on here too
+        'petal_mode': metadata.get('petal_mode'),
     }
 
 
@@ -394,6 +396,7 @@ async def process_pending_internal_messages(
             ],
             'variables': run.get('variables') or {},
             'chat_variables': chat_context.get('chat_variables'),
+            'petal_mode': run.get('petal_mode'),  # Petal (A15): the chat's mode dresses its result turn too
         }
         if run.get('terminal_id'):
             form_data['terminal_id'] = run['terminal_id']
@@ -472,6 +475,7 @@ async def delegate(
         'files': copy.deepcopy(metadata.get('files') or []),
         'variables': copy.deepcopy(metadata.get('variables') or {}),
         'folder_id': folder_id,
+        'petal_mode': metadata.get('petal_mode'),  # Petal (A15): the chat's mode, for the result turn
     }
     if not run.get('model_id'):
         return 'Error: model context is required.'
