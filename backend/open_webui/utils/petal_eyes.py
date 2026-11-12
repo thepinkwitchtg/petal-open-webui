@@ -12,7 +12,7 @@ the two views join on it.
   temp chats  → an in-memory ring of the last 20, so her tests stay auditable (contract 0)
   tasks       → never (titles, tags, follow-ups and the hush aren't replies)
 
-a record: {at, chat_id, message_id, model, req_sha, payload, parts, round, to}
+a record: {at, chat_id, message_id, model, req_sha, payload, parts, round, to, mode?}
   payload — the request exactly as sent (its bytes, embedded verbatim in the record)
   parts   — what each injector put in, so the viewer can tint it by source. one line in any
             filter (its `__metadata__`) or injector, no import needed, harmless on a fork
@@ -22,6 +22,7 @@ a record: {at, chat_id, message_id, model, req_sha, payload, parts, round, to}
 
             extra keys ride along as they are ({'tokens': 32, 'memory_ids': [...]}, a pull …)
   to      — host:port the bytes went to (so a missing wellspring record can say where they went)
+  mode    — the mode chip's pick (A15), when one was sent: which of the forge's modes dressed it
 
 🧵 the rendered view (A13): a kept round asked again of the live vLLM (/tokenize then /detokenize,
 with the same chat-template settings), so her eyes read every special token too. kept nowhere.
@@ -121,6 +122,7 @@ def see(metadata: Optional[dict], body: bytes, model: Optional[str] = None, url:
             'model': model,
             'req_sha': req_sha,
             'to': _host(url),
+            **({'mode': metadata['petal_mode']} if isinstance(metadata.get('petal_mode'), str) else {}),
         }
         parts = _parts(metadata)
         if is_saved_chat_id(head['chat_id']):
