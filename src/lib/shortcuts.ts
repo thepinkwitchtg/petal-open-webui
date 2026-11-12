@@ -58,6 +58,7 @@ export enum Shortcut {
 	ATTACH_FILE = 'attachFile',
 	ADD_PROMPT = 'addPrompt',
 	TALK_TO_MODEL = 'talkToModel',
+	CYCLE_MODE = 'cycleMode', // petal · the mode chip beside send
 
 	//Message
 	GENERATE_MESSAGE_PAIR = 'generateMessagePair',
@@ -103,6 +104,7 @@ export const CONFIGURABLE_SHORTCUTS = [
 	Shortcut.CLOSE_MODAL,
 	Shortcut.FOCUS_INPUT,
 	Shortcut.CLEAR_INPUT_SELECTIONS,
+	Shortcut.CYCLE_MODE,
 	Shortcut.GENERATE_MESSAGE_PAIR,
 	Shortcut.REGENERATE_RESPONSE,
 	Shortcut.ALLOW_TOOL_CALL,
@@ -145,6 +147,7 @@ export const DEFAULT_KEYBINDINGS: KeybindingsMap = {
 	[Shortcut.CLOSE_MODAL]: 'Escape',
 	[Shortcut.FOCUS_INPUT]: 'Shift+Escape',
 	[Shortcut.CLEAR_INPUT_SELECTIONS]: 'Escape',
+	[Shortcut.CYCLE_MODE]: 'Cmd+Space', // Ctrl+Space away from a Mac (Cmd names Ctrl there)
 	[Shortcut.GENERATE_MESSAGE_PAIR]: 'Cmd+Shift+Enter',
 	[Shortcut.REGENERATE_RESPONSE]: 'Cmd+R',
 	[Shortcut.ALLOW_TOOL_CALL]: 'Cmd+Alt+Enter',
@@ -440,6 +443,14 @@ export const shortcuts: ShortcutRegistry = {
 		// Tooltips are translated dynamically; keep this key visible to the extractor.
 		// t('settings.personal.shortcuts.clearInputSelections.description');
 		tooltip: 'settings.personal.shortcuts.clearInputSelections.description'
+	},
+	[Shortcut.CYCLE_MODE]: {
+		name: (t) => t('Cycle the mode'),
+		keys: ['mod', 'Space'],
+		category: 'Input',
+		configurable: true,
+		tooltip:
+			'Steps the mode chip beside send to the next mode. Only active when modes are declared.'
 	},
 	[Shortcut.ACCEPT_AUTOCOMPLETE]: {
 		name: (t) => t('settings.personal.shortcuts.acceptAutocomplete.label'),

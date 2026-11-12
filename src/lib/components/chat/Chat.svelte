@@ -60,6 +60,7 @@
 		chatRequestQueues,
 		desktopEvent
 	} from '$lib/stores';
+	import { adoptMode, modeToSend } from '$lib/utils/petal-mode'; // 🌀 the mode chip (A15)
 	import { refreshChatList, refreshFolderChatLists, setChatTitle } from '$lib/stores/chatList';
 	import { updateFolderById } from '$lib/apis/folders';
 	import {
@@ -4527,6 +4528,7 @@
 				_chatId = createdChat.id;
 				loadedChatIdProp = _chatId;
 				await chatId.set(_chatId);
+				adoptMode(_chatId); // 🌀
 				await chatTitle.set(createdChat?.chat?.title ?? createdChat?.title ?? $i18n.t('Chat'));
 
 				params = structuredClone(createdChat?.chat?.params ?? {});
@@ -4536,6 +4538,7 @@
 			} else if ($temporaryChat) {
 				_chatId = createTemporaryChatId($socket?.id);
 				await chatId.set(_chatId);
+				adoptMode(_chatId); // 🌀 a temp chat keeps the pick too (in memory only, contract 0)
 			}
 			if (!_chatId && (tabbed || context?.currentDirectory || tabs?.hasTerminalTabs())) {
 				_chatId = await initChatHandler(_history);
@@ -5123,6 +5126,8 @@
 		const terminalEnabled =
 			$config?.features?.enable_tool_servers && (model.info?.meta?.capabilities?.terminal ?? true);
 		const useChatVariablesFallback = !_chatId || $temporaryChat || isTemporaryChatId(_chatId);
+		// 🌀 petal (A15): the forge mode picked for this chat (the new-chat page's pick before it's born)
+		const petalMode = modeToSend(_chatId || null);
 
 		const res = await generateOpenAIChatCompletion(
 			localStorage.token,
@@ -5168,6 +5173,7 @@
 				session_id: $socket?.id,
 				chat_id: _chatId || undefined,
 				folder_id: $selectedFolder?.id ?? undefined,
+				...(petalMode ? { petal_mode: petalMode } : {}),
 
 				id: responseMessageId,
 				...(messageIdsList ? { message_ids: messageIdsList } : {}),
@@ -5297,6 +5303,7 @@
 						if (file.type === 'filesystem' && file.session_id == null)
 							file.session_id = res.chat_id;
 					await chatId.set(res.chat_id);
+					adoptMode(res.chat_id); // 🌀 the mode picked on the empty page follows the chat it became
 					if (!$temporaryChat && !embedded) {
 						// Carry the picks made on the new-chat page over to this chat
 						saveDraft(getChatInputDraft(), res.chat_id, false);
@@ -5585,6 +5592,7 @@
 			if (selectedFolderId) updateFolderChatLists(createdChat, selectedFolderId);
 			_chatId = chat.id;
 			await chatId.set(_chatId);
+			adoptMode(_chatId); // 🌀 born before the first send: the empty page's pick follows
 			if (tabbed) {
 				loadedChatIdProp = _chatId;
 				chatTitle.set(createdChat.chat?.title ?? createdChat.title);
@@ -5606,8 +5614,10 @@
 
 			if ($chatId === _chatId && $selectedFolder?.id === selectedFolderId) selectedFolder.set(null);
 		} else {
+			const minted = !isTemporaryChatId(_chatId); // 🌀
 			_chatId = isTemporaryChatId(_chatId) ? _chatId : createTemporaryChatId($socket?.id);
 			await chatId.set(_chatId);
+			if (minted) adoptMode(_chatId); // 🌀 a temp chat born here keeps the empty page's pick (in memory only)
 		}
 		await initializeTerminalDirectory(_chatId, context);
 		await tick();
