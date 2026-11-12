@@ -152,7 +152,7 @@ from open_webui.routers import petal_harvest  # 🌷 garden harvest
 from open_webui.routers import petal_markers  # 🌙 trip markers
 from open_webui.routers import petal_forge  # 🔮 the forge
 from open_webui.routers import petal_eyes  # 👁 what Petal received, for Lily's eyes
-from open_webui.routers import petal_diary  # 📔 her diary (notes + ✧ orbits, 🌊 spills, trips)
+from open_webui.routers import petal_diary  # 📔 her diary (notes + ✧ orbits, 🌊 climaxes, trips, 🔥 vows)
 from open_webui.utils import petal_temp_chats  # 🧪 contract 0's times-only counter
 from open_webui.utils import petal_gentle_stop  # 🌙 contract 8 · the outlet waits while Petal is tucked in
 from open_webui.utils import petal_state  # 🌸👁 what Petal sees of Lily's state (climaxes, thumbs, the trail)
@@ -1117,6 +1117,11 @@ async def _set_direct_model(request: Request, model_item: dict, user) -> None:
     request.state.model = model_item
 
 
+def _petal_mode(value) -> str | None:
+    """Petal · the mode chip's pick (A15): a short name the forge declared, else nothing."""
+    return (value.strip()[:64] or None) if isinstance(value, str) else None
+
+
 @app.post('/api/chat/completions')
 @app.post('/api/v1/chat/completions')  # Experimental: Compatibility with OpenAI API
 async def chat_completion(
@@ -1336,6 +1341,9 @@ async def chat_completion(
             'assistant_message_id': form_data.pop('assistant_message_id', None),
             'regeneration_message_id': form_data.pop('regeneration_message_id', None),
             'session_id': form_data.pop('session_id', None),
+            # Petal · the mode chip (A15): which of the forge's modes dresses this message · popped
+            # here so it never rides on to the model · the forge's filter reads it from metadata
+            'petal_mode': _petal_mode(form_data.pop('petal_mode', None)),
             'automation_id': automation_id,
             'folder_id': form_data.pop('folder_id', None),
             'filter_ids': form_data.pop('filter_ids', []),

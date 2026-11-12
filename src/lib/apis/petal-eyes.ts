@@ -12,6 +12,7 @@ export type EyesRecord = {
 	req_sha: string; // sha256 of the exact bytes sent · petal-wellspring keeps the same hash
 	round: number; // 2+ = a tool follow-up or a continue for the same reply
 	to: string | null; // host:port the bytes went to
+	mode?: string; // the mode chip's pick (A15): which of the forge's modes dressed it, when one was sent
 	payload: Record<string, any>;
 	parts: EyesPart[];
 };

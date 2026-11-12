@@ -1082,7 +1082,7 @@ class ChatTable:
     # Petal · what Petal saw, stamped on a reply by the server alone (the ledger's capture): the page
     # never writes these keys, so a page save (a thumb, an edit) never wipes them, and a page holding
     # an older copy (a reply continued since it loaded) never brings the old one back
-    PETAL_STAMPS = ('system', 'petal_state', 'petal_footnote')
+    PETAL_STAMPS = ('system', 'petal_state', 'petal_footnote', 'petal_mode')
 
     @staticmethod
     def merge_history(existing_history: dict | None, incoming_history: dict | None) -> dict:

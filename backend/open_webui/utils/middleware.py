@@ -6568,6 +6568,8 @@ async def streaming_chat_response_handler(response, ctx):
                             # Petal · the forge's footnote beside them (W's filter: note · mode · preset ·
                             # gems · lines · forge · at), so L keeps the note and the message side by side
                             **_petal_footnote(metadata),
+                            # Petal · the mode chip's pick for this pair (A15), so L can weigh modes apart
+                            **({'petal_mode': metadata['petal_mode']} if metadata.get('petal_mode') else {}),
                             **({'usage': usage} if usage else {}),
                         },
                     )

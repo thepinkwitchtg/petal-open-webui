@@ -43,6 +43,7 @@
 		type RSeg,
 		type Seg
 	} from '$lib/utils/petal-eyes';
+	import { loadModes, modes } from '$lib/utils/petal-mode'; // 🌀 the mode a reply was dressed in (A15)
 
 	export let chatId: string;
 	export let messageId: string;
@@ -67,6 +68,7 @@
 
 	onMount(async () => {
 		before = document.activeElement;
+		loadModes(); // the forge's names for the mode a round carries (cached for the page)
 		await tick();
 		closeEl?.focus();
 		try {
@@ -300,6 +302,10 @@
 			if (wellFor === r.req_sha) wellErr = String(e);
 		}
 	}
+	// 🌀 the mode this round was dressed in: the forge's emoji + name now, else the key as sent
+	$: modeHit = rec?.mode ? $modes.find((x) => x.key === rec?.mode) : undefined;
+	$: modeLabel = !rec?.mode ? '' : modeHit ? [modeHit.emoji, modeHit.name].filter(Boolean).join(' ') : rec.mode;
+
 	// ── 🧵 the rendered tab: asked of the live vLLM once per round, when she opens it ──
 	let rendered: Rendered | null = null;
 	let renderedErr = '';
@@ -420,6 +426,7 @@
 				<span>{rec.model ?? '?'}{#if rec.payload?.model && rec.payload.model !== rec.model}<span class="pe-dim">{'\u00a0→ '}{rec.payload.model}</span>{/if}</span>
 				<span class="pe-dot">·</span><span class="pe-mono">{stamp(rec.at)}</span>
 				{#if rec.to}<span class="pe-dot">·</span><span class="pe-mono">→ {rec.to}</span>{/if}
+				{#if modeLabel}<span class="pe-dot">·</span><span title="the mode chip's pick for this reply">{modeLabel}</span>{/if}
 				<span class="pe-dot">·</span><span>{kept === 'ring' ? 'temp chat · held in memory' : 'kept on disk'}</span>
 			</div>
 			<div class="pe-meta">

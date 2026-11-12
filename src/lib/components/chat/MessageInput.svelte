@@ -133,6 +133,7 @@ import { isSavedChatId, isTemporaryChatId } from '$lib/utils/chatId';
 	import QueuedMessageItem from './MessageInput/QueuedMessageItem.svelte';
 	import TaskList from './Messages/ResponseMessage/TaskList.svelte';
 	import PetalStatusChip from './MessageInput/PetalStatusChip.svelte'; // 🌙 trip markers
+	import PetalModeChip from './MessageInput/PetalModeChip.svelte'; // 🌀 the forge's modes, by send
 
 	const i18n: any = getContext('i18n');
 
@@ -3001,6 +3002,11 @@ import { isSavedChatId, isTemporaryChatId } from '$lib/utils/chatId';
 										bind:params
 										{onParamChange}
 									/>
+
+									{#if $_user?.role === 'admin'}
+										<!-- 🌀 petal (A15): the mode chip, by send · nothing here unless the forge declares modes -->
+										<PetalModeChip chatId={chatId || null} />
+									{/if}
 
 									{#if isActive && (history.messages[history.currentId]?.user_id ?? $_user?.id) === $_user?.id && prompt === '' && files.length === 0}
 										<div class=" flex items-center">
