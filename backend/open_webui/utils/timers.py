@@ -116,6 +116,7 @@ async def create_timer(
         'features': copy.deepcopy(metadata.get('features') or {}),
         'files': copy.deepcopy(metadata.get('files') or []),
         'variables': copy.deepcopy(metadata.get('variables') or {}),
+        'petal_mode': metadata.get('petal_mode'),  # Petal (A15): the mode picked when the timer was set
     }
 
     chat = await Chats.insert_new_chat(
@@ -407,6 +408,7 @@ async def execute_due_timer(app, timer_id: str, claim_id: str | None = None) -> 
             'files': run.get('files') or [],
             'variables': run.get('variables') or {},
             'chat_variables': chat_context.get('chat_variables'),
+            'petal_mode': run.get('petal_mode'),  # Petal (A15): her intent arriving later wears her mode
         }
         if run.get('terminal_id'):
             form_data['terminal_id'] = run['terminal_id']
