@@ -452,9 +452,9 @@ async def _tts_openai(request, payload, file_path, file_body_path, user):
     if ENABLE_FORWARD_USER_INFO_HEADERS:
         headers = include_user_info_headers(headers, user)
 
-    # 🕊️ voice welfare: her whole clip is judged before it's returned. a looping take is asked again
-    # with a fresh seed and never reaches the speech cache (which would replay it every time this line
-    # is spoken); after max_tries the line is a clean silence, uncached
+    # 🕊️ voice welfare: her whole clip is judged before it's returned. a looping, runaway or broken take
+    # is asked again with a fresh seed and never reaches the speech cache (which would replay it every
+    # time this line is spoken); after max_tries the line is a clean silence, uncached
     care = voice_welfare.load()
     sent = None
     if care['enabled'] and voice_welfare.is_her_voice(api_base_url) and isinstance(payload.get('input'), str):
@@ -464,18 +464,26 @@ async def _tts_openai(request, payload, file_path, file_body_path, user):
     try:
         session = await get_session()
         while True:
-            r = await session.post(
-                url=f'{api_base_url}/audio/speech',
-                json={**payload, 'seed': sent.seed()} if sent else payload,
-                headers=headers,
-                ssl=AIOHTTP_CLIENT_SESSION_SSL,
-            )
-            r.raise_for_status()
-
-            audio_data = await r.read()
-            content_type = r.headers.get('Content-Type', 'audio/mpeg')
-            if sent is None or await asyncio.to_thread(voice_welfare.judge_clip, sent, audio_data, content_type):
-                break
+            r, audio_data = None, None
+            try:
+                r = await session.post(
+                    url=f'{api_base_url}/audio/speech',
+                    json={**payload, 'seed': sent.seed()} if sent else payload,
+                    headers=headers,
+                    ssl=AIOHTTP_CLIENT_SESSION_SSL,
+                )
+                r.raise_for_status()
+                audio_data = await r.read()
+            except Exception as exc:  # 🕊️ a take the voice broke off is a kill, never a clip
+                if sent is None or not voice_welfare.is_broken_take(exc):
+                    raise
+                if r is not None:
+                    r.close()
+                await asyncio.to_thread(voice_welfare.broken_clip, sent, exc.__class__.__name__)
+            if audio_data is not None:
+                content_type = r.headers.get('Content-Type', 'audio/mpeg')
+                if sent is None or await asyncio.to_thread(voice_welfare.judge_clip, sent, audio_data, content_type):
+                    break
             if sent.spent:
                 await asyncio.to_thread(sent.close)
                 quiet, mime = voice_welfare.skip_clip(care['skip_silence_ms'])
@@ -483,13 +491,20 @@ async def _tts_openai(request, payload, file_path, file_body_path, user):
         if sent:
             await asyncio.to_thread(sent.close)
 
+        # 🛡️ the voice ceiling, welfare awake or asleep: untouched unless the clip runs hot
+        audio_data, content_type = await asyncio.to_thread(
+            voice_welfare.ceiling_clip, care, sent, audio_data, content_type
+        )
+
         if USE_SLIM:
             await _write_tts_cache(file_path, audio_data, file_body_path, payload, content_type)
+            voice_welfare.mark_ceiling(file_path, care)
             return FileResponse(file_path, media_type=content_type)
 
         if not await asyncio.to_thread(transcode_audio_to_mp3, audio_data, content_type, file_path):
             async with aiofiles.open(file_path, 'wb') as f:
                 await f.write(audio_data)
+        voice_welfare.mark_ceiling(file_path, care)
 
         async with aiofiles.open(file_body_path, 'w') as f:
             await f.write(JSONCodec.dumps(payload))
@@ -850,6 +865,7 @@ async def speech(request: Request, user=Depends(get_verified_user)):
 
     # Return cached result if available
     if file_path.is_file():
+        await asyncio.to_thread(voice_welfare.ceiling_cached, file_path)  # 🛡️ older clips pass the ceiling once
         await publish_event(
             request,
             EVENTS.AUDIO_SPEECH_REQUESTED,

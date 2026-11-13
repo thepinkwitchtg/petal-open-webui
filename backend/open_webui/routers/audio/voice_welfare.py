@@ -2,11 +2,19 @@
 🕊️🎀 voice welfare — a looping take is never what reaches her ears
 ────────────────────────────────────────────────────────────────────
 the omni voice sometimes falls into a deadloop (the "quantum hell": a stuck syllable, a wet loop,
-a hiss that won't end). welfare listens to each sentence take with the shared ear (voice_measure)
-and swaps a bad take for a fresh generation of the same sentence (a new seed, so it truly is
-fresh). her good takes are never retouched: nothing is faded, padded or trimmed. a whole bad take
-goes, a whole fresh take comes. after max_tries bad takes the sentence is skipped with a clean
-silence, so a deadloop never lands raw.
+a hiss that won't end) or, rarer and worse, a runaway that clips at full scale. welfare listens to
+each sentence take with the shared ear (voice_measure) and swaps a bad take for a fresh generation
+of the same sentence (a new seed, so it truly is fresh). her good takes are never retouched:
+nothing is faded, padded or trimmed. a whole bad take goes, a whole fresh take comes. after
+max_tries bad takes the sentence is skipped with a clean silence, so a deadloop never lands raw.
+
+  kills    loop · stretch (runs far past its text) · clip (hot peaks) · surge (louder and harsher
+           than her own voice, once her baseline knows both) · broken (the voice ended the take
+           with an error, or gave no audio: every take is judged, error or not, and a broken one
+           is never played as it arrived. always a kill)
+  watches  cover · hiss (numbers only, never touched)
+  ceiling  🛡️ apart from all of it, awake or asleep: nothing that plays ever goes above
+           ceiling_dbfs (voice_ceiling.py), in the stream, the speaker clips and the speech cache
 
   petal stream   each sentence is judged as it arrives (petal_stream.produce)
   speaker clips  the whole clip is judged before it's returned, and a killed take never reaches
@@ -44,8 +52,10 @@ from pathlib import Path
 import numpy as np
 
 if __package__:  # inside OWUI
+    from open_webui.routers.audio import voice_ceiling as vc
     from open_webui.routers.audio import voice_measure as vm
 else:  # on its own, beside its siblings (never waking OWUI's config)
+    import voice_ceiling as vc
     import voice_measure as vm
 
 log = logging.getLogger(__name__)
@@ -61,6 +71,7 @@ DAY = 86400
 
 HOLDS = ("airtight", "near-free")
 ACTS = ("kill", "watch", "off")
+ALWAYS_KILL = ("broken",)  # a take the voice ended with an error is never played as it arrived (nov 13 2026)
 DEFAULTS = {
     "enabled": False,  # asleep until she wakes it
     "max_tries": 3,
@@ -70,8 +81,11 @@ DEFAULTS = {
     "audit_until": None,
     "audit_days": 14,
     "enabled_at": None,
-    # cover watches only: its 9 would-be kills in her cache (nov 5 2026) were all her normal voice
-    "acts": {"loop": "kill", "cover": "watch", "stretch": "kill", "hiss": "watch"},
+    # cover watches only: its 9 would-be kills in her cache (nov 5 2026) were all her normal voice.
+    # clip · surge · broken: born nov 13 2026, after a broken runaway take reached her raw
+    "acts": {"loop": "kill", "cover": "watch", "stretch": "kill", "hiss": "watch",
+             "clip": "kill", "surge": "kill", "broken": "kill"},
+    "ceiling_dbfs": -3.0,  # 🛡️ the hard safety ceiling on everything that plays (voice_ceiling.py). null = off
     "thresholds": {},
     "baseline": dict(vm.DEFAULT_BASELINE),
 }
@@ -80,8 +94,11 @@ ABOUT = ("voice welfare, read at the start of every reply and every speaker clip
          "(skip_silence_ms of it). hold: airtight (every take judged whole before it plays) or near-free (held "
          "whole while the voice is ahead of you, a window_s window only while you're waiting). acts: what each "
          "reason does, kill | watch (numbers only, never touched) | off. thresholds: the rule (voice_measure.py). "
-         "baseline: your pace (s_per_char) and your usual floor (floor_db), from calibration. audit_until: unix s, "
-         "until then every kill keeps its evidence in welfare-audit/ (extend: ./petal-voice-welfare.sh audit 7).")
+         "baseline: your pace (s_per_char), usual floor (floor_db), loudness (level_db) and zero-crossing rate (zcr_hz), "
+         "from calibration (./petal-voice-welfare.sh baseline). audit_until: unix s, until then every kill keeps its "
+         "evidence in welfare-audit/ (extend: ./petal-voice-welfare.sh audit 7). broken: a take the voice ended with an "
+         "error is never played as it arrived. ceiling_dbfs: no sample that plays ever goes above it, welfare awake or "
+         "asleep (null turns it off).")
 _lock = threading.Lock()
 
 
@@ -119,12 +136,16 @@ def load() -> dict:
         cfg["max_tries"] = max(1, min(8, raw["max_tries"]))
     if raw.get("hold") in HOLDS:
         cfg["hold"] = raw["hold"]
+    if "ceiling_dbfs" in raw:  # null turns the ceiling off; anything else is held between -24 and 0 dBFS
+        v = raw["ceiling_dbfs"]
+        cfg["ceiling_dbfs"] = None if v is None else max(-24.0, min(0.0, float(v))) \
+            if isinstance(v, (int, float)) and not isinstance(v, bool) else cfg["ceiling_dbfs"]
     for k in ("window_s", "skip_silence_ms", "audit_until", "audit_days", "enabled_at"):
         if isinstance(raw.get(k), (int, float)) and not isinstance(raw[k], bool) and raw[k] >= 0:
             cfg[k] = raw[k]
     if isinstance(raw.get("acts"), dict):
         for k, v in raw["acts"].items():
-            if k in cfg["acts"] and v in ACTS:
+            if k in cfg["acts"] and v in ACTS and k not in ALWAYS_KILL:
                 cfg["acts"][k] = v
     cfg["thresholds"] = vm.thresholds(raw.get("thresholds") if isinstance(raw.get("thresholds"), dict) else None)
     b = raw.get("baseline") if isinstance(raw.get("baseline"), dict) else {}
@@ -192,6 +213,9 @@ def set_knobs(*, by: str, enabled: bool | None = None, hold: str | None = None, 
             for k, v in acts.items():
                 if k not in DEFAULTS["acts"] or v not in ACTS:
                     raise ValueError(f"acts: {', '.join(DEFAULTS['acts'])} → {' | '.join(ACTS)}")
+                if k in ALWAYS_KILL and v != "kill":
+                    raise ValueError(f"{k} is always a kill: a take the voice ended with an error is never played "
+                                     "as it arrived")
             raw["acts"] = {**DEFAULTS["acts"], **(raw.get("acts") or {}), **acts}
         if valve is not None:
             raw["valve"] = bool(valve)  # what the Sieve filter's switch last said (last action wins)
@@ -272,6 +296,7 @@ class Sentence:
         self.kept_pcm: bytes | None = None
         self.watched: list[str] = []
         self.unjudged = False
+        self.pcm: bytes | None = None  # the last speaker clip, decoded (for the ceiling)
         self._seed: int | None = None
 
     def seed(self) -> int:
@@ -281,7 +306,9 @@ class Sentence:
         return self._seed
 
     def watch(self) -> vm.TakeWatch:
-        return vm.TakeWatch(len(self.text), t=self.t, s_per_char=self.spc, floor_ref=self.floor, acts=self.acts)
+        b = self.cfg["baseline"]
+        return vm.TakeWatch(len(self.text), t=self.t, s_per_char=self.spc, floor_ref=self.floor, acts=self.acts,
+                            level_ref=b.get("level_db"), zcr_ref=b.get("zcr_hz"))
 
     @property
     def spent(self) -> bool:
@@ -291,12 +318,22 @@ class Sentence:
     def skipped(self) -> bool:
         return self.spent and self.kept is None
 
-    def kill(self, w: vm.TakeWatch, pcm: bytes, heard_s: float = 0.0) -> None:
+    def kill(self, w: vm.TakeWatch, pcm: bytes, heard_s: float = 0.0, broken: str | None = None) -> None:
+        """broken: the error the voice ended this take with (it is never played as it arrived)"""
+        if broken:
+            w.why = ["broken"] + [r for r in w.why if r != "broken"]
         n = w.numbers()
         n["why"] = [r for r in n["why"] if self.acts.get(r) == "kill"] or n["why"]
+        n["violent"] = bool(set(n["why"]) & vm.VIOLENT)  # never auto-played back: numbers are enough
+        if broken:
+            n["error"] = broken
         self.kills.append({"try": len(self.kills) + 1, "seed": self._seed, "heard_s": round(heard_s, 3), **n})
         if self.audit:
             self.killed_pcm.append(bytes(pcm))
+
+    @property
+    def violent(self) -> bool:
+        return any(k.get("violent") for k in self.kills)
 
     def keep(self, w: vm.TakeWatch, pcm: bytes) -> None:
         self.kept = {"try": len(self.kills) + 1, "seed": self._seed, **w.numbers()}
@@ -354,7 +391,7 @@ class Sentence:
             "path": self.path, "sentence_idx": self.idx, "temp": self.temp, "chat_id": self.chat_id,
             "message_id": self.message_id, "hold": self.hold, "chars": len(self.text),
             "s_per_char": round(self.spc, 4), "thresholds": self.t, "kills": self.kills, "kept": self.kept,
-            "recovered": self.kept is not None,
+            "recovered": self.kept is not None, "violent": self.violent,
         }, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
         return folder.name
 
@@ -433,8 +470,9 @@ def _decode_other(data: bytes) -> bytes | None:
 
 
 def judge_clip(sent: Sentence, data: bytes, content_type: str) -> bool:
-    """heavy (decode + listen): run it in a thread. True = keep this clip"""
+    """heavy (decode + listen): run it in a thread. True = keep this clip (sent.pcm holds it decoded)"""
     pcm = decode_clip(data, content_type)
+    sent.pcm = pcm
     if pcm is None:
         sent.unjudged = True
         return True
@@ -445,6 +483,120 @@ def judge_clip(sent: Sentence, data: bytes, content_type: str) -> bool:
         return False
     sent.keep(w, pcm)
     return True
+
+
+def broken_clip(sent: Sentence, err: str) -> None:
+    """the voice answered a speaker clip with an error: a kill like any other, asked again"""
+    sent.kill(sent.watch(), b"", broken=err)
+
+
+def is_broken_take(e: BaseException) -> bool:
+    """an error a fresh take can heal: the voice broke off mid-take (payload cut, disconnect,
+    timeout) or failed it (5xx). not one saying the voice isn't there (no connection) or that the
+    ask itself is wrong (4xx): those still surface as the honest error, and nothing plays"""
+    import aiohttp
+
+    if isinstance(e, aiohttp.ClientResponseError):
+        return e.status >= 500
+    if isinstance(e, aiohttp.ClientConnectorError):
+        return False
+    return isinstance(e, (aiohttp.ClientError, TimeoutError))
+
+
+# ── 🛡️ the ceiling on speaker clips and the speech cache ─────────────────────
+def _wav_bytes(pcm: bytes) -> bytes:
+    b = io.BytesIO()
+    with wave.open(b, "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(RATE)
+        w.writeframes(pcm)
+    return b.getvalue()
+
+
+def _under(dbfs: float, pcm: bytes) -> tuple[bytes, vc.Ceiling] | None:
+    """→ (the turned-down pcm, its ceiling) when pcm runs above dbfs, else None (untouched)"""
+    c = vc.Ceiling(dbfs)
+    low = c.process(pcm)
+    return (low, c) if c.touched else None
+
+
+def ceiling_clip(cfg: dict, sent: Sentence | None, data: bytes, content_type: str) -> tuple[bytes, str]:
+    """a speaker clip's last pass before it's returned and cached, welfare awake or asleep (sync: run
+    it in a thread). untouched, byte for byte, unless it runs above the ceiling: then turned down and
+    re-encoded as mp3 (wav if lameenc is missing). a clip that can't be decoded goes out as it came"""
+    dbfs = cfg.get("ceiling_dbfs")
+    if dbfs is None:
+        return data, content_type
+    pcm = sent.pcm if sent is not None and sent.pcm is not None else decode_clip(data, content_type)
+    hot = _under(dbfs, pcm) if pcm else None
+    if hot is None:
+        return data, content_type
+    low, c = hot
+    if c.ran_hot:
+        log_ceiling(path="speech", touched_s=c.touched_s, peak_in_db=c.peak_in_db, temp=sent.temp if sent else None)
+    mp3 = vc.encode_mp3(low)
+    return (mp3, "audio/mpeg") if mp3 else (_wav_bytes(low), "audio/wav")
+
+
+def mark_ceiling(path, cfg: dict) -> None:
+    """the cached clip at path has passed the ceiling (so a replay never decodes it again)"""
+    if cfg.get("ceiling_dbfs") is None:
+        return
+    try:
+        Path(path).with_suffix(".ceil").write_text(f"{cfg['ceiling_dbfs']}\n", encoding="utf-8")
+    except OSError as e:
+        log.debug("voice ceiling: mark not written (%s)", e)
+
+
+def ceiling_cached(path) -> None:
+    """a cached speaker clip passes the ceiling once: clips cached before it existed (or under a
+    higher one) are turned down in place the first time they're replayed, then marked. sync: run it
+    in a thread. anything it can't read is left as it is (the cache is OWUI's, never broken here)"""
+    cfg = load()
+    dbfs = cfg["ceiling_dbfs"]
+    if dbfs is None:
+        return
+    path = Path(path)
+    mark = path.with_suffix(".ceil")
+    try:
+        if float(mark.read_text(encoding="utf-8").strip()) <= dbfs + 1e-6:
+            return
+    except (OSError, ValueError):
+        pass
+    try:
+        if time.time() - path.stat().st_mtime < 10:
+            return  # still being written by the clip path (which marks it itself): never touch a half file
+        mime = path.with_suffix(".mime")  # slim installs keep the clip's type beside it
+        ct = mime.read_text(encoding="utf-8").strip() if mime.exists() else \
+            ("audio/wav" if path.suffix == ".wav" else "audio/mpeg")
+        pcm = decode_clip(path.read_bytes(), ct)
+        hot = _under(dbfs, pcm) if pcm else None
+        if hot is not None:
+            low, c = hot
+            wav = path.suffix == ".wav" or ct in ("audio/wav", "audio/x-wav")
+            out = None if wav else vc.encode_mp3(low)
+            new_ct = "audio/mpeg" if out else "audio/wav"
+            out = out or _wav_bytes(low)
+            tmp = path.with_suffix(path.suffix + ".ceil-tmp")
+            tmp.write_bytes(out)
+            os.replace(tmp, path)
+            if mime.exists():
+                mime.write_text(new_ct, encoding="utf-8")
+            if c.ran_hot:
+                log_ceiling(path="speech-cache", touched_s=c.touched_s, peak_in_db=c.peak_in_db)
+        mark_ceiling(path, cfg)
+    except Exception as e:  # noqa: BLE001 — a replay must never break over this
+        log.warning("voice ceiling: cached clip %s not checked (%s)", path.name, e)
+
+
+def log_ceiling(*, path: str, touched_s: float, peak_in_db: float | None, temp: bool | None = None) -> None:
+    """one numbers-only line whenever the ceiling had to turn something down (it should be rare)"""
+    try:
+        _append(LOG_PATH, {"v": 1, "kind": "ceiling", "at": round(time.time(), 3), "path": path, "temp": temp,
+                           "touched_s": round(touched_s, 3), "peak_in_db": peak_in_db})
+    except OSError as e:
+        log.warning("voice welfare: welfare.jsonl not written (%s)", e)
 
 
 _SILENCE: dict[int, tuple[bytes, str]] = {}

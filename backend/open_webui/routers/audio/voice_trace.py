@@ -99,6 +99,7 @@ class Trace:
     truncated: bool = False
     flags: list[dict] = field(default_factory=list)
     folder: Path | None = None
+    ceiling: dict | None = None  # 🛡️ set when the voice ceiling had to turn this reply down
 
     def rel(self) -> float:
         return round(time.monotonic() - self.t0, 3)
@@ -216,6 +217,7 @@ def plant(tr: Trace) -> Path | None:
             "truncated": tr.truncated,
             "heard_s": max((t.end_s or 0 for t in tr.takes), default=0),
             "flags": tr.flags,
+            "ceiling": tr.ceiling,
             "takes": [{
                 "idx": t.idx, "para_end": t.para_end, "raw": t.raw, "fed": t.fed,
                 "status": t.status, "error": t.error,
@@ -367,11 +369,14 @@ def analyse_incident(folder: Path) -> dict | None:
     floor_ref = base["floor_db"] if base.get("floor_db") is not None else med_floor
     flagged = {f["part"] for f in tr.get("flags", []) if f.get("part") is not None}
     for r in rows:
-        why = vm.judge(r, r["chars_fed"], t=t, s_per_char=pace, floor_ref=floor_ref) if r.get("audio_s") else []
+        why = vm.judge(r, r["chars_fed"], t=t, s_per_char=pace, floor_ref=floor_ref, level_ref=base.get("level_db"),
+                       zcr_ref=base.get("zcr_hz")) if r.get("audio_s") else []
         if pace and r.get("audio_s") and r["chars_fed"] >= t["stretch_min_chars"]:
             r["stretch"] = vm.stretch_of(r["audio_s"], r["chars_fed"], pace)
-        if r["lost"]:
-            why.append("lost")
+        r["hot_frac"], r["hot_s"] = vm.hot_of(r, t)
+        r["surge_frac"], r["surge_s"] = vm.surge_of(r, t, base.get("level_db"), base.get("zcr_hz"))
+        if r["lost"]:  # the voice ended it with an error: welfare calls that broken (always a kill)
+            why.insert(0, "broken")
         r["suspect"] = why
         r["flagged"] = r["idx"] in flagged
     out = {"analysed": time.strftime("%Y-%m-%d %H:%M:%S"), "thresholds": t,
@@ -379,7 +384,9 @@ def analyse_incident(folder: Path) -> dict | None:
            "s_per_char": round(pace, 4) if pace else None, "floor_ref_db": floor_ref,
            "median_s_per_char": round(med_spc, 4) if med_spc else None, "median_floor_db": med_floor,
            "flagged_parts": sorted(flagged), "takes": rows}
-    (folder / "analysis.json").write_text(json.dumps(out, indent=2) + "\n", encoding="utf-8")
+    windows = ("win_rms", "win_zcr", "blk_peak")  # callers get the windows; the file keeps the numbers
+    slim = {**out, "takes": [{k: v for k, v in r.items() if k not in windows} for r in rows]}
+    (folder / "analysis.json").write_text(json.dumps(slim, indent=2) + "\n", encoding="utf-8")
     return out
 
 
@@ -403,7 +410,13 @@ def report() -> str:
 
     lines.append(f"auto-suspect = the live welfare rule: loop ≥ {t['loop_run_s']} s{act('loop')} · cover ≥ {t['loop_cover']} "
                  f"over ≥ {t['loop_cover_min_s']} s{act('cover')} · stretch > {t['stretch_x']}× her pace (never under "
-                 f"{t['stretch_min_s']} s){act('stretch')} · hiss ≥ {t['hiss_db']} dB{act('hiss')} · pace: "
+                 f"{t['stretch_min_s']} s){act('stretch')} · hiss ≥ {t['hiss_db']} dB{act('hiss')} · clip: ≥ {t['clip_win']:.0%} "
+                 f"of a half second at full scale, or quarter seconds peaking ≥ {t['hot_db']} dBFS in ≥ {t['hot_frac']:.0%} "
+                 f"of it or ≥ {t['hot_total_s']} s anywhere{act('clip')} · surge: half seconds ≥ {t['surge_db']} dB louder "
+                 f"and ≥ {t['surge_zcr_x']}× harsher than her voice in ≥ {t['surge_frac']:.0%} of it or ≥ "
+                 f"{t['surge_total_s']} s anywhere{act('surge')}"
+                 + ("" if cfg["baseline"].get("level_db") is not None else " (waits for her baseline)")
+                 + " · broken: the voice ended it with an error · pace: "
                  + ("her welfare baseline" if cfg["baseline"].get("s_per_char") else "each reply's own median (not calibrated yet)"))
     lines.append("")
     lines.append("| incident | when | sieve | takes | flagged | auto-suspect (idx:why) | worst loop s | heard s |")
@@ -447,7 +460,8 @@ def report() -> str:
     lines.append("| measure | bad | clean |")
     lines.append("|---|---|---|")
     for k in ("chars_fed", "words_fed", "pos", "start_s", "ttfb_s", "gen_s", "audio_s", "stretch",
-              "repeat_run_s", "repeat_cover", "floor_db", "quiet_flatness", "hf_ratio", "peak_db"):
+              "repeat_run_s", "repeat_cover", "floor_db", "quiet_flatness", "hf_ratio", "peak_db",
+              "hot_frac", "hot_s", "clip_win", "level_db", "zcr_hz", "surge_frac", "surge_s"):
         lines.append(f"| {k} | {mean(bad, k):.3g} | {mean(good, k):.3g} |")
     for cat in ("ending_fed", "md"):
         lines.append("")
@@ -480,11 +494,14 @@ if __name__ == "__main__":
             sys.exit("🌸 no incidents yet")
         a = analyse_incident(folders[-1])
         print(f"🚩 {folders[-1].name}   flagged: {a['flagged_parts'] or 'whole reply'}")
-        print(f"{'idx':>3} {'audio_s':>7} {'stretch':>7} {'loop_s':>6} {'cover':>5} {'floor':>6} {'ttfb':>5}  suspect")
+        print(f"{'idx':>3} {'audio_s':>7} {'stretch':>7} {'loop_s':>6} {'cover':>5} {'floor':>6} {'peak':>5} "
+              f"{'hot_s':>5} {'surge':>5} {'ttfb':>5}  suspect")
         for r in a["takes"]:
             print(f"{r['idx']:>3} {r.get('audio_s', 0):>7} {r.get('stretch', '-'):>7} {r.get('repeat_run_s', '-'):>6} "
-                  f"{r.get('repeat_cover', '-'):>5} {r.get('floor_db', '-'):>6} {r.get('ttfb_s') or '-':>5}  "
-                  f"{'🚩 ' if r['flagged'] else ''}{'+'.join(r['suspect'])}")
+                  f"{r.get('repeat_cover', '-'):>5} {r.get('floor_db', '-'):>6} {r.get('peak_db', '-'):>5} "
+                  f"{r.get('hot_s') if r.get('hot_s') is not None else '-':>5} "
+                  f"{r.get('surge_s') if r.get('surge_s') is not None else '-':>5} "
+                  f"{r.get('ttfb_s') or '-':>5}  {'🚩 ' if r['flagged'] else ''}{'+'.join(r['suspect'])}")
         print(f"🎧 takes: {folders[-1]}/takes/")
     elif cmd == "analyse" and len(sys.argv) > 2:
         print(json.dumps(analyse_incident(Path(sys.argv[2]).expanduser()), indent=2))

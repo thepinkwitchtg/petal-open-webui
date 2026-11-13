@@ -17,11 +17,21 @@ categories only (never a sentence of hers, never audio), so it's safe to paste a
         asks the live omni voice for a few neutral first sentences (exactly petal stream's request,
         a fresh seed each) and times what holding a take back would cost before her first sound:
         no hold (today) · the whole take judged first · a window as long as the loop rule
+
+  baseline [--since YYYY-MM-DD] [--yes]
+        her own voice's numbers (pace, floor, loudness, zero-crossing rate) measured on her clean
+        takes and stored as welfare's baseline. surge is only ever measured against these
+
+  never-again [check | list | add <incident|last> <idx> | add <file.wav> --chars N --error E]
+        the takes that must always be caught (the first: the nov 13 2026 runaway). check re-judges
+        every one with today's rule, and says when the live guard would have stopped it and what the
+        ceiling would have let through. numbers only: they are never played, not even quietly
 """
 
 from __future__ import annotations
 
 import argparse
+import hashlib
 import http.client
 import json
 import os
@@ -38,13 +48,15 @@ import numpy as np
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
+import voice_ceiling as vc  # noqa: E402
 import voice_measure as vm  # noqa: E402
 import voice_trace  # noqa: E402
 import voice_welfare  # noqa: E402
 
 RATE = vm.RATE
 LEAD_IN_S = 0.18  # petal stream's lead_in_ms: she can never start sooner than this anyway
-ARMED = {"loop", "cover", "stretch"}  # calibration tables: what each rule would do if it killed
+ARMED = {"loop", "cover", "stretch", "clip", "surge"}  # calibration tables: what each rule would do if it killed
+QUIET_DB = -24.0  # a violent take, if she ever asks to hear one: never louder than this
 
 
 def rule_text(t: dict, acts: dict) -> str:
@@ -53,7 +65,12 @@ def rule_text(t: dict, acts: dict) -> str:
 
     return (f"loop ≥ {t['loop_run_s']} s{a('loop')} · cover ≥ {t['loop_cover']} over ≥ {t['loop_cover_min_s']} s{a('cover')}"
             f" · stretch > {t['stretch_x']}× her pace, never under {t['stretch_min_s']} s{a('stretch')}"
-            f" · hiss ≥ {t['hiss_db']} dB{a('hiss')}")
+            f" · hiss ≥ {t['hiss_db']} dB{a('hiss')}"
+            f" · clip: {t['clip_win']:.0%} of a half second at full scale, or peaks ≥ {t['hot_db']} dBFS for ≥ "
+            f"{t['hot_total_s']} s (≥ {t['hot_frac']:.0%} of a take ≥ {t['hot_min_s']} s){a('clip')}"
+            f" · surge: ≥ {t['surge_db']} dB louder and ≥ {t['surge_zcr_x']}× harsher than her voice for ≥ "
+            f"{t['surge_total_s']} s (≥ {t['surge_frac']:.0%} of a take ≥ {t['surge_min_s']} s){a('surge')}"
+            f" · broken: always")
 
 
 def q(v, p):
@@ -156,9 +173,14 @@ def her_numbers(clean: list[dict], cache: list[dict]) -> dict:
     pool = clean + cache
     spc = [r["audio_s"] / r["chars_fed"] for r in pool if r.get("audio_s") and r["chars_fed"] >= 12]
     floors = [r["floor_db"] for r in pool if "floor_db" in r]
+    voiced = [r for r in pool if (r.get("audio_s") or 0) >= 1.0 and r.get("level_db") is not None and r.get("zcr_hz")]
+    levels, zcrs = [r["level_db"] for r in voiced], [r["zcr_hz"] for r in voiced]
     return {"s_per_char": round(float(np.median(spc)), 4) if spc else None,
             "floor_db": round(float(np.median(floors)), 1) if floors else None,
-            "n_pace": len(spc), "n_floor": len(floors), "_spc": spc, "_floors": floors}
+            "level_db": round(float(np.median(levels)), 1) if levels else None,
+            "zcr_hz": int(np.median(zcrs)) if zcrs else None,
+            "n_pace": len(spc), "n_floor": len(floors), "n_level": len(levels),
+            "_spc": spc, "_floors": floors, "_levels": levels, "_zcrs": zcrs}
 
 
 def save_calibration(mine: dict, since: str | None, incidents: int, clean: int, cache: int) -> None:
@@ -166,8 +188,9 @@ def save_calibration(mine: dict, since: str | None, incidents: int, clean: int, 
         CALIBRATION_PATH.parent.mkdir(parents=True, exist_ok=True)
         CALIBRATION_PATH.write_text(json.dumps({
             "at": round(time.time()), "when": time.strftime("%Y-%m-%d %H:%M"), "cache_since": since,
-            "s_per_char": mine["s_per_char"], "floor_db": mine["floor_db"], "n_pace": mine["n_pace"],
-            "n_floor": mine["n_floor"], "incidents": incidents, "clean_takes": clean, "cache_takes": cache,
+            "s_per_char": mine["s_per_char"], "floor_db": mine["floor_db"], "level_db": mine.get("level_db"),
+            "zcr_hz": mine.get("zcr_hz"), "n_pace": mine["n_pace"], "n_floor": mine["n_floor"],
+            "n_level": mine.get("n_level"), "incidents": incidents, "clean_takes": clean, "cache_takes": cache,
         }, indent=2) + "\n", encoding="utf-8")
     except OSError:
         pass
@@ -195,13 +218,16 @@ def cmd_calibrate(a) -> int:
     spc_all, floors = mine["_spc"], mine["_floors"]
     pace = mine["s_per_char"] or (cfg["baseline"].get("s_per_char") or vm.FALLBACK_S_PER_CHAR)
     floor = mine["floor_db"]
+    level = cfg["baseline"].get("level_db") if cfg["baseline"].get("level_db") is not None else mine.get("level_db")
+    zcr = cfg["baseline"].get("zcr_hz") or mine.get("zcr_hz")
     save_calibration(mine, a.since if a.cache else None, len(incidents), len(clean), len(cache))
 
     def stretch(r):
         return vm.stretch_of(r["audio_s"], r["chars_fed"], pace) if r.get("audio_s") and r["chars_fed"] >= t["stretch_min_chars"] else None
 
     def why(r, tt=None):
-        return vm.judge(r, r["chars_fed"], t=tt or t, s_per_char=pace, floor_ref=floor) if r.get("audio_s") else []
+        return vm.judge(r, r["chars_fed"], t=tt or t, s_per_char=pace, floor_ref=floor, level_ref=level,
+                        zcr_ref=zcr) if r.get("audio_s") else []
 
     L = []
     L.append(f"# 🕊️ welfare calibration · {time.strftime('%Y-%m-%d %H:%M')}")
@@ -214,6 +240,9 @@ def cmd_calibrate(a) -> int:
     L.append(f"- her pace: **{pace:.4f} s/char** (≈ {1 / pace:.1f} chars/s, median of {len(spc_all)} clean takes ≥ 12 chars, "
              f"IQR {q([*spc_all], 25):.4f}–{q([*spc_all], 75):.4f})")
     L.append(f"- her floor: **{fmt(floor, 1)} dB** (median of {len(floors)} clean takes)")
+    L.append(f"- her loudness **{fmt(level, 1)} dB** · zero-crossing rate **{int(zcr) if zcr else '—'} Hz** (what surge is measured against: "
+             + ("her stored baseline)" if cfg["baseline"].get("level_db") is not None else
+                f"measured now on {mine.get('n_level', 0)} takes ≥ 1 s; store it with ./petal-voice-welfare.sh baseline)"))
     L.append(f"- rule today: {rule_text(t, cfg['acts'])}")
     L.append("")
 
@@ -267,6 +296,11 @@ def cmd_calibrate(a) -> int:
         L.append(dist("stretch", [stretch(r) for r in rows]))
         L.append(dist("audio s, lines < 20 chars", [r.get("audio_s") for r in rows if r["chars_fed"] < 20]))
         L.append(dist("floor Δ dB", [(r["floor_db"] - floor) if floor is not None and "floor_db" in r else None for r in rows], 1))
+        L.append(dist("peak dBFS", [r.get("peak_db") for r in rows], 1))
+        L.append(dist("hot s (peaks ≥ hot_db)", [vm.hot_of(r, t)[1] for r in rows]))
+        L.append(dist("surge s (vs her voice)", [vm.surge_of(r, t, level, zcr)[1] for r in rows]))
+        L.append(dist("loudest half second − her level dB",
+                      [max(r["win_rms"]) - level if r.get("win_rms") and level is not None else None for r in rows], 1))
         L.append("")
 
     def sweep(title, key, values, mk):
@@ -290,6 +324,11 @@ def cmd_calibrate(a) -> int:
     sweep("stretch", "stretch_x", [1.6, 1.8, 2.0, 2.2, 2.5, 3.0, 3.5], lambda v: {**t, "stretch_x": v})
     sweep("stretch floor (short lines)", "stretch_min_s", [2.0, 2.5, 3.0, 4.0, 5.0], lambda v: {**t, "stretch_min_s": v})
     sweep("held-sound spare (off = None)", "loop_steady_max", [None, 0.9, 0.8, 0.7, 0.6], lambda v: {**t, "loop_steady_max": v})
+    sweep("hot peaks (dBFS)", "hot_db", [-3.0, -2.0, -1.5, -1.0, -0.5], lambda v: {**t, "hot_db": v})
+    sweep("hot seconds anywhere", "hot_total_s", [0.5, 1.0, 1.5, 2.0, 3.0], lambda v: {**t, "hot_total_s": v})
+    if level is not None and zcr:
+        sweep("surge loudness over her voice (dB)", "surge_db", [2.0, 3.0, 4.0, 5.0, 6.0], lambda v: {**t, "surge_db": v})
+        sweep("surge seconds anywhere", "surge_total_s", [1.0, 1.5, 2.0, 3.0, 4.0], lambda v: {**t, "surge_total_s": v})
 
     L.append("## what this can't know yet")
     L.append("")
@@ -512,17 +551,20 @@ def _player() -> list[str] | None:
     return None
 
 
-def play_file(path: Path) -> bool:
+def play_file(path: Path, quiet_db: float | None = None) -> bool:
+    """quiet_db: the whole take turned down so its loudest peak sits there (violent takes only)"""
     cmd = _player()
     if cmd is None:
         print("✗ no audio player found here (ffplay, pw-play, paplay or aplay)")
         return False
     target, tmp = path, None
-    if path.suffix.lower() != ".wav" and cmd[0] != "ffplay":  # the simple players want a wav
+    if quiet_db is not None or (path.suffix.lower() != ".wav" and cmd[0] != "ffplay"):  # the simple players want a wav
         x = decode(path)
         if x is None:
             print(f"✗ can't read {path.name}")
             return False
+        if quiet_db is not None:
+            x = x * min(1.0, 10 ** (quiet_db / 20) / max(float(np.abs(x).max()), 1e-9))
         tmp = Path(f"/tmp/petal-welfare-{os.getpid()}.wav")
         voice_welfare.write_wav(tmp, (np.clip(x, -1, 0.99997) * 32768).astype(np.int16).tobytes())
         target = tmp
@@ -583,10 +625,18 @@ def cmd_status(a) -> int:
     if left is not None:
         print(f"   audit fortnight: {'%.1f days left' % left if left > 0 else 'over (kills are numbers only now)'} "
               f"(until {time.strftime('%Y-%m-%d %H:%M', time.localtime(cfg['audit_until']))})")
-    print(f"   acts: " + " · ".join(f"{k} {v}" for k, v in cfg["acts"].items()))
+    print("   acts: " + " · ".join(f"{k} {v}" for k, v in cfg["acts"].items()))
     print(f"   rule: {rule_text(t, cfg['acts'])}")
     print(f"   her pace {b.get('s_per_char') or '—'} s/char · her floor {b.get('floor_db') if b.get('floor_db') is not None else '—'} dB"
           + (f" · near-free window {voice_welfare.window_s(cfg)} s" if cfg["hold"] == "near-free" else ""))
+    if b.get("level_db") is not None and b.get("zcr_hz"):
+        print(f"   her loudness {b['level_db']} dB · her zero-crossing rate {int(b['zcr_hz'])} Hz (surge armed)")
+    else:
+        print("   surge waits for her voice's numbers: ./petal-voice-welfare.sh baseline --since 2026-10-30")
+    c = cfg["ceiling_dbfs"]
+    print(f"   🛡️ ceiling: {f'{c} dBFS on everything that plays, awake or asleep (the limiter sits at {c - vc.MP3_HEADROOM_DB} dBFS so the mp3 stays under it)' if c is not None else 'OFF (ceiling_dbfs is null)'}")
+    if not cfg["enabled"]:
+        print("   ⚠️ asleep: only the ceiling stands between her ears and a broken or runaway take (wake: ./petal-voice-welfare.sh on airtight)")
     return 0
 
 
@@ -604,14 +654,15 @@ def _baseline_for_waking(since: str | None) -> dict:
     if found:
         _, label, d = max(found, key=lambda f: f[0])
         print(f"   her pace from the last {label} ({d.get('when', '?')}): {d['s_per_char']} s/char · floor {d.get('floor_db')} dB")
-        return {"s_per_char": d["s_per_char"], "floor_db": d.get("floor_db")}
+        return {k: d.get(k) for k in ("s_per_char", "floor_db", "level_db", "zcr_hz") if d.get(k) is not None}
     print("   measuring her pace from your incidents + the speech cache …")
     takes, _ = _incident_takes()
     clean = [r for r in takes if r["role"] == "clean" and r.get("audio_s")]
     cdir = _cache_dir(None)
     cache = cache_takes(cdir, _since(since), None)[0] if cdir else []
     mine = her_numbers(clean, cache)
-    return {"s_per_char": mine["s_per_char"] or vm.FALLBACK_S_PER_CHAR, "floor_db": mine["floor_db"]}
+    return {"s_per_char": mine["s_per_char"] or vm.FALLBACK_S_PER_CHAR, "floor_db": mine["floor_db"],
+            **{k: mine[k] for k in ("level_db", "zcr_hz") if mine.get(k) is not None}}
 
 
 def _since(s: str | None) -> float | None:
@@ -661,6 +712,79 @@ def cmd_on(a) -> int:
         return 1
     if first:
         print("🌱 welfare is awake for the first time: the audit fortnight starts now (14 days of evidence for your ears)")
+    return cmd_status(a)
+
+
+def cmd_baseline(a) -> int:
+    """her own voice's numbers, measured on her clean takes, stored as welfare's baseline (pace for
+    stretch, floor for hiss, loudness + zero-crossing rate for surge). takes today's rule would kill
+    never shape it"""
+    cfg = voice_welfare.load()
+    if cfg["broken"]:
+        print(f"✗ {voice_welfare.CONFIG_PATH} is unreadable — fix or remove it first (nothing was changed)")
+        return 1
+    t = cfg["thresholds"]
+    takes, _ = _incident_takes()
+    clean = [r for r in takes if r["role"] == "clean" and r.get("audio_s")]
+    cdir = _cache_dir(a.cache_dir)
+    if cdir is None:
+        print("🎧 no speech cache found (--cache-dir <folder>): measuring on your incidents' clean takes only", file=sys.stderr)
+        cache, skipped = [], 0
+    else:
+        print(f"🎧 hearing the speech cache in {cdir} …", file=sys.stderr)
+        cache, skipped = cache_takes(cdir, _since(a.since), a.max)
+    pace0 = her_numbers(clean, cache)["s_per_char"] or cfg["baseline"].get("s_per_char") or vm.FALLBACK_S_PER_CHAR
+
+    def bad(r):  # a take today's rule would kill on its own (surge can't judge yet: it needs this very baseline)
+        return bool(set(vm.judge(r, r["chars_fed"], t=t, s_per_char=pace0, floor_ref=None)) & {"loop", "stretch", "clip"})
+
+    clean_ok, cache_ok = [r for r in clean if not bad(r)], [r for r in cache if not bad(r)]
+    left_out = len(clean) + len(cache) - len(clean_ok) - len(cache_ok)
+    mine = her_numbers(clean_ok, cache_ok)
+    keys = ("s_per_char", "floor_db", "level_db", "zcr_hz")
+    b = cfg["baseline"]
+    # her pace and floor were tuned with her own verdicts (nov 5): they're only re-measured when she asks (--all),
+    # or when they were never measured at all
+    mine_keys = keys if a.all else tuple(k for k in keys if k in ("level_db", "zcr_hz") or b.get(k) is None)
+    new = {k: mine[k] for k in mine_keys if mine.get(k) is not None}
+    if not new:
+        print("🌸 nothing to measure on yet (no clean takes in your incidents or the speech cache)")
+        return 1
+    n_of = {"s_per_char": mine["n_pace"], "floor_db": mine["n_floor"], "level_db": mine["n_level"], "zcr_hz": mine["n_level"]}
+    label = {"s_per_char": "pace (s/char)", "floor_db": "floor (dB)", "level_db": "loudness (dB)", "zcr_hz": "zero crossings (Hz)"}
+    print(f"🎀 her voice, measured on {len(clean_ok)} clean incident takes + {len(cache_ok)} cached takes"
+          + (f" (since {a.since})" if a.since else "") + (f" · {left_out} the rule would kill left out" if left_out else "")
+          + (f" · {skipped} unreadable" if skipped else ""))
+    print(f"   {'':<20} {'now':>8}  {'measured':>8}  takes")
+    for k in keys:
+        nd = 4 if k == "s_per_char" else 1
+        kept = "" if k in new else "   (stays: --all re-measures it)"
+        print(f"   {label[k]:<20} {fmt(b.get(k), nd):>8}  {fmt(mine.get(k), nd):>8}  {n_of[k]}{kept}")
+    # what the stored numbers would do to her own clean takes (the false-kill check, before anything is stored)
+    pool = clean_ok + cache_ok
+    after = {**{k: b.get(k) for k in keys}, **new}
+    pace = after.get("s_per_char") or pace0
+    would = {}
+    for r in pool:
+        for w in vm.judge(r, r["chars_fed"], t=t, s_per_char=pace, floor_ref=after.get("floor_db"),
+                          level_ref=after.get("level_db"), zcr_ref=after.get("zcr_hz")):
+            if cfg["acts"].get(w) == "kill":
+                would[w] = would.get(w, 0) + 1
+    print(f"   with these numbers, today's rule would kill {sum(would.values())} of these {len(pool)} clean takes"
+          + (": " + " · ".join(f"{k} {v}" for k, v in would.items()) if would else " 🌸"))
+    if would.get("surge"):
+        print("   (surge would bite her own voice: keep it watching until it's tuned → ./petal-voice-welfare.sh act surge watch)")
+    if not a.yes and _ask("   store them as her baseline? [y/N] ") != "y":
+        print("   nothing changed" + ("" if sys.stdin.isatty() else " (not a terminal: add --yes to store)"))
+        return 1
+    try:  # never wakes the guard by itself: a file written before the first waking keeps it asleep
+        voice_welfare.set_knobs(by="petal-voice-welfare.sh baseline", baseline=new,
+                                enabled=None if cfg.get("enabled_at") else False)
+    except ValueError as e:
+        print(f"✗ {e}")
+        return 1
+    save_calibration(mine, a.since, 0, len(clean_ok), len(cache_ok))
+    print("🌸 stored. surge is armed against her own voice now" if new.get("level_db") is not None else "🌸 stored")
     return cmd_status(a)
 
 
@@ -765,7 +889,7 @@ def cmd_list(a) -> int:
     for it in shown:
         n = it["nums"]
         kills = n.get("kills") or []
-        why = ", ".join("+".join(k.get("why") or ["?"]) for k in kills)
+        why = ", ".join("+".join(k.get("why") or ["?"]) for k in kills) + (" ⚡" if n.get("violent") else "")
         heard = sum(k.get("heard_s") or 0 for k in kills)
         v = verdicts.get(it["folder"].name, {}).get("verdict", "—")
         print(f"{it['n']:>3}  {str(n.get('when', ''))[5:16]:<14}  {n.get('path', '?'):<6}  "
@@ -799,8 +923,14 @@ def cmd_play(a) -> int:
                     wav = f / f"kill-{k}.wav"
                     if wav.exists():
                         print(f"🔇 killed take {k}: {'+'.join(kill.get('why') or [])} · loop {kill.get('repeat_run_s', '—')} s"
-                              f" · {kill.get('audio_s')} s long (limit {kill.get('limit_s')})")
-                        play_file(wav)
+                              f" · {kill.get('audio_s')} s long (limit {kill.get('limit_s')})"
+                              + (f" · hot {fmt(kill.get('hot_s'))} s · surge {kill.get('surge_s') if kill.get('surge_s') is not None else '—'}"
+                                 f" · peak {kill.get('peak_db')} dBFS" if kill.get("violent") else ""))
+                        if kill.get("violent") and not a.violent:
+                            print(f"   ⚡ violent: numbers only, never played. to hear it anyway, held quiet at {QUIET_DB} dBFS: "
+                                  f"./petal-voice-welfare.sh play {n} --violent")
+                            continue
+                        play_file(wav, quiet_db=QUIET_DB if kill.get("violent") else None)
             if not a.killed and (f / "kept.wav").exists():
                 print(f"🌸 the fresh take that replaced it · {(nums.get('kept') or {}).get('audio_s')} s")
                 play_file(f / "kept.wav")
@@ -840,7 +970,7 @@ def cmd_stats(a) -> int:
     for path, label in (("stream", "petal stream"), ("speech", "speaker clips")):
         ks = [r for r in killed if r.get("path") == path]
         n_k = sum(len(r["kills"]) for r in ks)
-        line = f"- {label}: {n_k} takes killed in {len(ks)} sentences · recovered {sum(1 for r in ks if r.get('recovered'))} · " \
+        line = f"- {label}: {_n(n_k, 'take')} killed in {_n(len(ks), 'sentence')} · recovered {sum(1 for r in ks if r.get('recovered'))} · " \
                f"skipped {sum(1 for r in ks if r.get('recovered') is False)}"
         if path == "stream":
             judged = sum(r.get("sentences", 0) for r in replies)
@@ -862,6 +992,17 @@ def cmd_stats(a) -> int:
             watched[wv] = watched.get(wv, 0) + 1
     if watched:
         L.append("- watched, never touched: " + " · ".join(f"{k} {v}" for k, v in watched.items()))
+    violent = sum(1 for r in killed if any(n.get("violent") for n in r.get("numbers") or []))
+    if violent:
+        L.append(f"- ⚡ violent takes (clip/surge) kept from her ears: {_n(violent, 'sentence')}")
+    ceil = [r for r in rows if r.get("kind") == "ceiling"]
+    if ceil:
+        by = {}
+        for r in ceil:
+            by[r.get("path")] = by.get(r.get("path"), 0) + 1
+        hottest = max((r.get("peak_in_db") for r in ceil if r.get("peak_in_db") is not None), default=None)
+        L.append(f"- 🛡️ the ceiling turned down something above {cfg['ceiling_dbfs']} dBFS {_n(len(ceil), 'time')} ("
+                 + " · ".join(f"{k} {v}" for k, v in by.items()) + f") · hottest handed to it {hottest} dBFS")
     temp = sum(1 for r in killed if r.get("temp"))
     if temp:
         L.append(f"- in temp chats: {temp} sentences (kept without chat/message links)")
@@ -923,7 +1064,13 @@ def cmd_sweep(a) -> int:
                     continue
                 print(f"\n── #{n} · {it['when']} · {it['why']} · loop {it['repeat_run_s']} s · stretch {it['stretch']} · "
                       f"{it['audio_s']} s for {it['chars']} chars ──")
-                play_file(mp3)
+                if it.get("violent") and not a.violent:
+                    sg = f"surge {it['surge_s']} s" if it.get("surge_s") is not None else "surge —"
+                    print(f"   ⚡ violent (hot {it.get('hot_s')} s · {sg} · peak {it.get('peak_db')} dBFS): "
+                          f"numbers only, never played. to hear it anyway, held quiet at {QUIET_DB} dBFS: "
+                          f"./petal-voice-welfare.sh sweep play {n} --violent")
+                    continue
+                play_file(mp3, quiet_db=QUIET_DB if it.get("violent") else None)
         except KeyboardInterrupt:
             print("\n(stopped)")
         print(f"\nverdict: ./petal-voice-welfare.sh sweep verdict <n|1,3,5|all> ok|wrong   ({VERDICT_HELP})")
@@ -950,7 +1097,7 @@ def cmd_sweep(a) -> int:
             return 1
         for it in bad:
             stem = cdir / Path(it["file"]).stem
-            for ext in (".mp3", ".json", ".mime"):
+            for ext in (".mp3", ".json", ".mime", ".ceil"):
                 stem.with_suffix(ext).unlink(missing_ok=True)
             voice_welfare._append(SWEEP_VERDICTS, {"v": 1, "at": round(time.time()), "file": it["file"], "verdict": "ok", "deleted": True})
         print(f"🧹 swept {len(bad)}. the next time one of those lines is spoken she makes a fresh take (judged by welfare)")
@@ -968,23 +1115,42 @@ def _sweep_judge(a) -> int:
     cache, skipped = cache_takes(cdir, _since(a.since), None)
     cfg = voice_welfare.load()
     t = cfg["thresholds"]
-    pace, floor = cfg["baseline"].get("s_per_char"), cfg["baseline"].get("floor_db")
+    b = cfg["baseline"]
+    pace, floor = b.get("s_per_char"), b.get("floor_db")
+    level, zcr = b.get("level_db"), b.get("zcr_hz")  # surge is only judged against her stored voice
+    mine = None
     if not pace:  # not woken yet: her pace exactly as calibrate measures it
         takes, _ = _incident_takes()
         clean = [r for r in takes if r["role"] == "clean" and r.get("audio_s")]
         mine = her_numbers(clean, cache)
         pace, floor = mine["s_per_char"] or vm.FALLBACK_S_PER_CHAR, mine["floor_db"]
+    c_db = cfg["ceiling_dbfs"]
+    lim_db = c_db - vc.MP3_HEADROOM_DB if c_db is not None else None
+    eased, over, ease_max, loud = 0, 0, 0.0, []
     items = []
     for r in cache:
-        why = [w for w in vm.judge(r, r["chars_fed"], t=t, s_per_char=pace, floor_ref=floor) if cfg["acts"].get(w) == "kill"]
+        pk = r.get("peak_db")
+        if lim_db is not None and pk is not None and pk > lim_db:
+            eased, ease_max = eased + 1, max(ease_max, pk - lim_db)
+            over += pk > c_db
+        if level is not None and r.get("win_rms"):
+            loud.append(max(r["win_rms"]) - level)
+        why = [w for w in vm.judge(r, r["chars_fed"], t=t, s_per_char=pace, floor_ref=floor, level_ref=level, zcr_ref=zcr)
+               if cfg["acts"].get(w) == "kill"]
         if not why:
             continue
         items.append({"n": len(items) + 1, "file": r["file"], "when": time.strftime("%m-%d %H:%M", time.localtime(r["mtime"])),
                       "why": "+".join(why), "chars": r["chars_fed"], "audio_s": r.get("audio_s"),
                       "repeat_run_s": r.get("repeat_run_s"), "repeat_cover": r.get("repeat_cover"),
-                      "repeat_steady": r.get("repeat_steady"), "stretch": vm.stretch_of(r.get("audio_s") or 0, r["chars_fed"], pace)})
+                      "repeat_steady": r.get("repeat_steady"), "stretch": vm.stretch_of(r.get("audio_s") or 0, r["chars_fed"], pace),
+                      "hot_s": vm.hot_of(r, t)[1], "surge_s": vm.surge_of(r, t, level, zcr)[1], "peak_db": pk,
+                      "clip_win": r.get("clip_win"), "violent": bool(set(why) & vm.VIOLENT)})
     sw = {"at": round(time.time()), "when": time.strftime("%Y-%m-%d %H:%M"), "since": a.since, "cache_dir": str(cdir),
-          "heard": len(cache), "unreadable": skipped, "s_per_char": pace, "floor_db": floor, "items": items}
+          "heard": len(cache), "unreadable": skipped, "s_per_char": pace, "floor_db": floor, "level_db": level, "zcr_hz": zcr,
+          "measured": {k: mine.get(k) for k in ("level_db", "zcr_hz")} if mine else None,
+          "ceiling": {"dbfs": c_db, "limiter_dbfs": lim_db, "eased": eased, "over": over, "ease_max_db": round(ease_max, 1)},
+          "loudest_vs_level": {"p50": round(q(loud, 50), 1), "p99": round(q(loud, 99), 1), "max": round(max(loud), 1)} if loud else None,
+          "items": items}
     SWEEP_PATH.parent.mkdir(parents=True, exist_ok=True)
     SWEEP_PATH.write_text(json.dumps(sw, indent=2) + "\n", encoding="utf-8")
     return _sweep_print(sw, _latest(SWEEP_VERDICTS, "file"))
@@ -994,16 +1160,202 @@ def _sweep_print(sw: dict, sv: dict) -> int:
     items = sw["items"]
     print(f"🧹 cache sweep · {sw['when']} · {sw['heard']} cached takes heard" + (f" (since {sw['since']})" if sw.get("since") else "")
           + f" · her pace {sw['s_per_char']} s/char · today's rule would kill **{len(items)}**")
+    if sw.get("level_db") is None:
+        m = sw.get("measured") or {}
+        print("   surge sat this one out: it waits for her voice's numbers (./petal-voice-welfare.sh baseline)"
+              + (f" · measured here: {m.get('level_db')} dB · {m.get('zcr_hz')} Hz" if m.get("level_db") is not None else ""))
+    c = sw.get("ceiling") or {}
+    if c.get("dbfs") is not None:
+        print(f"   🛡️ the ceiling ({c['dbfs']} dBFS, limiter at {c['limiter_dbfs']}) would ease {c['eased']} of these {sw['heard']} takes"
+              + (f", by up to {c['ease_max_db']} dB on their loudest peak" if c["eased"] else "")
+              + (f" · {c['over']} of them run above {c['dbfs']} dBFS itself" if c.get("over") else ""))
+    lv = sw.get("loudest_vs_level")
+    if lv:
+        print(f"   loudest half second vs her own level: p50 {lv['p50']:+.1f} · p99 {lv['p99']:+.1f} · max {lv['max']:+.1f} dB")
     if items:
-        print(f"{'n':>3}  {'when':<11}  {'why':<14}  {'chars':>5}  {'audio s':>7}  {'loop s':>6}  {'cover':>5}  {'stretch':>7}  verdict")
+        print(f"{'n':>3}  {'when':<11}  {'why':<16}  {'chars':>5}  {'audio s':>7}  {'loop s':>6}  {'hot s':>5}  {'surge s':>7}  "
+              f"{'stretch':>7}  verdict")
         for it in items:
             v = sv.get(it["file"], {})
             mark = "swept" if v.get("deleted") else v.get("verdict", "—")
-            print(f"{it['n']:>3}  {it['when']:<11}  {it['why']:<14}  {it['chars']:>5}  {fmt(it['audio_s']):>7}  "
-                  f"{fmt(it['repeat_run_s']):>6}  {fmt(it['repeat_cover'], 2):>5}  {fmt(it['stretch']):>7}  {mark}")
-        print("   listen to them all in a row: ./petal-voice-welfare.sh sweep play all\n"
+            why = it["why"] + (" ⚡" if it.get("violent") else "")
+            print(f"{it['n']:>3}  {it['when']:<11}  {why:<16}  {it['chars']:>5}  {fmt(it['audio_s']):>7}  "
+                  f"{fmt(it['repeat_run_s']):>6}  {fmt(it.get('hot_s')):>5}  {fmt(it.get('surge_s')):>7}  {fmt(it['stretch']):>7}  {mark}")
+        print("   listen to them all in a row: ./petal-voice-welfare.sh sweep play all   (⚡ violent ones are numbers only)\n"
               f"   then: ./petal-voice-welfare.sh sweep verdict <n|1,3,5|all> ok|wrong   ({VERDICT_HELP})")
     return 0
+
+
+# ── never again: the takes that must always be caught ─────────────────────────
+NEVER_DIR = voice_welfare.VOICE / "never-again"
+NEVER_PATH = NEVER_DIR / "takes.json"
+FIRST_CHUNK, CHUNK = 1920, 48000  # how omni streams: one codec frame (80 ms) first, then 25 (2 s) at a time
+
+
+def _never_load() -> list[dict]:
+    try:
+        d = json.loads(NEVER_PATH.read_text(encoding="utf-8"))
+        return d if isinstance(d, list) else []
+    except (OSError, ValueError):
+        return []
+
+
+def _never_save(entries: list[dict]) -> None:
+    NEVER_DIR.mkdir(parents=True, exist_ok=True)
+    os.chmod(NEVER_DIR, 0o700)
+    tmp = NEVER_PATH.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(entries, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    os.chmod(tmp, 0o600)
+    os.replace(tmp, NEVER_PATH)
+
+
+def _incident_folder(spec: str) -> Path | None:
+    folders = sorted(p.parent for p in voice_trace.INCIDENTS.glob("*/trace.json")) if voice_trace.INCIDENTS.exists() else []
+    if spec == "last":
+        return folders[-1] if folders else None
+    p = Path(spec).expanduser()
+    if p.is_dir() and (p / "trace.json").exists():
+        return p
+    hits = [f for f in folders if f.name.startswith(spec)]
+    if len(hits) > 1:
+        print(f"   {spec} matches {len(hits)} incidents: " + ", ".join(h.name for h in hits[-6:]) + " — say a little more")
+        return None
+    return hits[0] if hits else None
+
+
+def _never_add(a) -> int:
+    args = a.args[1:]
+    if not args:
+        print("✗ never-again add <incident|last> <sentence idx>   ·   never-again add <file.wav> --chars N [--error E]")
+        return 1
+    src = Path(args[0]).expanduser()
+    if src.is_file():
+        if a.chars is None:
+            print("✗ a wav on its own needs --chars N (how many characters the voice was fed for it)")
+            return 1
+        wav, chars, error = src, a.chars, a.error
+        origin = {"from": "file"}
+    else:
+        folder = _incident_folder(args[0])
+        if folder is None:
+            print(f"✗ no incident matches {args[0]} (last · a folder · the start of a folder's name, e.g. 2026-11-13_04h1)")
+            return 1
+        if len(args) < 2 or not args[1].isdigit():
+            print("✗ never-again add <incident> <sentence idx>   (the idx is in the incident's trace, e.g. 5)")
+            return 1
+        idx = int(args[1])
+        tr = json.loads((folder / "trace.json").read_text(encoding="utf-8"))
+        take = next((t for t in tr.get("takes", []) if t.get("idx") == idx), None)
+        if take is None or not take.get("wav") or not (folder / take["wav"]).exists():
+            print(f"✗ {folder.name} has no recorded take {idx}")
+            return 1
+        wav = folder / take["wav"]
+        chars = len(take.get("fed") or take.get("raw") or "")  # only the count is kept, never the words
+        error = a.error or take.get("error")
+        origin = {"from": "incident", "incident": folder.name, "idx": idx, "status": take.get("status"),
+                  "when": tr.get("when")}
+    x = decode(wav)
+    if x is None:
+        print(f"✗ can't read {wav.name}")
+        return 1
+    entries = _never_load()
+    sha = hashlib.sha256(wav.read_bytes()).hexdigest()[:16]
+    have = next((e for e in entries if e.get("sha") == sha), None)
+    if have:
+        print(f"🌸 already in the set as #{have['n']}")
+        return _never_check(a, only=[have["n"]])
+    n = max((e["n"] for e in entries), default=0) + 1
+    NEVER_DIR.mkdir(parents=True, exist_ok=True)
+    os.chmod(NEVER_DIR, 0o700)
+    dst = NEVER_DIR / f"{n:03d}.wav"
+    voice_welfare.write_wav(dst, (np.clip(x, -1, 0.99997) * 32768).astype(np.int16).tobytes())
+    os.chmod(dst, 0o600)
+    entries.append({"n": n, "wav": dst.name, "sha": sha, "added": time.strftime("%Y-%m-%d %H:%M"), "chars": chars,
+                    "error": error, "audio_s": round(len(x) / RATE, 3), "note": a.note, **origin})
+    _never_save(entries)
+    print(f"🛡️ never again #{n}: {round(len(x) / RATE, 2)} s for {chars} chars · error {error or '—'} · kept privately in "
+          f"{NEVER_DIR} (never played)")
+    return _never_check(a, only=[n])
+
+
+def _live_stop(x: np.ndarray, chars: int, cfg: dict, t: dict, pace: float) -> float | None:
+    """when the live guard (airtight) would have stopped this take, fed the way omni streams it"""
+    b = cfg["baseline"]
+    w = vm.TakeWatch(chars, t=t, s_per_char=pace, floor_ref=b.get("floor_db"), acts=cfg["acts"],
+                     level_ref=b.get("level_db"), zcr_ref=b.get("zcr_hz"))
+    pcm = (np.clip(x, -1, 0.99997) * 32768).astype(np.int16).tobytes()
+    pos, first = 0, True
+    while pos < len(pcm):
+        step = 2 * (FIRST_CHUNK if first else CHUNK)
+        chunk, pos, first = pcm[pos: pos + step], pos + step, False
+        if w.feed(chunk) or (w.due() and w.listen(bytes(w.pcm))):
+            return round(w.seconds, 2)
+    return None
+
+
+def _never_check(a, only: list[int] | None = None) -> int:
+    entries = _never_load()
+    if not entries:
+        print("🌸 the never-again set is empty — the nov 13 take goes first: ./petal-voice-welfare.sh never-again add last 5")
+        return 0
+    cfg = voice_welfare.load()
+    t, b = cfg["thresholds"], cfg["baseline"]
+    pace = vm.pace(b) or vm.FALLBACK_S_PER_CHAR
+    kills = {k for k, v in cfg["acts"].items() if v == "kill"}
+    shown = [e for e in entries if not only or e["n"] in only]
+    print(f"🛡️ never again · {len(shown)} of {len(entries)} take(s) · her pace {pace} s/char"
+          + ("" if b.get("level_db") is not None else " · surge waits for her baseline"))
+    fails = 0
+    for e in shown:
+        x = decode(NEVER_DIR / e["wav"])
+        if x is None:
+            print(f"#{e['n']}: ❌ its wav is missing or unreadable ({NEVER_DIR / e['wav']})")
+            fails += 1
+            continue
+        st = vm.audio_stats(x)
+        content = [w for w in vm.judge(st, e["chars"], t=t, s_per_char=pace, floor_ref=b.get("floor_db"),
+                                       level_ref=b.get("level_db"), zcr_ref=b.get("zcr_hz")) if w in kills]
+        broken = bool(e.get("error"))
+        caught = bool(content) or broken
+        at = _live_stop(x, e["chars"], cfg, t, pace)
+        hf, hs = vm.hot_of(st, t)
+        sf, ss = vm.surge_of(st, t, b.get("level_db"), b.get("zcr_hz"))
+        c = vc.Ceiling(cfg["ceiling_dbfs"])
+        after = vc.peak_db(c.process((np.clip(x, -1, 0.99997) * 32768).astype(np.int16).tobytes()))
+        print(f"#{e['n']} {'✅ PASS' if caught else '❌ FAIL'} · {e['audio_s']} s for {e['chars']} chars"
+              + (f" · {e['incident']} idx {e['idx']}" if e.get("incident") else "")
+              + f" · content alone: {'+'.join(content) or '— (only broken catches it)'}"
+              + f" · broken: {e['error'] if broken else 'no'}")
+        print(f"     live: {f'stopped after {at} s of audio, before a sample played' if at is not None else 'never stopped mid-take'}"
+              + ("" if at is not None or not broken else ", killed when the voice broke off")
+              + f" · hot {hs} s ({hf:.0%}) · surge {f'{ss} s ({sf:.0%})' if ss is not None else '—'} · peak {st.get('peak_db')} dBFS"
+              + (f" → the ceiling would hold it at {after} dBFS" if cfg["ceiling_dbfs"] is not None else " · ceiling off"))
+        fails += not caught
+    print("🌸 every one is caught" if not fails else f"❌ {fails} would reach her: tell Lane B / the master thread")
+    if not cfg["enabled"]:
+        print("⚠️ welfare is asleep: tonight only the ceiling stands between her ears and a take like these "
+              "(./petal-voice-welfare.sh on airtight)")
+    return 1 if fails else 0
+
+
+def cmd_never(a) -> int:
+    action = (a.args[0] if a.args else "check").lower()
+    if action == "add":
+        return _never_add(a)
+    if action == "list":
+        entries = _never_load()
+        if not entries:
+            return _never_check(a)
+        print(f"{'n':>3}  {'added':<16}  {'audio s':>7}  {'chars':>5}  {'error':<20}  from")
+        for e in entries:
+            src = f"{e.get('incident')} idx {e.get('idx')}" if e.get("incident") else e.get("from", "?")
+            print(f"{e['n']:>3}  {e.get('added', ''):<16}  {e['audio_s']:>7}  {e['chars']:>5}  {str(e.get('error') or '—'):<20}  {src}")
+        print(f"   kept privately in {NEVER_DIR} · numbers only, never played")
+        return 0
+    if action == "check":
+        return _never_check(a)
+    print("✗ never-again [check | list | add <incident|last> <idx> | add <file.wav> --chars N --error E]")
+    return 1
 
 
 def main(argv=None) -> int:
@@ -1023,6 +1375,12 @@ def main(argv=None) -> int:
     o.add_argument("--since", help="when her pace must be measured now: cache takes from this day on")
     o.add_argument("--yes", action="store_true", help="don't ask")
     sub.add_parser("off", help="let her takes go out live again")
+    bl = sub.add_parser("baseline", help="measure her voice (pace, floor, loudness, zero crossings) and store it")
+    bl.add_argument("--since", help="only cache takes from this day on (YYYY-MM-DD), e.g. the omni era")
+    bl.add_argument("--cache-dir")
+    bl.add_argument("--max", type=int, help="only the newest N cache takes")
+    bl.add_argument("--yes", action="store_true", help="store without asking")
+    bl.add_argument("--all", action="store_true", help="re-measure her pace and floor too (they were tuned with your verdicts)")
     hd = sub.add_parser("hold", help="airtight | near-free")
     hd.add_argument("mode")
     au = sub.add_parser("audit", help="extend the audit fortnight by N days")
@@ -1039,6 +1397,7 @@ def main(argv=None) -> int:
     pl.add_argument("which", nargs="?", default="all", help="n · 1,3,5 · 2-6 · all (= every one not judged yet)")
     pl.add_argument("--killed", action="store_true", help="only the killed take(s)")
     pl.add_argument("--kept", action="store_true", help="only the take that replaced it")
+    pl.add_argument("--violent", action="store_true", help=f"play violent kills too, held quiet at {QUIET_DB} dBFS")
     ve = sub.add_parser("verdict", help="ok (the kill was right) | wrong (a legit line was killed)")
     ve.add_argument("which")
     ve.add_argument("verdict")
@@ -1049,11 +1408,17 @@ def main(argv=None) -> int:
     sw.add_argument("--since", help="only cached takes from this day on (YYYY-MM-DD)")
     sw.add_argument("--cache-dir")
     sw.add_argument("--yes", action="store_true")
+    sw.add_argument("--violent", action="store_true", help=f"play violent ones too, held quiet at {QUIET_DB} dBFS")
+    nv = sub.add_parser("never-again", help="the takes that must always be caught: check · list · add")
+    nv.add_argument("args", nargs="*", help="check (default) · list · add <incident|last> <idx> · add <file.wav>")
+    nv.add_argument("--chars", type=int, help="add <file.wav>: how many characters the voice was fed")
+    nv.add_argument("--error", help="the error the voice ended it with (e.g. ClientPayloadError)")
+    nv.add_argument("--note", help="a word for future you (optional)")
     a = p.parse_args(argv)
     return {"calibrate": cmd_calibrate, "holdback": cmd_holdback, "status": cmd_status, "on": cmd_on, "off": cmd_off,
-            "hold": cmd_hold, "audit": cmd_audit, "rule": cmd_rule, "act": cmd_act,
+            "baseline": cmd_baseline, "hold": cmd_hold, "audit": cmd_audit, "rule": cmd_rule, "act": cmd_act,
             "list": cmd_list, "play": cmd_play, "verdict": cmd_verdict,
-            "stats": cmd_stats, "sweep": cmd_sweep}[a.cmd](a)
+            "stats": cmd_stats, "sweep": cmd_sweep, "never-again": cmd_never}[a.cmd](a)
 
 
 if __name__ == "__main__":
