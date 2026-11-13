@@ -19,8 +19,13 @@ if the voice is ever late *between* two sentences, a little quiet holds the line
 never decides she stopped. inside a sentence nothing is ever inserted: the player just waits.
 
 🕊️ voice welfare (voice_welfare.py, asleep until she wakes it): each take is judged by the shared
-ear before she hears it. a take that loops or runs far past its text is dropped whole and the
-sentence is asked again with a fresh seed; a kept take goes out exactly as she made it.
+ear before she hears it. a take that loops, runs far past its text, runs hot or harsh, or that the
+voice ended with an error is dropped whole and the sentence is asked again with a fresh seed; a
+kept take goes out exactly as she made it.
+
+🛡️ the voice ceiling (voice_ceiling.py, always on, welfare awake or asleep): the last thing every
+sample passes before the mp3 encoder. nothing that plays ever goes above it (-3 dBFS by default);
+anything that never reaches it goes out byte for byte.
 
 the id is a one-time capability (128 random bits, minted for a signed-in user, valid 2 min,
 spent on the first GET) — so the <audio> element can open it without headers or cookies.
@@ -44,11 +49,12 @@ from pathlib import Path
 
 import numpy as np
 
-try:  # 🎀 the tts sieve + 🚩 the voice trace + 🕊️ voice welfare, inside OWUI or tasted on its own
+try:  # 🎀 the tts sieve + 🚩 the voice trace + 🕊️ voice welfare + 🛡️ the ceiling, inside OWUI or tasted on its own
     from open_webui.routers.audio.tts_sieve import load_config as sieve_config, sieve
-    from open_webui.routers.audio import voice_trace, voice_welfare
+    from open_webui.routers.audio import voice_ceiling, voice_trace, voice_welfare
 except ImportError:
     from tts_sieve import load_config as sieve_config, sieve
+    import voice_ceiling
     import voice_trace
     import voice_welfare
 
@@ -197,9 +203,11 @@ async def produce(session, parts: list[dict], voice: str, q: asyncio.Queue, c: d
     None on q means she's done. tr (a voice trace) quietly keeps each take as she made it.
 
     🕊️ with voice welfare awake, each take is judged by the shared ear before it's heard: a take
-    that loops or runs far past its text is dropped (the request is closed, so omni stops making
-    it) and the sentence is asked again with a fresh seed, up to max_tries, then skipped with a
-    clean silence. a kept take goes out exactly as she made it."""
+    that loops, runs far past its text or runs hot/harsh is dropped (the request is closed, so omni
+    stops making it) and the sentence is asked again with a fresh seed, up to max_tries, then
+    skipped with a clean silence. a take the voice ended with an error (or with no audio at all) is
+    judged too, and is never played as it arrived: it counts as a kill ("broken") whatever the ear
+    said. a kept take goes out exactly as she made it."""
     import aiohttp
 
     shaped = c["pacing"] == "shaped"
@@ -242,7 +250,7 @@ async def produce(session, parts: list[dict], voice: str, q: asyncio.Queue, c: d
                 if sent:
                     payload["seed"] = sent.seed()
                     w = sent.watch()
-                buf, released, first, why, broke = bytearray(), 0, True, None, False
+                buf, released, first, why, broke = bytearray(), 0, True, None, None  # broke: what ended it badly
 
                 async def out(upto: int, final: bool = False) -> None:
                     """sends buf[released:upto] to her ears, shaped only in "shaped" pacing"""
@@ -267,7 +275,7 @@ async def produce(session, parts: list[dict], voice: str, q: asyncio.Queue, c: d
                             take.status = r.status
                         if r.status != 200:
                             log.warning("petal stream: omni said %s for part %d", r.status, i)
-                            broke = True
+                            broke = f"http {r.status}"
                         else:
                             rate = _rate_of(r.headers)
                             odd = b""
@@ -294,19 +302,25 @@ async def produce(session, parts: list[dict], voice: str, q: asyncio.Queue, c: d
                                     why = hit
                                     r.close()  # omni stops making a take nobody will hear
                                     break
-                                if early:  # she's waiting: out goes all but the last window (always judged first)
-                                    await out(len(buf) - max(win, tail_hold))
+                                if early:  # she's waiting: out goes all but the last window (always judged first),
+                                    # and never anything from the first hot or harsh moment on (held whole till judged)
+                                    await out(min(len(buf) - max(win, tail_hold), w.cool_upto()))
                 except (aiohttp.ClientError, asyncio.TimeoutError) as e:
                     log.warning("petal stream: part %d lost (%s)", i, e.__class__.__name__)
-                    broke = True
+                    broke = e.__class__.__name__
                     if take:
-                        take.error = e.__class__.__name__
+                        take.error = broke
                 if w is not None and why is None and buf:
                     # the whole take (or all of it that came before a break), as the report would hear it
                     kills = await asyncio.to_thread(w.listen, bytes(buf))
                     why = "+".join(kills) if kills else None
+                if w is not None and (broke or not buf):
+                    # 🕊️ every take is judged, error or not: one the voice ended with an error (or with no
+                    # audio at all) is never played as it arrived, whatever the ear made of it
+                    broke = broke or "empty"
+                    why = "broken" + (f"+{why}" if why else "")
                 if why:  # 🕊️ a bad take: dropped whole (near-free: whatever had to go out early stays heard)
-                    sent.kill(w, bytes(buf), heard_s=released / (2 * RATE))
+                    sent.kill(w, bytes(buf), heard_s=released / (2 * RATE), broken=broke)
                     if take:
                         take.kills.append(why)
                     if not sent.spent:
@@ -319,7 +333,7 @@ async def produce(session, parts: list[dict], voice: str, q: asyncio.Queue, c: d
                         sent.keep(w, bytes(buf))
                     await out(len(buf), final=True)
                 if take and buf and tr.room():
-                    take.pcm += buf  # 🚩 the take she heard, untouched
+                    take.pcm += buf  # 🚩 the take as the voice made it (the ceiling only touches what reaches her ears)
                 break
             if take:
                 take.t_done = tr.rel()
@@ -362,6 +376,7 @@ async def station(session, parts: list[dict], voice: str, tr=None):
     never starves. inside a sentence it only ever waits."""
     c = cadence()
     enc = Encoder(c["bitrate_kbps"])
+    ceil = voice_ceiling.Ceiling(voice_welfare.load()["ceiling_dbfs"])  # 🛡️ nothing that plays goes above it
     q: asyncio.Queue = asyncio.Queue()
     if tr:
         tr.pacing, tr.started = c["pacing"], True
@@ -419,13 +434,19 @@ async def station(session, parts: list[dict], voice: str, tr=None):
             flow.sent = sent
             if take:
                 take.end_s = round(sent, 3)
-            out = enc.encode(pcm)
+            out = enc.encode(ceil.process(pcm))
             if out:
                 yield heard(out)
         out = enc.flush()
         if out:
             yield heard(out)
     finally:
+        if ceil.touched and tr:
+            tr.ceiling = {"dbfs": ceil.dbfs, "touched_s": round(ceil.touched_s, 3), "peak_in_db": ceil.peak_in_db}
+        if ceil.ran_hot:  # 🛡️ rare by design: one numbers-only line whenever something above the ceiling reached it
+            meta = tr.meta if tr else {}
+            voice_welfare.log_ceiling(path="stream", touched_s=ceil.touched_s, peak_in_db=ceil.peak_in_db,
+                                      temp=not voice_trace.is_saved_chat_id(meta.get("chat_id")))
         if tr:
             voice_trace.finish(tr, cut_short=not completed)
         voice_task.cancel()
