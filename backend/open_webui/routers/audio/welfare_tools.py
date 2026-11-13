@@ -1412,7 +1412,7 @@ def cmd_sweep(a) -> int:
             return 1
         for it in bad:
             stem = cdir / Path(it["file"]).stem
-            for ext in (".mp3", ".json", ".mime", ".ceil"):
+            for ext in (".mp3", ".json", ".mime", ".ceil", ".dur"):
                 stem.with_suffix(ext).unlink(missing_ok=True)
             voice_welfare._append(SWEEP_VERDICTS, {"v": 1, "at": round(time.time()), "file": it["file"], "verdict": "ok", "deleted": True})
         print(f"🧹 swept {len(bad)}. the next time one of those lines is spoken she makes a fresh take (judged by welfare)")
