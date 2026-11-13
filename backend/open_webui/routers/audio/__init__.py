@@ -55,7 +55,7 @@ from open_webui.events import EVENTS, publish_event
 from open_webui.models.config import Config
 from open_webui.routers.audio import realtime
 from open_webui.routers.audio.tts_sieve import sieve_speech_body, silent_mp3
-from open_webui.routers.audio import voice_welfare
+from open_webui.routers.audio import voice_events, voice_welfare
 from open_webui.utils.access_control import has_permission
 from open_webui.utils.auth import get_admin_user, get_verified_user
 from open_webui.utils.headers import include_user_info_headers
@@ -487,7 +487,7 @@ async def _tts_openai(request, payload, file_path, file_body_path, user):
             if sent.spent:
                 await asyncio.to_thread(sent.close)
                 quiet, mime = voice_welfare.skip_clip(care['skip_silence_ms'])
-                return Response(content=quiet, media_type=mime)
+                return Response(content=quiet, media_type=mime, headers={'X-Petal-Welfare': 'skipped'})
         if sent:
             await asyncio.to_thread(sent.close)
 
@@ -811,12 +811,14 @@ async def speech(request: Request, user=Depends(get_verified_user)):
         )
 
     body = await request.body()
+    # 📡 voice events: a page that asks ("petal": {message_id, idx}) gets the stream's events with the clip
+    body, petal_ask = voice_events.take_petal(body)
     # 🎀 tts sieve: what the voice eats, never what the chat shows (tts_sieve.json toggles it live)
     body, sieved_empty = sieve_speech_body(body)
     if sieved_empty:
         quiet = silent_mp3()
         if quiet is not None:
-            return Response(content=quiet, media_type='audio/mpeg')
+            return await voice_events.follow(Response(content=quiet, media_type='audio/mpeg'), petal_ask, said=False)
     payload = None
     if engine == 'openai-realtime':
         try:
@@ -877,7 +879,7 @@ async def speech(request: Request, user=Depends(get_verified_user)):
         if USE_SLIM and engine != 'openai-realtime':
             async with aiofiles.open(file_path.with_suffix('.mime')) as f:
                 content_type = await f.read()
-        return FileResponse(file_path, media_type=content_type)
+        return await voice_events.follow(FileResponse(file_path, media_type=content_type), petal_ask)
 
     if payload is None:
         try:
@@ -903,7 +905,7 @@ async def speech(request: Request, user=Depends(get_verified_user)):
             'cached': False,
         },
     )
-    return response
+    return await voice_events.follow(response, petal_ask)
 
 
 async def _transcribe_whisper(request, file_path, languages, file_dir, id):
