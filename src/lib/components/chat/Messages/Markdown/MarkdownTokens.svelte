@@ -16,6 +16,7 @@
 				}) => void;
 				lexer?: (source: string) => Token[];
 				renderHtml?: Action<HTMLElement, { id: string; tokens: Token[]; top: boolean }>;
+				displayQuotes?: boolean;
 		  }
 		| undefined
 	>('markdown');
@@ -47,6 +48,7 @@
 	import HtmlToken from './HTMLToken.svelte';
 	import Clipboard from '$lib/components/icons/Clipboard.svelte';
 	import ColonFenceBlock from './ColonFenceBlock.svelte';
+	import PetalQuote from './PetalQuote.svelte';
 
 	export let id: string;
 	export let chatId = '';
@@ -339,7 +341,8 @@
 		{#if alert}
 			<AlertRenderer {token} {alert} {allowEmbeds} />
 		{:else}
-			<blockquote dir="auto">
+			<!-- 🌸 petal (A17): a reply's quote is set as display type; every other quote keeps the plain look -->
+			<PetalQuote display={!!markdown?.displayQuotes}>
 				<svelte:self
 					id={`${id}-${tokenIdx}`}
 					{chatId}
@@ -357,7 +360,7 @@
 					{onSourceClick}
 					{onToolCallResolved}
 				/>
-			</blockquote>
+			</PetalQuote>
 		{/if}
 	{:else if token.type === 'list'}
 		{#if token.ordered}

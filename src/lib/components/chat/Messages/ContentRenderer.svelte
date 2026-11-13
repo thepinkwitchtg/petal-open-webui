@@ -290,6 +290,7 @@
 			{topPadding}
 			{sourceIds}
 			renderMarkdown={$settings?.renderMarkdownInAssistantMessages ?? true}
+			displayQuotes
 			{formatMessageContent}
 			{onSourceClick}
 			{onTaskClick}
@@ -318,6 +319,7 @@
 				{messageId}
 				content={formatMessageContent(content)}
 				{model}
+				displayQuotes
 				{save}
 				{preview}
 				{compactPreview}
