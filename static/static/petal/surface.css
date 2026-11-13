@@ -22,11 +22,26 @@
 	font-display: swap;
 }
 
-/* self-host these two into petal/fonts/ and uncomment —
-   never link fonts.googleapis.com from a sovereign rig 🌷
+/* self-hosted, never linked from fonts.googleapis.com on a sovereign rig 🌷
+   Fraunces (OFL, licence beside it in petal/fonts/) is the display face: quotes, titles. it rides
+   with the skin so a phone never falls back to a plain serif (A18b). JetBrains Mono: self-host it
+   into petal/fonts/ and uncomment.
 @font-face { font-family:'JetBrains Mono'; src:url('/static/petal/fonts/JetBrainsMono-Variable.woff2') format('woff2'); font-display:swap }
-@font-face { font-family:'Fraunces';       src:url('/static/petal/fonts/Fraunces-Variable.woff2')      format('woff2'); font-display:swap }
 */
+@font-face {
+	font-family: 'Fraunces';
+	src: url('/static/petal/fonts/Fraunces-Variable.woff2') format('woff2');
+	font-weight: 100 900;
+	font-style: normal;
+	font-display: swap;
+}
+@font-face {
+	font-family: 'Fraunces';
+	src: url('/static/petal/fonts/Fraunces-Italic-Variable.woff2') format('woff2');
+	font-weight: 100 900;
+	font-style: italic;
+	font-display: swap;
+}
 
 html.petal,
 html.petal *:not(code):not(pre):not(kbd):not(samp) {
