@@ -15,6 +15,12 @@ max_tries bad takes the sentence is skipped with a clean silence, so a deadloop 
   watches  cover · hiss (numbers only, never touched)
   ceiling  🛡️ apart from all of it, awake or asleep: nothing that plays ever goes above
            ceiling_dbfs (voice_ceiling.py), in the stream, the speaker clips and the speech cache
+  pairs    🎙️ every kill keeps a pair for the next voice tune (pairs/<date>/, gold tier, 700/600):
+           the killed take(s), the accepted resample, the sentence, seeds, the guard's numbers and
+           which voice made it. her verdicts become its labels (labels.jsonl): a false kill flips the
+           pair, so her own legit expressions are never learned as "bad". violent takes are kept
+           but never auto-played. capped by pairs_cap_mb, oldest first (her labeled pairs last).
+           kept apart from Siren's approved takes and the garlic archive
 
   petal stream   each sentence is judged as it arrives (petal_stream.produce)
   speaker clips  the whole clip is judged before it's returned, and a killed take never reaches
@@ -66,6 +72,10 @@ CONFIG_PATH = VOICE / "welfare.json"
 LOG_PATH = VOICE / "welfare.jsonl"
 AUDIT_DIR = VOICE / "welfare-audit"
 VERDICTS_PATH = AUDIT_DIR / "verdicts.jsonl"
+PAIRS_DIR = VOICE / "pairs"  # 🎙️ gold tier: 700 dirs · 600 files
+PAIR_LABELS = PAIRS_DIR / "labels.jsonl"  # her verdicts on pairs, append-only (the latest per pair wins)
+PAIRS_EXPORT_DIR = VOICE / "pairs-export"
+LAUNCHER = os.environ.get("PETAL_LAUNCHER_URL", "http://127.0.0.1:8770")  # knows which voice is wearing :8100
 RATE = vm.RATE
 DAY = 86400
 
@@ -86,6 +96,7 @@ DEFAULTS = {
     "acts": {"loop": "kill", "cover": "watch", "stretch": "kill", "hiss": "watch",
              "clip": "kill", "surge": "kill", "broken": "kill"},
     "ceiling_dbfs": -3.0,  # 🛡️ the hard safety ceiling on everything that plays (voice_ceiling.py). null = off
+    "pairs_cap_mb": 8192,  # 🎙️ voice pairs for training (pairs/): past this, the oldest go first. 0 = keep none
     "thresholds": {},
     "baseline": dict(vm.DEFAULT_BASELINE),
 }
@@ -98,7 +109,9 @@ ABOUT = ("voice welfare, read at the start of every reply and every speaker clip
          "from calibration (./petal-voice-welfare.sh baseline). audit_until: unix s, until then every kill keeps its "
          "evidence in welfare-audit/ (extend: ./petal-voice-welfare.sh audit 7). broken: a take the voice ended with an "
          "error is never played as it arrived. ceiling_dbfs: no sample that plays ever goes above it, welfare awake or "
-         "asleep (null turns it off).")
+         "asleep (null turns it off). pairs_cap_mb: every kill keeps a training pair in pairs/ (the killed take, the "
+         "accepted resample, the sentence, seeds, numbers); past this size the oldest go first, her labeled ones "
+         "last. 0 keeps none.")
 _lock = threading.Lock()
 
 
@@ -140,7 +153,7 @@ def load() -> dict:
         v = raw["ceiling_dbfs"]
         cfg["ceiling_dbfs"] = None if v is None else max(-24.0, min(0.0, float(v))) \
             if isinstance(v, (int, float)) and not isinstance(v, bool) else cfg["ceiling_dbfs"]
-    for k in ("window_s", "skip_silence_ms", "audit_until", "audit_days", "enabled_at"):
+    for k in ("window_s", "skip_silence_ms", "audit_until", "audit_days", "enabled_at", "pairs_cap_mb"):
         if isinstance(raw.get(k), (int, float)) and not isinstance(raw[k], bool) and raw[k] >= 0:
             cfg[k] = raw[k]
     if isinstance(raw.get("acts"), dict):
@@ -174,7 +187,7 @@ def _write_raw(raw: dict) -> None:
 
 def set_knobs(*, by: str, enabled: bool | None = None, hold: str | None = None, baseline: dict | None = None,
               audit_days: float | None = None, thresholds: dict | None = None, acts: dict | None = None,
-              valve: bool | None = None) -> dict:
+              valve: bool | None = None, pairs_cap_mb: float | None = None) -> dict:
     """the only writer of welfare.json (the helper and the Petal Sieve filter's valve both come
     through here). the first waking starts the audit fortnight."""
     with _lock:
@@ -219,6 +232,10 @@ def set_knobs(*, by: str, enabled: bool | None = None, hold: str | None = None, 
             raw["acts"] = {**DEFAULTS["acts"], **(raw.get("acts") or {}), **acts}
         if valve is not None:
             raw["valve"] = bool(valve)  # what the Sieve filter's switch last said (last action wins)
+        if pairs_cap_mb is not None:
+            if isinstance(pairs_cap_mb, bool) or not isinstance(pairs_cap_mb, (int, float)) or pairs_cap_mb < 0:
+                raise ValueError("pairs_cap_mb wants a number of MB ≥ 0 (0 keeps no pairs)")
+            raw["pairs_cap_mb"] = pairs_cap_mb
         raw["set_by"], raw["set_at"] = by, round(now)
         _write_raw(raw)
     return load()
@@ -264,6 +281,150 @@ def read_jsonl(path: Path) -> list[dict]:
     return out
 
 
+def private_dir(p: Path) -> Path:
+    """a gold-tier folder: 700, whatever the umask says"""
+    p.mkdir(parents=True, exist_ok=True)
+    try:
+        os.chmod(p, 0o700)
+    except OSError:
+        pass
+    return p
+
+
+def private_write(path: Path, data: bytes | str) -> None:
+    """a gold-tier file: 600 from the first byte"""
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "wb") as f:
+        f.write(data.encode("utf-8") if isinstance(data, str) else data)
+    os.chmod(path, 0o600)
+
+
+def append_private(path: Path, row: dict) -> None:
+    private_dir(path.parent)
+    _append(path, row)
+    try:
+        os.chmod(path, 0o600)
+    except OSError:
+        pass
+
+
+def pairs_root() -> Path:
+    root = private_dir(PAIRS_DIR)
+    mark = root / ".petalprivate"
+    if not mark.exists():  # the zip guard's marker: this folder is never packed, never shared
+        private_write(mark, "gold tier · petal-voice pairs (her voice, her words) · never zipped, never shared\n")
+    return root
+
+
+_mode_seen: tuple[float, str | None] = (0.0, None)
+
+
+def voice_mode() -> str | None:
+    """which body is wearing petal-voice right now, from the launcher: "chat" (vLLM-Omni) or "studio"
+    (qwen-tts), None if the launcher can't say. every pair knows its voice, so a corpus never mixes
+    the two (contract 2). asked at most every 30 s, and only when a pair is written"""
+    global _mode_seen
+    t0, m = _mode_seen
+    if time.time() - t0 < 30:
+        return m
+    m = None
+    try:
+        import urllib.request
+
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))  # the launcher is local, never proxied
+        with opener.open(f"{LAUNCHER}/state", timeout=0.3) as r:
+            st = json.loads(r.read().decode("utf-8"))
+        cur = ((st.get("services") or {}).get("petal-voice") or {}).get("currentMode")
+        m = cur if cur in ("chat", "studio") else None
+    except Exception as e:  # noqa: BLE001 — the launcher may be away: the pair says null, never guesses
+        log.debug("voice welfare: the launcher didn't say which voice is speaking (%s)", e)
+    _mode_seen = (time.time(), m)
+    return m
+
+
+def pairs_on(cfg: dict) -> bool:
+    return bool(cfg.get("pairs_cap_mb"))
+
+
+def pairs_size() -> tuple[int, list[tuple[Path, int]]]:
+    """→ (bytes in pairs/, [(pair folder, its bytes)] oldest first)"""
+    out, total = [], 0
+    if PAIRS_DIR.exists():
+        for f in sorted(PAIRS_DIR.glob("*/*/pair.json")):
+            size = sum(p.stat().st_size for p in f.parent.iterdir() if p.is_file())
+            out.append((f.parent, size))
+            total += size
+    return total, out
+
+
+_pairs_bytes = [0.0, 0]  # [when last counted, bytes in pairs/]: a full count at most every 10 minutes
+
+
+def mind_the_cap(cfg: dict, new_pair: Path) -> None:
+    """after a new pair: prune only when the folder truly runs past the cap (the usual case costs one
+    folder's stat, not a walk through the whole season)"""
+    cap = cfg.get("pairs_cap_mb") or 0
+    if not cap:
+        return
+    size = sum(p.stat().st_size for p in new_pair.iterdir() if p.is_file())
+    now = time.time()
+    if now - _pairs_bytes[0] > 600:
+        _pairs_bytes[:] = [now, pairs_size()[0]]
+    else:
+        _pairs_bytes[1] += size
+    if _pairs_bytes[1] > cap * 1048576:
+        prune_pairs(cfg, keep=new_pair)
+        _pairs_bytes[0] = 0.0  # counted afresh next time
+
+
+def pair_labels() -> dict[str, dict]:
+    """her latest verdict on each pair (labels.jsonl is append-only: a change is a new line)"""
+    out = {}
+    for row in read_jsonl(PAIR_LABELS):
+        if row.get("pair") and row.get("verdict") in ("ok", "wrong"):
+            out[row["pair"]] = row
+    return out
+
+
+def prune_pairs(cfg: dict, keep: Path | None = None, dry: bool = False) -> tuple[int, int]:
+    """past pairs_cap_mb, the oldest pairs go first, her labeled ones last (her listening is the most
+    precious part). → (pairs removed, bytes freed). a cap of 0 never deletes: it only stops new pairs.
+    dry: only count what would go"""
+    import shutil
+
+    cap = cfg.get("pairs_cap_mb") or 0
+    if not cap:
+        return 0, 0
+    total, pairs = pairs_size()
+    over = total - int(cap * 1024 * 1024)
+    if over <= 0:
+        return 0, 0
+    labeled = set(pair_labels())
+    order = sorted(pairs, key=lambda ps: (f"{ps[0].parent.name}/{ps[0].name}" in labeled, ps[0].parent.name, ps[0].name))
+    n = freed = 0
+    for folder, size in order:
+        if freed >= over:
+            break
+        if keep is not None and folder == keep:
+            continue
+        n, freed = n + 1, freed + size
+        if dry:
+            continue
+        shutil.rmtree(folder, ignore_errors=True)
+        try:
+            folder.parent.rmdir()  # a day with nothing left goes too
+        except OSError:
+            pass
+    if n and not dry:
+        try:
+            _append(LOG_PATH, {"v": 1, "kind": "pairs-pruned", "at": round(time.time(), 3), "n": n,
+                               "freed_mb": round(freed / 1048576, 1), "cap_mb": cap})
+        except OSError:
+            pass
+        log.info("🎙️ voice pairs: past %s MB, the %d oldest went (%.1f MB)", cap, n, freed / 1048576)
+    return n, freed
+
+
 def write_wav(path: Path, pcm: bytes) -> None:
     with wave.open(str(path), "wb") as w:
         w.setnchannels(1)
@@ -279,8 +440,10 @@ class Sentence:
     False in a saved chat, None when unknown (speaker clips don't say which chat they're from)."""
 
     def __init__(self, cfg: dict, *, path: str, text: str, idx: int | None = None, chat_id: str | None = None,
-                 message_id: str | None = None, temp: bool | None = None, hold: str = "airtight"):
+                 message_id: str | None = None, temp: bool | None = None, hold: str = "airtight",
+                 speaker: str | None = None):
         self.cfg, self.path, self.text, self.idx, self.temp, self.hold = cfg, path, text, idx, temp, hold
+        self.speaker = speaker  # the voice name the request asked for (a corpus never mixes speakers either)
         self.chat_id = chat_id if temp is False else None
         self.message_id = message_id if temp is False else None
         self.t = cfg["thresholds"]
@@ -289,9 +452,10 @@ class Sentence:
         self.acts = cfg["acts"]
         self.max_tries = cfg["max_tries"]
         self.audit = audit_open(cfg)
+        self.pairs = pairs_on(cfg)  # 🎙️ every kill keeps a training pair (not only during the fortnight)
         self.at = time.time()
         self.kills: list[dict] = []  # one per killed take: seed, why, the guard's numbers, how much was heard
-        self.killed_pcm: list[bytes] = []  # only while the audit fortnight lasts
+        self.killed_pcm: list[bytes] = []  # kept while the audit fortnight lasts, and for the pairs
         self.kept: dict | None = None
         self.kept_pcm: bytes | None = None
         self.watched: list[str] = []
@@ -328,7 +492,7 @@ class Sentence:
         if broken:
             n["error"] = broken
         self.kills.append({"try": len(self.kills) + 1, "seed": self._seed, "heard_s": round(heard_s, 3), **n})
-        if self.audit:
+        if self.audit or self.pairs:
             self.killed_pcm.append(bytes(pcm))
 
     @property
@@ -338,20 +502,39 @@ class Sentence:
     def keep(self, w: vm.TakeWatch, pcm: bytes) -> None:
         self.kept = {"try": len(self.kills) + 1, "seed": self._seed, **w.numbers()}
         self.watched = [r for r in w.why if self.acts.get(r) == "watch"]
-        if self.audit and self.kills:
+        if (self.audit or self.pairs) and self.kills:
             self.kept_pcm = bytes(pcm)
 
     def close(self) -> str | None:
         """after her last take: one numbers-only line in welfare.jsonl (only if something was killed or
-        watched) and, during the audit fortnight, the evidence folder. → the audit folder's name"""
+        watched), during the audit fortnight the evidence folder, and for every kill with sound its
+        🎙️ training pair (pairs/). → the audit folder's name"""
         if not self.kills and not self.watched and not self.unjudged:
             return None
-        folder = None
+        folder = pair = None
+        pair_dir = None
+        if self.kills and self.pairs and any(self.killed_pcm):  # a pair needs at least one killed take with sound
+            try:
+                pair_dir = self._reserve_pair()
+                pair = f"{pair_dir.parent.name}/{pair_dir.name}"
+            except OSError as e:
+                log.warning("🎙️ voice pairs: pair not kept (%s)", e)
         if self.kills and self.audit:
             try:
-                folder = self._keep_evidence()
+                folder = self._keep_evidence(pair)
             except OSError as e:
                 log.warning("voice welfare: audit evidence not kept (%s)", e)
+        if pair_dir is not None:
+            try:
+                self._keep_pair(pair_dir, folder)
+                mind_the_cap(self.cfg, pair_dir)
+            except OSError as e:
+                log.warning("🎙️ voice pairs: pair not kept (%s)", e)
+                if not (pair_dir / "pair.json").exists():  # never a half pair outside the cap's count
+                    import shutil
+
+                    shutil.rmtree(pair_dir, ignore_errors=True)
+                pair = None
         k0 = self.kills[0]["why"] if self.kills else []
         row = {"v": 1, "kind": "sentence", "at": round(self.at, 3), "path": self.path, "chat_id": self.chat_id,
                "message_id": self.message_id, "temp": self.temp, "sentence_idx": self.idx,
@@ -361,7 +544,7 @@ class Sentence:
                "recovered": (self.kept is not None) if self.kills else None,
                "hold": self.hold if self.path == "stream" else "whole clip",
                "heard_s": round(sum(k["heard_s"] for k in self.kills), 3),
-               "watch": self.watched, "unjudged": self.unjudged or None, "audit": folder,
+               "watch": self.watched, "unjudged": self.unjudged or None, "audit": folder, "pair": pair,
                "numbers": [{k: v for k, v in kk.items() if k not in ("why",)} for kk in self.kills]
                + ([{"kept": True, **{k: v for k, v in self.kept.items() if k != "why"}}] if self.kept and (self.kills or self.watched) else [])}
         try:
@@ -373,9 +556,56 @@ class Sentence:
                      row["kills"], "a fresh take replaced it" if self.kept else "skipped with a clean silence")
         return folder
 
-    def _keep_evidence(self) -> str:  # noqa: D401 — the audit fortnight's folder for this sentence
+    def _token(self) -> str:
+        """a saved chat's message (8 chars); a temp chat or a speaker clip gets a random one (no link)"""
+        if not hasattr(self, "_tok"):
+            self._tok = re.sub(r"[^A-Za-z0-9]", "", self.message_id or "")[:8] or ("t" + secrets.token_hex(4))
+        return self._tok
+
+    def _reserve_pair(self) -> Path:
+        day = private_dir(pairs_root() / time.strftime("%Y-%m-%d", time.localtime(self.at)))
+        stamp = time.strftime("%Hh%Mm%S", time.localtime(self.at))
+        folder, n = day / f"{stamp}_{self._token()}", 2
+        while True:
+            try:
+                folder.mkdir(mode=0o700)
+                return private_dir(folder)
+            except FileExistsError:
+                folder, n = day / f"{stamp}_{self._token()}-{n}", n + 1
+
+    def _keep_pair(self, folder: Path, audit: str | None) -> None:
+        """🎙️ the pair: every killed take (with sound), the accepted resample, the sentence exactly as the
+        voice read it, the seeds, the guard's numbers and which voice made it. written once, never edited:
+        her verdicts land beside it (labels.jsonl)"""
+        meta = ("try", "seed", "why", "violent", "error", "heard_s")
+        takes = []
+        for kill, pcm in zip(self.kills, self.killed_pcm):
+            wav = f"killed-{kill['try']}.wav" if pcm else None
+            if wav:
+                private_write(folder / wav, _wav_bytes(pcm))
+            takes.append({"role": "killed", "try": kill["try"], "seed": kill.get("seed"), "wav": wav,
+                          "why": kill.get("why") or [], "violent": bool(kill.get("violent")), "error": kill.get("error"),
+                          "heard_s": kill.get("heard_s"), "numbers": {k: v for k, v in kill.items() if k not in meta}})
+        if self.kept is not None:
+            wav = "accepted.wav" if self.kept_pcm else None
+            if wav:
+                private_write(folder / wav, _wav_bytes(self.kept_pcm))
+            takes.append({"role": "accepted", "try": self.kept.get("try"), "seed": self.kept.get("seed"), "wav": wav,
+                          "watch": self.watched, "numbers": {k: v for k, v in self.kept.items() if k not in ("try", "seed", "why")}})
+        private_write(folder / "pair.json", json.dumps({
+            "v": 1, "id": f"{folder.parent.name}/{folder.name}", "at": round(self.at, 3),
+            "when": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(self.at)), "path": self.path,
+            "voice": voice_mode(), "speaker": self.speaker, "temp": self.temp, "chat_id": self.chat_id,
+            "message_id": self.message_id, "sentence_idx": self.idx, "text": self.text, "chars": len(self.text),
+            "hold": self.hold if self.path == "stream" else "whole clip", "rate": RATE,
+            "rule": {"thresholds": self.t, "acts": self.acts, "baseline": self.cfg["baseline"],
+                     "s_per_char": round(self.spc, 4), "max_tries": self.max_tries},
+            "takes": takes, "recovered": self.kept is not None, "violent": self.violent, "audit": audit,
+        }, indent=2, ensure_ascii=False) + "\n")
+
+    def _keep_evidence(self, pair: str | None = None) -> str:  # noqa: D401 — the audit fortnight's folder for this sentence
         stamp = time.strftime("%Y-%m-%d_%Hh%Mm%S", time.localtime(self.at))
-        msg = re.sub(r"[^A-Za-z0-9]", "", self.message_id or "")[:8] or ("t" + secrets.token_hex(4))
+        msg = self._token()
         AUDIT_DIR.mkdir(parents=True, exist_ok=True)
         folder, n = AUDIT_DIR / f"{stamp}_{msg}", 2
         while folder.exists():
@@ -391,7 +621,7 @@ class Sentence:
             "path": self.path, "sentence_idx": self.idx, "temp": self.temp, "chat_id": self.chat_id,
             "message_id": self.message_id, "hold": self.hold, "chars": len(self.text),
             "s_per_char": round(self.spc, 4), "thresholds": self.t, "kills": self.kills, "kept": self.kept,
-            "recovered": self.kept is not None, "violent": self.violent,
+            "recovered": self.kept is not None, "violent": self.violent, "pair": pair,
         }, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
         return folder.name
 

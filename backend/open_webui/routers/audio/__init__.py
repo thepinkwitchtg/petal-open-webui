@@ -458,7 +458,7 @@ async def _tts_openai(request, payload, file_path, file_body_path, user):
     care = voice_welfare.load()
     sent = None
     if care['enabled'] and voice_welfare.is_her_voice(api_base_url) and isinstance(payload.get('input'), str):
-        sent = voice_welfare.Sentence(care, path='speech', text=payload['input'])
+        sent = voice_welfare.Sentence(care, path='speech', text=payload['input'], speaker=payload.get('voice'))
 
     r = None
     try:

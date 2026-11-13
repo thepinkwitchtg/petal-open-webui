@@ -26,6 +26,12 @@ categories only (never a sentence of hers, never audio), so it's safe to paste a
         the takes that must always be caught (the first: the nov 13 2026 runaway). check re-judges
         every one with today's rule, and says when the live guard would have stopped it and what the
         ceiling would have let through. numbers only: they are never played, not even quietly
+
+  pairs [count | list | play <n|all> | verdict <n|1,3|2-5> ok|wrong | export | cap <mb>]
+        🎙️ the voice pairs every kill keeps for the next voice tune (pairs/<date>/, gold tier): the
+        killed take, the accepted resample, the sentence, seeds and numbers. verdicts become labels
+        (wrong flips a pair: the killed take is kept as her legit voice). export writes one folder
+        per voice (never mixed), outside Siren's takes, the garlic archive and any repo
 """
 
 from __future__ import annotations
@@ -41,6 +47,7 @@ import subprocess
 import sys
 import time
 import wave
+from collections import Counter
 from datetime import datetime
 from pathlib import Path
 
@@ -635,6 +642,10 @@ def cmd_status(a) -> int:
         print("   surge waits for her voice's numbers: ./petal-voice-welfare.sh baseline --since 2026-10-30")
     c = cfg["ceiling_dbfs"]
     print(f"   🛡️ ceiling: {f'{c} dBFS on everything that plays, awake or asleep (the limiter sits at {c - vc.MP3_HEADROOM_DB} dBFS so the mp3 stays under it)' if c is not None else 'OFF (ceiling_dbfs is null)'}")
+    cap = cfg["pairs_cap_mb"]
+    total, kept = voice_welfare.pairs_size()
+    print(f"   🎙️ pairs: {_n(len(kept), 'pair')} kept · {total / 1048576:.1f} MB of the {cap:g} MB cap (every kill keeps one: "
+          f"./petal-voice-welfare.sh pairs)" if cap else f"   🎙️ pairs: off (pairs_cap_mb 0) · {_n(len(kept), 'pair')} still kept")
     if not cfg["enabled"]:
         print("   ⚠️ asleep: only the ceiling stands between her ears and a broken or runaway take (wake: ./petal-voice-welfare.sh on airtight)")
     return 0
@@ -952,6 +963,10 @@ def cmd_verdict(a) -> int:
     for n in picks:
         voice_welfare._append(voice_welfare.VERDICTS_PATH, {"v": 1, "at": round(time.time()), "audit": items[n - 1]["folder"].name,
                                                              "verdict": word})
+        pair = items[n - 1]["nums"].get("pair")
+        if pair:  # 🎙️ the same verdict labels its training pair
+            voice_welfare.append_private(voice_welfare.PAIR_LABELS, {"v": 1, "at": round(time.time()), "pair": pair,
+                                                                      "verdict": word, "by": "audit"})
     print(f"🌸 {len(picks)} verdict(s) kept: {word}" + ("  (a false kill loosens the rule: tell Lane B / the master thread)" if word == "wrong" else ""))
     return 0
 
@@ -1012,6 +1027,12 @@ def cmd_stats(a) -> int:
         heard_v = [v[it["folder"].name]["verdict"] for it in items if it["folder"].name in v]
         L.append(f"- audit: {len(items)} kills kept for listening · heard {len(heard_v)} → "
                  f"{heard_v.count('ok')} confirmed bad · {_n(heard_v.count('wrong'), 'false kill')} · {len(items) - len(heard_v)} not heard yet")
+    pitems = pair_items()
+    if pitems:
+        lab = Counter(it["label"] for it in pitems)
+        total, _ = voice_welfare.pairs_size()
+        L.append(f"- 🎙️ voice pairs: {len(pitems)} kept ({total / 1048576:.1f} MB) · confirmed {lab['confirmed']} · "
+                 f"flipped {lab['flipped']} · not heard yet {lab['guard']} · ⚡ {sum(1 for it in pitems if it['doc'].get('violent'))}")
     sw = _sweep_state()
     if sw:
         L.append(f"- last cache sweep ({sw.get('when', '?')}): today's rule would kill {len(sw['items'])} of "
@@ -1024,6 +1045,300 @@ def cmd_stats(a) -> int:
                  f"{sum(1 for g in got if g.get('deleted'))} swept away")
     print("\n".join(L) + "\n")
     return 0
+
+
+# ── 🎙️ voice pairs: count · list · play · verdict · export · cap ────────────
+LABEL_OF = {"ok": "confirmed", "wrong": "flipped"}  # no verdict yet: "guard" (the guard's own call)
+
+
+def pair_items() -> list[dict]:
+    root = voice_welfare.PAIRS_DIR
+    if not root.exists():
+        return []
+    labels = voice_welfare.pair_labels()
+    items = []
+    for f in sorted(root.glob("*/*/pair.json")):
+        try:
+            doc = json.loads(f.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        v = (labels.get(doc.get("id")) or {}).get("verdict")
+        items.append({"n": len(items) + 1, "folder": f.parent, "doc": doc, "verdict": v, "label": LABEL_OF.get(v, "guard")})
+    return items
+
+
+def _killed(doc: dict) -> list[dict]:
+    return [t for t in doc.get("takes") or [] if t.get("role") == "killed"]
+
+
+def _accepted(doc: dict) -> dict | None:
+    return next((t for t in doc.get("takes") or [] if t.get("role") == "accepted"), None)
+
+
+def _pairs_count(a) -> int:
+    cfg = voice_welfare.load()
+    items = pair_items()
+    total, _ = voice_welfare.pairs_size()
+    cap = cfg["pairs_cap_mb"]
+    print(f"🎙️ voice pairs · {_n(len(items), 'pair')} · "
+          + (f"{total / 1048576:.1f} MB of the {cap:g} MB cap" if cap else "OFF (pairs_cap_mb 0): no new pairs")
+          + f" · {voice_welfare.PAIRS_DIR}")
+    if not items:
+        print("   none yet: from now on every kill keeps one (the killed take, the accepted resample, the sentence, its numbers)")
+        return 0
+    killed = sum(1 for it in items for t in _killed(it["doc"]) if t.get("wav"))
+    acc = sum(1 for it in items if (_accepted(it["doc"]) or {}).get("wav"))
+    print(f"   {_n(killed, 'killed take')} · {_n(acc, 'accepted resample')} · "
+          f"{_n(sum(1 for it in items if not it['doc'].get('recovered')), 'skipped sentence')} (negatives only)")
+    lab = Counter(it["label"] for it in items)
+    print(f"   labels: not heard yet {lab['guard']} · confirmed {lab['confirmed']} · flipped {lab['flipped']} "
+          "(a false kill: its killed take is kept as her legit voice)")
+    print("   voices: " + " · ".join(f"{k} {v}" for k, v in sorted(Counter(it['doc'].get('voice') or 'unknown' for it in items).items()))
+          + " (an export never mixes them)")
+    print("   killed for: " + " · ".join(f"{k} {v}" for k, v in
+                                       Counter(r for it in items for t in _killed(it["doc"]) for r in t.get("why") or []).most_common()))
+    vio = sum(1 for it in items if it["doc"].get("violent"))
+    if vio:
+        print(f"   ⚡ violent: {_n(vio, 'pair')} (kept, numbers only, never auto-played)")
+    saved = sum(1 for it in items if it["doc"].get("temp") is False)
+    print(f"   from saved chats {saved} · from temp chats or speaker clips {len(items) - saved} (kept without chat links)")
+    print(f"   oldest {items[0]['doc'].get('when', '?')[:10]} · newest {items[-1]['doc'].get('when', '?')[:10]}")
+    return 0
+
+
+def _pairs_list(a) -> int:
+    items = pair_items()
+    if not items:
+        return _pairs_count(a)
+    shown = items if a.all else items[-20:]
+    print(f"{'n':>4}  {'when':<11}  {'path':<6}  {'voice':<7}  {'killed for':<20}  {'chars':>5}  {'killed s':>9}  {'kept s':>6}  label")
+    for it in shown:
+        d = it["doc"]
+        ks, acc = _killed(d), _accepted(d)
+        why = ", ".join("+".join(t.get("why") or ["?"]) for t in ks) + (" ⚡" if d.get("violent") else "")
+        secs = [(t.get("numbers") or {}).get("audio_s") or 0 for t in ks]
+        ks_s = fmt(secs[0], 1) if len(secs) == 1 else f"{len(secs)}×{fmt(max(secs), 1)}"
+        kept_s = fmt((acc.get("numbers") or {}).get("audio_s"), 1) if acc else "✗"
+        print(f"{it['n']:>4}  {str(d.get('when', ''))[5:16]:<11}  {d.get('path', '?'):<6}  {d.get('voice') or '—':<7}  "
+              f"{why[:20]:<20}  {d.get('chars', 0):>5}  {ks_s[:9]:>9}  {kept_s:>6}  {it['label']}")
+    if len(items) > len(shown):
+        print(f"   (the {len(items) - len(shown)} older ones: pairs list --all)")
+    print("   numbers only (⚡ violent ones are never auto-played) · listen: pairs play <n|all> · "
+          f"label: pairs verdict <n|1,3|2-5> ok|wrong\n   {VERDICT_HELP}")
+    return 0
+
+
+def _pairs_play(a) -> int:
+    items = pair_items()
+    if not items:
+        print("🎙️ no pairs yet")
+        return 0
+    spec = a.args[1] if len(a.args) > 1 else "all"
+    picks = _picks(spec, len(items)) if spec != "all" else [it["n"] for it in items if it["verdict"] is None]
+    if not picks:
+        print("🌸 every pair has been heard and labeled")
+        return 0
+    try:
+        for n in picks:
+            it = items[n - 1]
+            d, f = it["doc"], it["folder"]
+            print(f"\n── #{n} · {str(d.get('when', ''))[5:16]} · {d.get('path')} · {d.get('voice') or '—'} · "
+                  f"{d.get('chars')} chars · {it['label']} ──")
+            if not a.kept:
+                hinted = False
+                for t in _killed(d):
+                    nums = t.get("numbers") or {}
+                    if not t.get("wav"):
+                        print(f"🔇 killed take {t['try']}: {'+'.join(t.get('why') or [])} · no sound to keep ({t.get('error')})")
+                        continue
+                    print(f"🔇 killed take {t['try']}: {'+'.join(t.get('why') or [])} · {nums.get('audio_s')} s"
+                          + (f" · hot {fmt(nums.get('hot_s'))} s · peak {nums.get('peak_db')} dBFS" if t.get("violent") else ""))
+                    if t.get("violent") and not a.violent:
+                        if not hinted:
+                            print(f"   ⚡ violent: numbers only, never played. to hear it anyway, held quiet at {QUIET_DB} dBFS: "
+                                  f"./petal-voice-welfare.sh pairs play {n} --violent")
+                            hinted = True
+                        continue
+                    play_file(f / t["wav"], quiet_db=QUIET_DB if t.get("violent") else None)
+            acc = _accepted(d)
+            if not a.killed and acc and acc.get("wav"):
+                print(f"🌸 the resample that was kept · {(acc.get('numbers') or {}).get('audio_s')} s")
+                play_file(f / acc["wav"])
+            elif not d.get("recovered"):
+                print("🤍 no take was kept: this sentence was a clean silence")
+    except KeyboardInterrupt:
+        print("\n(stopped)")
+    print(f"\nlabel: ./petal-voice-welfare.sh pairs verdict <n|1,3|2-5> ok|wrong   ({VERDICT_HELP})")
+    return 0
+
+
+def _pairs_verdict(a) -> int:
+    if len(a.args) < 3 or VERDICT_WORDS.get(a.args[2].lower()) is None:
+        print(f"✗ pairs verdict <n|1,3|2-5|all> ok|wrong — {VERDICT_HELP}")
+        return 1
+    word = VERDICT_WORDS[a.args[2].lower()]
+    items = pair_items()
+    picks = _picks(a.args[1], len(items))
+    for n in picks:
+        doc = items[n - 1]["doc"]
+        voice_welfare.append_private(voice_welfare.PAIR_LABELS, {"v": 1, "at": round(time.time()), "pair": doc["id"],
+                                                                  "verdict": word, "by": "pairs"})
+        if doc.get("audit"):  # the audit fortnight's list hears the same verdict
+            voice_welfare._append(voice_welfare.VERDICTS_PATH, {"v": 1, "at": round(time.time()), "audit": doc["audit"],
+                                                                 "verdict": word, "by": "pairs"})
+    print(f"🌸 {_n(len(picks), 'pair')} labeled {LABEL_OF[word]}"
+          + (" · flipped: the killed take is kept as her legit voice, never learned as bad (and the rule should loosen: "
+             "tell Lane B / the master thread)" if word == "wrong" else ""))
+    return 0
+
+
+def _export_refusal(out: Path) -> str | None:
+    """an export holds her voice and her words: never inside a repo, never mixed into Siren's approved
+    takes or the garlic archive"""
+    r = out.expanduser().resolve()
+    if any("siren" in part.lower() or "garlic" in part.lower() for part in r.parts):
+        return "the pairs stay apart from Siren's approved takes and the garlic archive: pick a folder outside them"
+    for parent in (r, *r.parents):
+        if (parent / ".git").exists():
+            return f"{parent} is a repo: her voice and her words never go inside a project folder"
+    if r.exists() and any(r.iterdir()):
+        return f"{r} isn't empty: an export is always written into a fresh folder"
+    return None
+
+
+EXPORT_SCHEMA = {
+    "kind": "preference (chosen = the accepted resample, rejected = the killed take) · rejected-only (the sentence was "
+            "skipped: no take was kept, a negative on its own) · legit (a false kill her verdict flipped: every take in "
+            "it is her legit voice, nothing in it is ever rejected)",
+    "label": "guard (the guard's own call, not heard yet) · confirmed (her verdict: the kill was right) · flipped (her "
+             "verdict: a false kill)",
+    "text": "the sentence exactly as the voice read it (after the sieve)",
+    "voice": "which body made it: chat (vLLM-Omni) · studio (qwen-tts) · unknown (the launcher couldn't say). one folder each",
+    "speaker": "the voice name the request asked for",
+    "seed_killed / seed_accepted": "the seed each take was generated with (any take can be asked again exactly)",
+    "numbers_killed / numbers_accepted": "the guard's measures (voice_measure.py) for each take",
+    "why": "why the take was killed: loop · stretch · clip · surge · broken (⚡ clip/surge = violent)",
+    "audio": "24 kHz mono 16-bit wav, paths relative to the voice's folder",
+}
+
+
+def _pairs_export(a) -> int:
+    items = pair_items()
+    if a.since:
+        items = [it for it in items if it["doc"].get("id", "")[:10] >= a.since]
+    if a.voice != "all":
+        items = [it for it in items if (it["doc"].get("voice") or "unknown") == a.voice]
+    if a.labeled:
+        items = [it for it in items if it["verdict"] is not None]
+    if a.saved_only:
+        items = [it for it in items if it["doc"].get("temp") is False]
+    if not items:
+        print("🎙️ nothing to export with those filters")
+        return 1
+    out = Path(a.out).expanduser() if a.out else voice_welfare.PAIRS_EXPORT_DIR / time.strftime("%Y-%m-%d_%Hh%Mm%S")
+    why = _export_refusal(out)
+    if why:
+        print(f"✗ {why}")
+        return 1
+    voice_welfare.private_dir(out)
+    voice_welfare.private_write(out / ".petalprivate", "gold tier · petal-voice pairs export (her voice, her words) · never zipped, never shared\n")
+    rows: dict[str, list[dict]] = {}
+    skipped_violent = exported = 0
+    for it in items:
+        d, f = it["doc"], it["folder"]
+        kills = [t for t in _killed(d) if t.get("wav") and (f / t["wav"]).exists()]
+        if a.no_violent:
+            skipped_violent += sum(1 for t in kills if t.get("violent"))
+            kills = [t for t in kills if not t.get("violent")]
+        if not kills:  # nothing of this pair goes out: none of its files are copied either
+            continue
+        exported += 1
+        voice = d.get("voice") or "unknown"
+        vdir = voice_welfare.private_dir(out / voice)
+        adir = voice_welfare.private_dir(vdir / "audio")
+        flat = d["id"].replace("/", "_")
+        acc = _accepted(d)
+        acc_rel = None
+        if acc and acc.get("wav") and (f / acc["wav"]).exists():
+            acc_rel = f"audio/{flat}-accepted.wav"
+            voice_welfare.private_write(adir / f"{flat}-accepted.wav", (f / acc["wav"]).read_bytes())
+        for t in kills:
+            rel = f"audio/{flat}-killed-{t['try']}.wav"
+            voice_welfare.private_write(adir / f"{flat}-killed-{t['try']}.wav", (f / t["wav"]).read_bytes())
+            row = {"id": d["id"], "row": f"{d['id']}#{t['try']}", "label": it["label"], "text": d.get("text"),
+                   "chars": d.get("chars"), "voice": voice, "speaker": d.get("speaker"), "path": d.get("path"),
+                   "temp": d.get("temp"), "when": d.get("when"), "why": t.get("why"), "violent": bool(t.get("violent")),
+                   "error": t.get("error"), "seed_killed": t.get("seed"), "seed_accepted": (acc or {}).get("seed"),
+                   "numbers_killed": t.get("numbers"), "numbers_accepted": (acc or {}).get("numbers")}
+            if it["label"] == "flipped":
+                row.update({"kind": "legit", "legit": [rel] + ([acc_rel] if acc_rel else [])})
+            elif acc_rel:
+                row.update({"kind": "preference", "chosen": acc_rel, "rejected": rel})
+            else:
+                row.update({"kind": "rejected-only", "rejected": rel})
+            rows.setdefault(voice, []).append(row)
+    counts = {v: dict(Counter(r["kind"] for r in rs)) for v, rs in rows.items()}
+    for voice, rs in rows.items():
+        voice_welfare.private_write(out / voice / "pairs.jsonl", "".join(json.dumps(r, ensure_ascii=False) + "\n" for r in rs))
+    voice_welfare.private_write(out / "export.json", json.dumps({
+        "v": 1, "when": time.strftime("%Y-%m-%d %H:%M:%S"), "from": str(voice_welfare.PAIRS_DIR),
+        "filters": {"since": a.since, "voice": a.voice, "labeled": a.labeled, "no_violent": a.no_violent,
+                    "saved_only": a.saved_only},
+        "pairs": exported, "rows": counts, "schema": EXPORT_SCHEMA,
+        "note": "gold tier: her voice and her words. one folder per voice, never mixed. kept apart from Siren's "
+                "approved takes (the SFT corpus) and the garlic archive.",
+    }, indent=2, ensure_ascii=False) + "\n")
+    if not exported:
+        print("🎙️ nothing left to export once the violent takes were left out")
+        shutil.rmtree(out, ignore_errors=True)
+        return 1
+    print(f"🎙️ exported {_n(exported, 'pair')} → {out}")
+    for voice, c in counts.items():
+        print(f"   {voice}/pairs.jsonl · " + " · ".join(f"{k} {v}" for k, v in sorted(c.items())))
+    if skipped_violent:
+        print(f"   ⚡ {_n(skipped_violent, 'violent take')} left out (--no-violent)")
+    print("   gold tier (700/600) · numbers here, her words only inside the files")
+    return 0
+
+
+def _pairs_cap(a) -> int:
+    cfg = voice_welfare.load()
+    if len(a.args) < 2:
+        print(f"🎙️ pairs cap: {cfg['pairs_cap_mb']:g} MB (0 keeps no new pairs) · set: ./petal-voice-welfare.sh pairs cap <mb>")
+        return 0
+    try:
+        mb = float(a.args[1])
+    except ValueError:
+        print("✗ pairs cap <mb>   (e.g. 8192; 0 keeps no new pairs, the ones kept stay)")
+        return 1
+    if mb > 0:
+        total, kept = voice_welfare.pairs_size()
+        over = total - int(mb * 1048576)
+        if over > 0:
+            n_go, freed = voice_welfare.prune_pairs({**cfg, "pairs_cap_mb": mb}, dry=True)
+            print(f"   at {mb:g} MB, the {_n(n_go, 'oldest pair')} ({freed / 1048576:.1f} MB) would go (her labeled ones last)")
+            if not a.yes and _ask("   lower the cap and let them go? [y/N] ") != "y":
+                print("   nothing changed" + ("" if sys.stdin.isatty() else " (not a terminal: add --yes)"))
+                return 1
+    try:
+        cfg = voice_welfare.set_knobs(by="petal-voice-welfare.sh pairs cap", pairs_cap_mb=mb)
+    except ValueError as e:
+        print(f"✗ {e}")
+        return 1
+    n, freed = voice_welfare.prune_pairs(cfg)
+    print(f"🎙️ pairs cap {mb:g} MB" + (f" · the {_n(n, 'oldest pair')} went ({freed / 1048576:.1f} MB)" if n else "")
+          + (" · 0: no new pairs (the ones kept stay)" if mb == 0 else ""))
+    return 0
+
+
+def cmd_pairs(a) -> int:
+    action = (a.args[0] if a.args else "count").lower()
+    fn = {"count": _pairs_count, "list": _pairs_list, "play": _pairs_play, "verdict": _pairs_verdict,
+          "export": _pairs_export, "cap": _pairs_cap}.get(action)
+    if fn is None:
+        print("✗ pairs [count | list | play <n|all> | verdict <n|1,3|2-5> ok|wrong | export | cap <mb>]")
+        return 1
+    return fn(a)
 
 
 # ── the cache sweep: bad takes already sitting in OWUI's speech cache ────────
@@ -1359,6 +1674,10 @@ def cmd_never(a) -> int:
 
 
 def main(argv=None) -> int:
+    import signal
+
+    if hasattr(signal, "SIGPIPE"):  # piped into head or less: end quietly, never with a traceback
+        signal.signal(signal.SIGPIPE, signal.SIG_DFL)
     p = argparse.ArgumentParser(prog="petal-voice-welfare.sh", description="🕊️ voice welfare tools (numbers only)")
     sub = p.add_subparsers(dest="cmd", required=True)
     c = sub.add_parser("calibrate", help="re-hear every incident (+ the speech cache) and size the thresholds")
@@ -1409,6 +1728,19 @@ def main(argv=None) -> int:
     sw.add_argument("--cache-dir")
     sw.add_argument("--yes", action="store_true")
     sw.add_argument("--violent", action="store_true", help=f"play violent ones too, held quiet at {QUIET_DB} dBFS")
+    pr = sub.add_parser("pairs", help="voice pairs for training: count · list · play · verdict · export · cap")
+    pr.add_argument("args", nargs="*", help="count (default) · list · play <n|all> · verdict <n> ok|wrong · export · cap <mb>")
+    pr.add_argument("--all", action="store_true", help="list: every pair, not only the last 20")
+    pr.add_argument("--violent", action="store_true", help=f"play: violent takes too, held quiet at {QUIET_DB} dBFS")
+    pr.add_argument("--killed", action="store_true", help="play: only the killed take(s)")
+    pr.add_argument("--kept", action="store_true", help="play: only the resample that was kept")
+    pr.add_argument("--out", help="export: a fresh folder (default Petal-App-Data/petal-voice/pairs-export/<when>)")
+    pr.add_argument("--since", help="export: from this day on (YYYY-MM-DD)")
+    pr.add_argument("--voice", choices=["chat", "studio", "unknown", "all"], default="all", help="export: one voice only")
+    pr.add_argument("--labeled", action="store_true", help="export: only pairs she has heard and labeled")
+    pr.add_argument("--no-violent", action="store_true", help="export: leave violent takes out")
+    pr.add_argument("--saved-only", action="store_true", help="export: only pairs from saved chats")
+    pr.add_argument("--yes", action="store_true", help="cap: lower it without asking")
     nv = sub.add_parser("never-again", help="the takes that must always be caught: check · list · add")
     nv.add_argument("args", nargs="*", help="check (default) · list · add <incident|last> <idx> · add <file.wav>")
     nv.add_argument("--chars", type=int, help="add <file.wav>: how many characters the voice was fed")
@@ -1418,7 +1750,7 @@ def main(argv=None) -> int:
     return {"calibrate": cmd_calibrate, "holdback": cmd_holdback, "status": cmd_status, "on": cmd_on, "off": cmd_off,
             "baseline": cmd_baseline, "hold": cmd_hold, "audit": cmd_audit, "rule": cmd_rule, "act": cmd_act,
             "list": cmd_list, "play": cmd_play, "verdict": cmd_verdict,
-            "stats": cmd_stats, "sweep": cmd_sweep, "never-again": cmd_never}[a.cmd](a)
+            "stats": cmd_stats, "sweep": cmd_sweep, "never-again": cmd_never, "pairs": cmd_pairs}[a.cmd](a)
 
 
 if __name__ == "__main__":
