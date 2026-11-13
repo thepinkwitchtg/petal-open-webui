@@ -53,10 +53,15 @@
 	export let allowEmbeds = false;
 	export let allowHtml = true;
 	export let allowRemoteContent = true;
+	// 🌸 petal (A17): a reply's blockquotes are set as display quotes (ContentRenderer asks for it)
+	export let displayQuotes = false;
 
 	setContext('markdown', {
 		get allowRemoteContent() {
 			return allowRemoteContent;
+		},
+		get displayQuotes() {
+			return displayQuotes;
 		}
 	});
 

@@ -418,7 +418,7 @@
 										<Skeleton />
 									{:else}
 										<div class="markdown-prose">
-											<Markdown id={`merged`} content={message.content ?? ''} />
+											<Markdown id={`merged`} content={message.content ?? ''} displayQuotes />
 										</div>
 									{/if}
 								</div>
