@@ -22,6 +22,7 @@
 	import { WEBUI_BASE_URL } from '$lib/constants';
 	import { skills, terminalSkills } from '$lib/stores';
 	import { copyToClipboard, safeLinkUrl, unescapeHtml } from '$lib/utils';
+	import { quoteLines } from '$lib/utils/petal-quote';
 
 	import Image from '$lib/components/common/Image.svelte';
 	import KatexRenderer from './KatexRenderer.svelte';
@@ -36,7 +37,7 @@
 	export let id: string;
 	export let done = true;
 	export let tokens: Token[];
-	export let sourceIds = [];
+	export let sourceIds: string[] = [];
 	export let onSourceClick: Function = () => {};
 
 	/**
@@ -96,12 +97,30 @@
 		markdown?.document && tokens.some((token) => token.type === 'html')
 			? DOMPurify.sanitize(markdown.parseInline?.(tokens) ?? '')
 			: null;
+
+	// 🌸 petal (A17): in a reply's display quote each line between breaks is its own block, so a line
+	// that wraps on a narrow screen wraps evenly instead of leaving one word alone
+	const inQuote = getContext('petal-quote') === true;
+	$: lines =
+		inQuote && inlineHtml === null && tokens.some((token) => token.type === 'br')
+			? quoteLines(tokens)
+			: null;
 </script>
 
 <!-- Keep paired inline HTML tags together; sanitizing individual tags loses their contents. -->
-{#if inlineHtml !== null}
+{#if lines}
+	{#each lines as line, lineIdx (lineIdx)}{#if line.length}<span class="pq-line"
+				><svelte:self
+					id={`${id}-l${lineIdx}`}
+					tokens={line}
+					{done}
+					{sourceIds}
+					{onSourceClick}
+				/></span
+			>{:else}<br />{/if}{/each}
+{:else if inlineHtml !== null}
 	{@html inlineHtml}
-{/if}{#each inlineHtml === null ? tokens : [] as token, tokenIdx (tokenIdx)}
+{/if}{#each inlineHtml === null && !lines ? tokens : [] as token, tokenIdx (tokenIdx)}
 	{#if token.type === 'escape'}
 		{unescapeHtml(token.text)}
 	{:else if token.type === 'html'}

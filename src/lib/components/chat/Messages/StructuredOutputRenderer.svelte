@@ -30,6 +30,8 @@
 	export let commentToolbarId: string | undefined = undefined;
 	export let compactPreview = false;
 	export let renderMarkdown = true;
+	// 🌸 petal (A17): a chat reply's quotes are display quotes (ContentRenderer asks; channels don't)
+	export let displayQuotes = false;
 	export let editCodeBlock = true;
 	export let topPadding = false;
 	export let allowEmbeds = false;
@@ -99,6 +101,7 @@
 					{messageId}
 					content={formatMessageContent(displayItem.text)}
 					{model}
+					{displayQuotes}
 					{save}
 					{preview}
 					{compactPreview}
