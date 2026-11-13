@@ -90,6 +90,34 @@
 
 	let temporaryChatByDefault = false;
 	let chatFadeStreamingText = true;
+	// ✨ petal (A18 + A18b): how a reply's display quotes move
+	type QuoteFx = 'still' | 'shimmer' | 'candy' | 'hypnotic';
+	let quoteFx: QuoteFx = 'candy';
+	const quoteFxChoices: { value: QuoteFx; label: string }[] = [
+		{ value: 'still', label: 'still' },
+		{ value: 'shimmer', label: 'shimmer' },
+		{ value: 'candy', label: 'candy' },
+		{ value: 'hypnotic', label: 'candy hypnotic' }
+	];
+	let quoteFxGroup: HTMLElement;
+	const setQuoteFx = (value: QuoteFx) => {
+		quoteFx = value;
+		saveSettings({ quoteFx });
+	};
+	// a radio group: the arrows walk the choices and pick as they go (the keyboard never needs the mouse)
+	const quoteFxKeys = (e: KeyboardEvent) => {
+		const step = ({ ArrowRight: 1, ArrowDown: 1, ArrowLeft: -1, ArrowUp: -1 } as Record<string, number>)[
+			e.key
+		];
+		if (!step) return;
+		e.preventDefault();
+		const i = quoteFxChoices.findIndex((c) => c.value === quoteFx);
+		const next = quoteFxChoices[(i + step + quoteFxChoices.length) % quoteFxChoices.length];
+		setQuoteFx(next.value);
+		setTimeout(() =>
+			quoteFxGroup?.querySelector<HTMLElement>(`[data-value="${next.value}"]`)?.focus()
+		);
+	};
 	let collapseCodeBlocks = false;
 	let renderMarkdownInUserMessages = true;
 	let renderMarkdownInAssistantMessages = true;
@@ -352,6 +380,11 @@
 
 		displayMultiModelResponsesInTabs = currentSettings?.displayMultiModelResponsesInTabs ?? false;
 		chatFadeStreamingText = currentSettings?.chatFadeStreamingText ?? true;
+		quoteFx = ['still', 'shimmer', 'candy', 'hypnotic'].includes(currentSettings?.quoteFx)
+			? currentSettings.quoteFx
+			: currentSettings?.quoteShimmer === false
+				? 'still'
+				: 'candy';
 
 		richTextInput = currentSettings?.richTextInput ?? true;
 		showFormattingToolbar = currentSettings?.showFormattingToolbar ?? false;
@@ -1055,6 +1088,46 @@
 		</div>
 		<p class={settingDescriptionClass}>
 			{$i18n.t('settings.personal.interface.fadeEffectForStreamingText.description')}
+		</p>
+	</div>
+
+	<!-- ✨ petal (A18 + A18b): how a reply's display quotes move -->
+	<div>
+		<div class={settingRowClass}>
+			<span id="quote-fx-label" class={settingLabelClass}>{$i18n.t('Quotes')}</span>
+
+			<div class={settingControlClass}>
+				<div
+					bind:this={quoteFxGroup}
+					role="radiogroup"
+					tabindex="-1"
+					aria-labelledby="quote-fx-label"
+					class="flex flex-wrap items-center justify-end gap-x-1"
+					on:keydown={quoteFxKeys}
+				>
+					{#each quoteFxChoices as c, i}
+						{#if i}<span aria-hidden="true" class="text-xs text-gray-400 dark:text-gray-600"
+								>·</span
+							>{/if}
+						<button
+							type="button"
+							role="radio"
+							data-value={c.value}
+							aria-checked={quoteFx === c.value}
+							tabindex={quoteFx === c.value ? 0 : -1}
+							class="{actionButtonClass} whitespace-nowrap {quoteFx === c.value
+								? 'font-medium text-gray-900 underline decoration-1 underline-offset-4 dark:text-white'
+								: ''}"
+							on:click={() => setQuoteFx(c.value)}>{$i18n.t(c.label)}</button
+						>
+					{/each}
+				</div>
+			</div>
+		</div>
+		<p class={settingDescriptionClass}>
+			{$i18n.t(
+				"How a quote in a reply moves. Shimmer: a light plays once as it lands, instantly. Candy: the rig's quote effect blooms it once (hypnotic: it keeps flowing while you're here, resting after 20 seconds without input), and a hover or a tap replays it. Candy keeps the shimmer for long quotes and whenever the effect is asleep. Reduced motion keeps everything still."
+			)}
 		</p>
 	</div>
 

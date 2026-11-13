@@ -339,7 +339,7 @@
 			<AlertRenderer {token} {alert} {allowEmbeds} />
 		{:else}
 			<!-- 🌸 petal (A17): a reply's quote is set as display type; every other quote keeps the plain look -->
-			<PetalQuote display={!!markdown?.displayQuotes}>
+			<PetalQuote display={!!markdown?.displayQuotes} raw={token.raw} {done}>
 				<svelte:self
 					id={`${id}-${tokenIdx}`}
 					{chatId}

@@ -310,6 +310,8 @@ type Settings = {
 	webSearch?: any;
 	memory?: boolean;
 	petalSight?: { thumbs?: boolean; notes?: boolean; debug?: boolean }; // 🌸👁 what Petal sees (slice A8)
+	quoteFx?: 'still' | 'shimmer' | 'candy' | 'hypnotic'; // ✨ how a reply's display quotes move: still · shimmer · candy · candy hypnotic (slices A18 + A18b)
+	quoteShimmer?: boolean; // A18's switch, read once for the move to quoteFx (false = still)
 	autoTags?: boolean;
 	autoFollowUps?: boolean;
 	splitLargeChunks?(body: any, splitLargeChunks: any): unknown;
