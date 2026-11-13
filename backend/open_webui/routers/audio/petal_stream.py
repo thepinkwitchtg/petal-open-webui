@@ -4,8 +4,9 @@
 OWUI speaks one clip per sentence. between two clips the phone sees a page playing nothing,
 freezes it, and the next sentence never starts. here she becomes a little radio station:
 
-  POST /api/v1/audio/petal-stream        {voice, parts: [{text, para_end}]}  → {id}
-  GET  /api/v1/audio/petal-stream/{id}   one continuous audio/mpeg stream, played by one <audio>
+  POST /api/v1/audio/petal-stream               {voice, parts: [{text, para_end}], meta}  → {id, trace, events}
+  GET  /api/v1/audio/petal-stream/{id}          one continuous audio/mpeg stream, played by one <audio>
+  GET  /api/v1/audio/petal-stream/{id}/events   📡 what she's saying, sentence by sentence (voice_events.py)
 
 behind the GET, each sentence is asked of the omni voice (vLLM-Omni, streaming pcm) while the
 previous one is still playing, and each take is a fresh generation, so she varies per sentence.
@@ -49,12 +50,13 @@ from pathlib import Path
 
 import numpy as np
 
-try:  # 🎀 the tts sieve + 🚩 the voice trace + 🕊️ voice welfare + 🛡️ the ceiling, inside OWUI or tasted on its own
+try:  # 🎀 the tts sieve + 🚩 the voice trace + 🕊️ voice welfare + 🛡️ the ceiling + 📡 voice events, in OWUI or alone
     from open_webui.routers.audio.tts_sieve import load_config as sieve_config, sieve
-    from open_webui.routers.audio import voice_ceiling, voice_trace, voice_welfare
+    from open_webui.routers.audio import voice_ceiling, voice_events, voice_trace, voice_welfare
 except ImportError:
     from tts_sieve import load_config as sieve_config, sieve
     import voice_ceiling
+    import voice_events
     import voice_trace
     import voice_welfare
 
@@ -259,9 +261,12 @@ async def produce(session, parts: list[dict], voice: str, q: asyncio.Queue, c: d
                     if upto <= released and not final:
                         return
                     piece = np.frombuffer(bytes(buf[released:upto]), dtype=np.int16)
-                    released = max(released, upto)
+                    was, released = released, max(released, upto)
                     if not len(piece):
                         return
+                    if was == 0:  # 📡 this take's first sample is next: the page hears of it first
+                        whole = final and released >= len(buf)
+                        await q.put(voice_events.Saying(i, part["text"], len(piece) / RATE if whole else None))
                     if first:
                         piece, first = fade(piece, head_n, out=False), False
                     if final and shaped and tail_hold:
@@ -324,6 +329,8 @@ async def produce(session, parts: list[dict], voice: str, q: asyncio.Queue, c: d
                     sent.kill(w, bytes(buf), heard_s=released / (2 * RATE), broken=broke)
                     if take:
                         take.kills.append(why)
+                    if released:  # 📡 what went out early was heard: the page learns how long it lasted
+                        await q.put(voice_events.Said(i, released / (2 * RATE)))
                     if not sent.spent:
                         continue  # a fresh take of the very same sentence
                     await put(silence(care["skip_silence_ms"]))  # skipped: a clean silence, never the loop
@@ -333,6 +340,8 @@ async def produce(session, parts: list[dict], voice: str, q: asyncio.Queue, c: d
                     if sent and buf:
                         sent.keep(w, bytes(buf))
                     await out(len(buf), final=True)
+                if released:
+                    await q.put(voice_events.Said(i, released / (2 * RATE)))  # 📡 its exact length, as heard
                 if take and buf and tr.room():
                     take.pcm += buf  # 🚩 the take as the voice made it (the ceiling only touches what reaches her ears)
                 break
@@ -371,10 +380,13 @@ class Encoder:
         return bytes(self.e.flush())
 
 
-async def station(session, parts: list[dict], voice: str, tr=None):
+async def station(session, parts: list[dict], voice: str, tr=None, events=None):
     """yields mp3 bytes. keeps a clock of how much audio the listener already has; when the voice
     is late *between* sentences and that cushion runs low, a little quiet goes out so the player
-    never starves. inside a sentence it only ever waits."""
+    never starves. inside a sentence it only ever waits.
+
+    📡 events (a voice_events.Channel): each sentence is told where it sits on the player's clock
+    the moment that's known, then end (or stop, if the stream is cut short)."""
     c = cadence()
     enc = Encoder(c["bitrate_kbps"])
     ceil = voice_ceiling.Ceiling(voice_welfare.load()["ceiling_dbfs"])  # 🛡️ nothing that plays goes above it
@@ -389,12 +401,23 @@ async def station(session, parts: list[dict], voice: str, tr=None):
     voice_task = asyncio.create_task(produce(session, parts, voice, q, c, tr, flow))
     guard = c["underrun_guard_ms"] / 1000
     pi, completed = 0, False  # 🚩 which sentence is on air, and whether she got to the end
+    saying, reason = None, "gone"  # 📡 the take about to be heard · why a stream ended early
+    if events is not None:
+        events.started = True
+
+    def tell(s: dict, seconds: float) -> None:
+        s["told"] = True
+        if events is not None:
+            m = s["m"]
+            events.publish("sentence", idx=m.idx, text=m.text, start=voice_events.clock(s["start"]),
+                           duration=round(seconds, 3))
 
     def heard(b: bytes) -> bytes:
         if tr and b and tr.room():
             tr.heard += b
         return b
 
+    sent = 0.0
     try:
         lead = silence(c["lead_in_ms"])
         sent = len(lead) / (2 * RATE)
@@ -425,6 +448,18 @@ async def station(session, parts: list[dict], voice: str, tr=None):
                 between = True
                 pi += 1
                 continue
+            if isinstance(pcm, voice_events.Saying):  # 📡 her next samples are this take's first
+                saying = {"m": pcm, "start": None, "told": False}
+                continue
+            if isinstance(pcm, voice_events.Said):  # 📡 the take is over: its exact length is known now
+                if saying and not saying["told"] and saying["start"] is not None:
+                    tell(saying, pcm.seconds)
+                saying = None
+                continue
+            if saying and not filler and saying["start"] is None:
+                saying["start"] = sent  # where the take's first sample sits in the stream
+                if saying["m"].seconds is not None:
+                    tell(saying, saying["m"].seconds)  # the whole take is here: the page knows at once
             take = tr.takes[pi] if tr and not filler and pi < len(tr.takes) else None
             if take and take.start_s is None:
                 take.start_s = round(sent, 3)
@@ -439,9 +474,18 @@ async def station(session, parts: list[dict], voice: str, tr=None):
             if out:
                 yield heard(out)
         out = enc.flush()
+        if events is not None:
+            events.publish("end", at=voice_events.clock(sent))
         if out:
             yield heard(out)
+    except Exception:
+        reason = "broken"
+        raise
     finally:
+        if events is not None:
+            if not completed:
+                events.publish("stop", at=voice_events.clock(sent), reason=reason)
+            events.close()
         if ceil.touched and tr:
             tr.ceiling = {"dbfs": ceil.dbfs, "touched_s": round(ceil.touched_s, 3), "peak_in_db": ceil.peak_in_db}
         if ceil.ran_hot:  # 🛡️ rare by design: one numbers-only line whenever something above the ceiling reached it
@@ -477,7 +521,7 @@ def clean_parts(raw) -> list[dict]:
 # ── OWUI routes ───────────────────────────────────────────────────────────────
 if __name__ != "__main__":
     from fastapi import APIRouter, Depends, HTTPException, Request
-    from fastapi.responses import StreamingResponse
+    from fastapi.responses import Response, StreamingResponse
 
     from open_webui.utils.auth import get_verified_user
     from open_webui.utils.session_pool import get_session
@@ -510,8 +554,11 @@ if __name__ != "__main__":
         _sweep()
         ticket = secrets.token_urlsafe(16)
         tr = voice_trace.open_trace(user.id, parts, voice[:128], body.get("meta"))  # 🚩 memory only, until flagged
-        _tickets[ticket] = {"t": time.monotonic(), "user": user.id, "parts": parts, "voice": voice[:128], "trace": tr}
-        return {"id": ticket, "trace": tr.id}
+        meta = body.get("meta") if isinstance(body.get("meta"), dict) else {}
+        ch = voice_events.open_channel(ticket, user.id, meta.get("message_id"))  # 📡 memory only, never written
+        _tickets[ticket] = {"t": time.monotonic(), "user": user.id, "parts": parts, "voice": voice[:128], "trace": tr,
+                            "events": ch}
+        return {"id": ticket, "trace": tr.id, "events": f"petal-stream/{ticket}/events"}
 
     @router.post("/petal-stream/flag")
     async def petal_stream_flag(request: Request, user=Depends(get_verified_user)):
@@ -539,9 +586,25 @@ if __name__ != "__main__":
             raise HTTPException(404, "this stream is gone")
         session = await get_session()
         return StreamingResponse(
-            station(session, entry["parts"], entry["voice"], entry.get("trace")),
+            station(session, entry["parts"], entry["voice"], entry.get("trace"), entry.get("events")),
             media_type="audio/mpeg",
             headers={"Cache-Control": "no-store", "Accept-Ranges": "none", "X-Accel-Buffering": "no"},
+        )
+
+    @router.get("/petal-stream/{ticket}/events")
+    async def petal_stream_events(ticket: str, request: Request, after: str | None = None,
+                                  user=Depends(get_verified_user)):
+        """📡 what she's saying, sentence by sentence, on the player's clock (voice_events.py)"""
+        ch = voice_events.channel(ticket)
+        if ch is None or ch.user != user.id:
+            raise HTTPException(404, "no such stream (or it ended long ago)")
+        n = voice_events.after_of(request.headers.get("last-event-id"), after)
+        if ch.closed and n >= len(ch.events):
+            return Response(status_code=204)  # she's done and you have it all: an EventSource stops asking
+        return StreamingResponse(
+            voice_events.sse(ch, n),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no"},
         )
 
 
