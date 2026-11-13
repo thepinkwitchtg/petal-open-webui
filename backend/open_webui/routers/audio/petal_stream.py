@@ -238,7 +238,8 @@ async def produce(session, parts: list[dict], voice: str, q: asyncio.Queue, c: d
                 await q.put(BOUNDARY)
                 continue
             sent = voice_welfare.Sentence(care, path="stream", text=text, idx=i, chat_id=meta.get("chat_id"),
-                                          message_id=meta.get("message_id"), temp=temp, hold=care["hold"]) \
+                                          message_id=meta.get("message_id"), temp=temp, hold=care["hold"],
+                                          speaker=voice or OMNI_MODEL) \
                 if care["enabled"] else None
             spoke = False
             if take:
