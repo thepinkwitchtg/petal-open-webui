@@ -21,6 +21,12 @@
 #     ./petal-voice-welfare.sh never-again add last 5        keep a take that must always be caught (numbers only, never played)
 #     ./petal-voice-welfare.sh never-again                   re-judge the whole set with today's rule (exit 1 if one gets through)
 #
+#   🎙️ voice pairs for the next voice tune (every kill keeps one, gold tier)
+#     ./petal-voice-welfare.sh pairs                         how many · labels · voices · size vs the cap
+#     ./petal-voice-welfare.sh pairs list | play [n|all]     numbers only · the killed take(s), then the resample (⚡ never auto-played)
+#     ./petal-voice-welfare.sh pairs verdict 1,3 ok          ok = the kill was right · wrong = a false kill (flips it: kept as her legit voice)
+#     ./petal-voice-welfare.sh pairs export [--labeled]      one folder per voice, never mixed · pairs cap <mb> to resize
+#
 #   diagnostics:  calibrate [--cache --since 2026-10-30] · holdback
 #
 # chmod +x petal-voice-welfare.sh   (once)
@@ -32,6 +38,6 @@ TOOLS="$HERE/backend/open_webui/routers/audio/welfare_tools.py"
 
 case "${1:-help}" in
   calibrate|sweep|baseline|never-again) cmd="$1"; shift; nice -n 10 "$PY" "$TOOLS" "$cmd" "$@" ;;
-  holdback|status|on|off|hold|audit|rule|act|list|play|verdict|stats) "$PY" "$TOOLS" "$@" ;;
-  *) sed -n '2,26p' "$0" | sed 's/^# \{0,1\}//'; exit 1 ;;
+  holdback|status|on|off|hold|audit|rule|act|list|play|verdict|stats|pairs) "$PY" "$TOOLS" "$@" ;;
+  *) sed -n '2,32p' "$0" | sed 's/^# \{0,1\}//'; exit 1 ;;
 esac
