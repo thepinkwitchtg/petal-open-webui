@@ -136,6 +136,7 @@
 	import StatusDetails from './StatusDetails.svelte';
 	import PetalStatusChip from './MessageInput/PetalStatusChip.svelte'; // 🌙 trip markers
 	import PetalModeChip from './MessageInput/PetalModeChip.svelte'; // 🌀 the forge's modes, by send
+	import PetalVoiceBubble from './MessageInput/PetalVoiceBubble.svelte'; // 🎙️ her voice, always at hand (slice A19)
 	import { getChatContext } from '$lib/components/chat/context';
 	import { machineIdOf } from '$lib/utils/machines';
 
@@ -2272,6 +2273,10 @@
 								: ''} transition px-0.5 bg-base-0/80 dark:bg-[color-mix(in_oklab,var(--color-base-850)_55%,var(--color-base-900))]/90 backdrop-blur-md dark:text-base-100"
 							dir={$settings?.chatDirection ?? 'auto'}
 						>
+							{#if history?.currentId}
+								<!-- 🎙️ petal (A19b): the voice bubble, on the left of the chat bar -->
+								<PetalVoiceBubble />
+							{/if}
 							{#if atSelectedModel !== undefined}
 								<div class="px-2.5 pt-2.5 text-left w-full flex flex-col z-10">
 									<div class="flex items-center justify-between w-full">

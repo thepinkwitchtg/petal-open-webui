@@ -16,6 +16,7 @@
 	import { getBanners } from '$lib/apis/configs';
 	import { getMachines } from '$lib/apis/machines';
 	import { setAppFontFamily, setTextScale } from '$lib/utils/text-scale';
+	import { reportBattery } from '$lib/utils/petal-battery'; // 🔋 petal-live hears this device's battery (A19)
 
 	import { WEBUI_VERSION, WEBUI_API_BASE_URL, WEBUI_BUILD_CHANNEL } from '$lib/constants';
 	import { compareVersion } from '$lib/utils';
@@ -282,6 +283,8 @@
 			// Loaded, with nothing to list: null would mean the list is still on its way.
 			return [];
 		});
+		// 🔋 petal (A19): petal-live hears this device's battery (her senses are hers: admin only)
+		if ($user?.role === 'admin') reportBattery();
 		try {
 			await setUserSettings();
 		} catch (e) {

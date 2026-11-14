@@ -70,7 +70,8 @@ export enum Shortcut {
 	STOP_GENERATING = 'stopGenerating',
 
 	//Voice
-	TOGGLE_MUTE = 'toggleMute'
+	TOGGLE_MUTE = 'toggleMute',
+	PETAL_VOICE = 'petalVoice' // petal · the voice bubble: her voice, play or pause (A19)
 }
 
 export const CONFIGURABLE_SHORTCUTS = [
@@ -110,7 +111,8 @@ export const CONFIGURABLE_SHORTCUTS = [
 	Shortcut.ALLOW_TOOL_CALL,
 	Shortcut.DENY_TOOL_CALL,
 	Shortcut.COPY_LAST_CODE_BLOCK,
-	Shortcut.COPY_LAST_RESPONSE
+	Shortcut.COPY_LAST_RESPONSE,
+	Shortcut.PETAL_VOICE
 ] as const;
 
 export type ConfigurableShortcut = (typeof CONFIGURABLE_SHORTCUTS)[number];
@@ -153,7 +155,8 @@ export const DEFAULT_KEYBINDINGS: KeybindingsMap = {
 	[Shortcut.ALLOW_TOOL_CALL]: 'Cmd+Alt+Enter',
 	[Shortcut.DENY_TOOL_CALL]: 'Cmd+Alt+Backspace',
 	[Shortcut.COPY_LAST_CODE_BLOCK]: 'Cmd+Shift+;',
-	[Shortcut.COPY_LAST_RESPONSE]: 'Cmd+Shift+C'
+	[Shortcut.COPY_LAST_RESPONSE]: 'Cmd+Shift+C',
+	[Shortcut.PETAL_VOICE]: 'Cmd+Shift+Space' // Ctrl+Shift+Space away from a Mac, beside the mode's Ctrl+Space
 };
 
 export const keybindings = writable<KeybindingsMap>({ ...DEFAULT_KEYBINDINGS });
@@ -538,5 +541,13 @@ export const shortcuts: ShortcutRegistry = {
 		keys: ['M'],
 		category: 'Voice',
 		tooltip: 'Only active during Voice Mode.'
+	},
+	[Shortcut.PETAL_VOICE]: {
+		name: (t) => t('Her voice: play or pause'),
+		keys: ['mod', 'shift', 'Space'],
+		category: 'Voice',
+		configurable: true,
+		tooltip:
+			'Plays the reply most in view from its first sentence, or pauses and resumes her. Works from the message box or anywhere nothing holds the focus, with either voice control.'
 	}
 };

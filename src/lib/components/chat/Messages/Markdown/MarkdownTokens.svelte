@@ -49,6 +49,7 @@
 	import Clipboard from '$lib/components/icons/Clipboard.svelte';
 	import ColonFenceBlock from './ColonFenceBlock.svelte';
 	import PetalQuote from './PetalQuote.svelte';
+	import { isQuoteParagraph } from '$lib/utils/petal-quote';
 
 	export let id: string;
 	export let chatId = '';
@@ -65,6 +66,8 @@
 	export let compactPreview = false;
 
 	export let paragraphTag = 'p';
+	// 🌸 petal (A19): inside a list item, a quoted line stays a list item (no display quote)
+	export let inList = false;
 
 	export let editCodeBlock = true;
 	export let topPadding = false;
@@ -168,6 +171,11 @@
 	$: singlePlainBlock =
 		displayTokens.length === 1 &&
 		(displayTokens[0]?.type === 'paragraph' || displayTokens[0]?.type === 'text');
+
+	// 🌸 petal (A19): in a display context, a paragraph that is only a quoted line is a display quote
+	// too, no `>` needed · never inside a quote already, a list item or a span-only render
+	const inQuote = getContext('petal-quote') !== undefined;
+	$: bareQuotes = !!markdown?.displayQuotes && !inQuote && !inList && paragraphTag !== 'span';
 
 	const exportTableToCSVHandler = (token, tokenIdx = 0) => {
 		// Extract header row text, decode HTML entities, and escape for CSV.
@@ -398,6 +406,7 @@
 							{messageId}
 							tokens={item.tokens}
 							top={item.task || token.loose}
+							inList
 							{done}
 							{allowEmbeds}
 							{save}
@@ -447,6 +456,7 @@
 									{messageId}
 									tokens={item.tokens}
 									top={item.task || token.loose}
+									inList
 									{done}
 									{allowEmbeds}
 									{save}
@@ -466,6 +476,7 @@
 								{messageId}
 								tokens={item.tokens}
 								top={item.task || token.loose}
+								inList
 								{done}
 								{allowEmbeds}
 								{save}
@@ -630,7 +641,19 @@
 			}}
 		></iframe>
 	{:else if token.type === 'paragraph'}
-		{#if paragraphTag == 'span'}
+		{#if bareQuotes && isQuoteParagraph(token.raw)}
+			<PetalQuote display raw={token.raw} {done}>
+				<p dir="auto">
+					<MarkdownInlineTokens
+						id={`${id}-${tokenIdx}-p`}
+						tokens={token.tokens ?? []}
+						{done}
+						{sourceIds}
+						{onSourceClick}
+					/>
+				</p>
+			</PetalQuote>
+		{:else if paragraphTag == 'span'}
 			<span dir="auto">
 				<MarkdownInlineTokens
 					id={`${id}-${tokenIdx}-p`}

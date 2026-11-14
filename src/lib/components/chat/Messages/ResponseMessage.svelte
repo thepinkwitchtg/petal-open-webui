@@ -34,6 +34,8 @@
 	import { isSavedChatId } from '$lib/utils/chatId';
 	import { castOrbit, markMoment, marksFor, markersNow, nowS, vowBrakes } from '$lib/utils/petal-markers'; // 🌙 trip markers · ✧ orbits · 🔥 vows
 	import PetalEyes from './PetalEyes.svelte'; // 👁 what Petal received (slice A10)
+	import PetalPlayButton from './PetalPlayButton.svelte'; // 🔈 the speaker by her name (slices A19 · A19b)
+	import { registerReply, replyDone } from '$lib/utils/petal-voice'; // 🎙️ the voice control and the trail find replies here
 	import PetalOrbitMenu from './PetalOrbitMenu.svelte'; // ✧ the menu (slice A11)
 	import {
 		copyToClipboard as _copyToClipboard,
@@ -344,6 +346,26 @@
 		($settings?.audio?.tts?.defaultVoice === $config.audio.tts.voice
 			? ($settings?.audio?.tts?.voice ?? $config?.audio?.tts?.voice)
 			: $config?.audio?.tts?.voice);
+
+	// 🎙️ A19 · A19b: this reply can be spoken from the voice control (the bubble or the speaker by her
+	// name, Settings → Interface → Voice control) and the hotkey (petal-voice)
+	let unregisterVoice = () => {};
+	let registeredVoice = '';
+	$: if (message?.id && message.id !== registeredVoice && !readOnly) {
+		unregisterVoice();
+		const id = message.id;
+		registeredVoice = id;
+		unregisterVoice = registerReply({
+			id,
+			root: () => document.getElementById(`message-${id}`),
+			words: () => contentContainerElement ?? null,
+			done: () => !!message?.done && message.id === id,
+			speak: () => speak(),
+			voice: () => getVoiceId(),
+			content: () => visibleResponseContent ?? ''
+		});
+	}
+	$: if (message?.done && message?.id) replyDone(message.id);
 
 	// legacy: true → the old one-clip-per-sentence path (petal stream's fallback)
 	const speak = async ({ legacy = false }: { legacy?: boolean } = {}) => {
@@ -784,6 +806,8 @@
 			// Remove background, color, and font styles
 			tempDiv.appendChild(range.cloneContents());
 			tempDiv.querySelectorAll('.katex').forEach((katex) => katex.remove());
+			// 🌸 a display quote's layers only echo its words: the words are copied once
+			tempDiv.querySelectorAll('.pq-copy, .pv-mark').forEach((el) => el.remove());
 
 			tempDiv.querySelectorAll('table').forEach((table) => {
 				table.style.borderCollapse = 'collapse';
@@ -819,6 +843,7 @@
 	});
 
 	onDestroy(() => {
+		unregisterVoice();
 		if (buttonsContainerElement) {
 			buttonsContainerElement.removeEventListener('wheel', buttonsWheelHandler);
 		}
@@ -853,19 +878,25 @@
 
 		<div class="flex-auto w-0 pl-1 relative">
 			{#if !compactPreview}
-				<Name>
-					<Tooltip content={localizedModelName} placement="top-start">
-						<span
+				<div class="flex items-center gap-1.5 min-w-0">
+					<Name>
+						<Tooltip content={localizedModelName} placement="top-start">
+							<span
 							id="response-message-model-name"
 							class="line-clamp-1 text-base-1000 dark:text-base-0"
 						>
-							{localizedModelName}
-						</span>
-					</Tooltip>
+								{localizedModelName}
+							</span>
+						</Tooltip>
 					{#if showSelectedModel}
 						<span class="truncate text-base-500">{selectedModelName}</span>
 					{/if}
-				</Name>
+					</Name>
+					<!-- 🔈 petal (A19b): the speaker by her name, when it's her chosen voice control -->
+					{#if !readOnly && ($settings?.voiceControl ?? 'bubble') === 'speaker' && message.done && hasResponseContent && message.error !== true}
+						<PetalPlayButton id={message.id} />
+					{/if}
+				</div>
 			{/if}
 
 			{#if isInternalMessage(parentMessage)}
