@@ -5,7 +5,7 @@
 	import TrashIcon from '$lib/components/layout/Sidebar/icons/Trash.svelte';
 	import ChevronRightIcon from '$lib/components/layout/Sidebar/icons/ChevronRight.svelte';
 	import { toast } from 'svelte-sonner';
-	import { tick, getContext, onMount } from 'svelte';
+	import { tick, getContext, onMount, onDestroy } from 'svelte';
 
 	import { settings } from '$lib/stores';
 	import { user as _user } from '$lib/stores';
@@ -25,6 +25,7 @@
 	import Tooltip from '$lib/components/common/Tooltip.svelte';
 	import FileItem from '$lib/components/common/FileItem.svelte';
 	import Markdown from './Markdown.svelte';
+	import { lendWords } from '$lib/utils/petal-voice'; // 💬 her own quotes can be said alone (slice A19)
 	import Image from '$lib/components/common/Image.svelte';
 	import DeleteConfirmDialog from '$lib/components/common/ConfirmDialog.svelte';
 	import SubagentResultRow from './SubagentResultRow.svelte';
@@ -148,6 +149,17 @@
 	onMount(() => {
 		// console.log('UserMessage mounted');
 	});
+
+	// 💬 petal (A19): a quote of hers, said alone, finds its place in her words
+	let unlendWords = () => {};
+	let lentFor = '';
+	$: if (message?.id && message.id !== lentFor) {
+		unlendWords();
+		const id = message.id;
+		lentFor = id;
+		unlendWords = lendWords(id, () => (message?.id === id ? (message.content ?? '') : ''));
+	}
+	onDestroy(() => unlendWords());
 </script>
 
 <DeleteConfirmDialog
@@ -441,11 +453,13 @@
 											enabled: !!chatId
 										}}
 									>
+										<!-- 💬 petal (A19): her own quotes display too (Settings → Interface → Display quotes) -->
 										<Markdown
 											id={`${chatId}-${message.id}`}
 											content={message.content}
 											{editCodeBlock}
 											{topPadding}
+											displayQuotes={($settings?.quoteWho ?? 'both') === 'both'}
 										/>
 									</div>
 								{:else}

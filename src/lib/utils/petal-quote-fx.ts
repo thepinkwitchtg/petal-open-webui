@@ -1,77 +1,62 @@
-// 🌸 the display quote's door (slices A18 + A18b). one door decides WHEN a reply's display quote may
-// move and WHO paints it; the painters decide how it looks:
-//  · the shimmer: the fork's own light (CSS in PetalQuote), instant, no canvas. it plays once as a quote
-//    settles into view and rests in the static gradient
-//  · the candy: the rig's quote effect, if one is awake (window.petalQuoteFx, woken by /static/loader.js
-//    through /api/v1/petal/fx/*). it paints the quote on a stage under the words, and the words stay real
-//    (transparent while painted) for selection, copy and voice
+// 🌸 the display quote's door (slices A18 · A19). one door decides WHEN a display quote may move;
+// PetalQuote decides how it looks. its words never wait on the door: they're painted first, in their
+// own ink, and everything the door starts only ever sits on top of them or behind them.
 //
-// Settings → Interface → Quotes: still · shimmer · candy · candy hypnotic
-//  · still: A17's static quote, nothing moves
-//  · shimmer: the shimmer plays once when a quote lands framed on screen; a hover or a tap replays it
-//  · candy: the candy blooms once when a quote lands framed, then rests as a still; hover or tap replays
-//  · candy hypnotic: the candy keeps flowing while framed and she's active, and rests after ~20 s idle
-//  candy falls back to the shimmer, never to still: when no effect is awake, or when the effect says a
-//  quote isn't one for it (fits(): a long or list-heavy quote, say)
+// Settings → Interface → Quotes: still · shimmer · auto
+//  · still   · the quote at rest (its gradient, its gloss, its halo), nothing moves
+//  · shimmer · the reveal plays once as a quote lands framed on screen (a hover, a click or her voice
+//              plays it again), and a gentle gloss lives on it while it's on screen: a slow shine, faint stars
+//  · auto    · the shimmer, minding the battery: low and not charging, the gloss becomes a rare glint
+//              (and her voice's follower goes simpler)
 //
-// the rules it keeps for the GPU (the 3080, the phone): a quote waits until its reply is done and its
-// words have settled · three move at most · nothing moves off-screen or in a hidden tab · reduced motion
-// means no motion (the shimmer rests, the candy is dressed still)
-//
-// the effect answers play(el, call) · replay(el, call) and may answer fits(el, call) · rest(el) (stop
-// moving now, keep the look) · release(el) (forget its drawing: the words changed, the setting moved on,
-// or the quote left). play and replay may return a promise that settles when a bloom comes to rest.
+// what it keeps for the GPU (the 3080, the phone): a quote waits until its reply is done and its words
+// have settled · three reveals at most · the gloss moves only on the compositor (transform, opacity), in
+// shared beats: one clock for the page, every few seconds a beat where two quotes catch the light together
+// and a faint star or two rides along, then stillness until the next one. so its frames run in short
+// stretches, however many quotes are on screen. it rests off-screen, in a hidden or background tab or a
+// minimized window, after a few minutes without her (unless her voice is playing), and with reduced motion
+// · reduced motion means nothing moves at all
 import { get } from 'svelte/store';
 import { settings } from '$lib/stores';
+import { battery, batteryLow, watchBattery } from '$lib/utils/petal-battery';
 
-export type QuoteFxMode = 'still' | 'shimmer' | 'candy' | 'hypnotic';
-export type CandyMode = 'still' | 'once' | 'flow';
-export type QuoteFxCall = { mode: CandyMode; words: string };
-export interface QuoteFx {
-	play(el: HTMLElement, call: QuoteFxCall): unknown;
-	replay(el: HTMLElement, call: QuoteFxCall): unknown;
-	fits?(el: HTMLElement, call: QuoteFxCall): boolean;
-	rest?(el: HTMLElement): void;
-	release?(el: HTMLElement): void;
-}
-export type ShimmerHooks = { play: () => void; stop: () => void };
+export type QuoteFxMode = 'still' | 'shimmer' | 'auto';
+export type GlossLevel = 'full' | 'glint' | 'off';
+export type QuoteHooks = {
+	reveal: () => void; // the reveal begins (A18's shimmer, on the layers)
+	stop: () => void; // the reveal ends: the quote rests
+	shine: () => void; // one slow band of light across the words
+	star: () => void; // one faint star by the words
+	selecting?: (on: boolean) => void; // words in it are being selected (the layers above step aside)
+};
 
-declare global {
-	interface Window {
-		petalQuoteFx?: QuoteFx;
-		petalFxOpen?: () => Promise<boolean>;
-	}
-}
+export const PLAY_MS = 5200; // one reveal, first light to rest
+export const SETTLE_MS = 450; // after the reply is done, its words rest this long before a first reveal
+export const MAX_MOVING = 3; // reveals at once (a page full of quotes takes turns)
+export const REPLAY_REST_MS = 700; // a hover can't retrigger the instant a reveal ends
+export const IDLE_MS = 3 * 60_000; // the gloss rests after this long without her (her voice keeps it awake)
+// the gloss's rhythm, in ms ranges (each wait is drawn anew)
+export const BEAT_MS: [number, number] = [5500, 8500]; // between two beats of the page's clock
+export const BREATH_MS = 2500; // a quote's first shine waits this long after its reveal
+export const GLINT_MS: [number, number] = [25000, 40000]; // low battery: one glint on the page, this far apart
+export const MAX_SHINES = 2; // per beat: the quotes that shone longest ago catch the light together
+export const MAX_STARS = 2; // per beat: a faint star or two rides along
 
-export const PLAY_MS = 5200; // one shimmer, first light to rest
-export const SETTLE_MS = 450; // after the reply is done, its words rest this long before a first play
-export const MAX_MOVING = 3; // a page full of quotes takes turns (shimmers and candy together)
-export const IDLE_MS = 20000; // candy hypnotic rests after this long without her input
-export const PLAY_CAP_MS = 12000; // a candy bloom that never says it rested is stopped here
-export const NOMINAL_MS = 5000; // a bloom from an effect that doesn't say when it rests holds its slot this long
-export const REPLAY_REST_MS = 700; // a hover can't retrigger the instant a play ends
-export const FX_EVENT = 'petal-quote-fx'; // the effect announces itself on window
-
-type Paint = 'none' | 'shimmer' | 'candy';
 type Timer = ReturnType<typeof setTimeout> | null;
 type Quote = {
 	el: HTMLElement;
-	hooks: ShimmerHooks;
+	hooks: QuoteHooks;
 	raw: string;
 	done: boolean;
 	settled: boolean; // done, and its words stopped changing
-	framed: boolean; // enough of it on screen to play
+	framed: boolean; // enough of it on screen to reveal
 	onScreen: boolean; // any of it on screen
-	paint: Paint; // who paints its current words
-	fitsFor: string | null; // the words the candy last judged…
-	fits: boolean; // …and its answer
-	seen: boolean; // its first play (with its current painter) has started
-	dressed: boolean; // the candy holds a drawing of these words
-	moving: boolean; // a shimmer, a bloom or a flow is running
-	shimmering: boolean; // the moving is a shimmer
-	flowing: boolean; // the moving is a candy flow
+	seen: boolean; // its first reveal has started (the gloss comes after it)
+	revealing: boolean;
+	selecting: boolean;
 	endedAt: number;
-	ticket: number; // the play a timer or a settling promise belongs to
+	ticket: number; // the reveal a timer belongs to
+	lastShine: number; // when it last caught the light (the beat goes to whoever waited longest)
 	settleTimer: Timer;
 	endTimer: Timer;
 };
@@ -79,17 +64,12 @@ type Quote = {
 const quotes = new Map<Element, Quote>();
 let io: IntersectionObserver | null = null;
 let wired = false;
-let rested = false; // flows were rested for her absence; her next touch wakes them
 let lastInput = Date.now();
-let idleTimer: Timer = null;
+const awake = new Set<string>(); // what keeps the gloss awake without her touch (her voice, a battery measure)
+let beatTimer: Timer = null;
 
-/** she hasn't touched anything for IDLE_MS */
-const away = () => Date.now() - lastInput >= IDLE_MS;
-
-const effect = (): QuoteFx | null => {
-	const f = typeof window !== 'undefined' ? window.petalQuoteFx : undefined;
-	return f && typeof f.play === 'function' && typeof f.replay === 'function' ? f : null;
-};
+/** how much has moved, for the battery measure and the tests */
+export const glossCount = { reveals: 0, shines: 0, stars: 0 };
 
 const reducedMotion = () =>
 	typeof window !== 'undefined' &&
@@ -97,176 +77,167 @@ const reducedMotion = () =>
 
 const hidden = () => typeof document !== 'undefined' && document.visibilityState === 'hidden';
 
-/** the setting (Settings → Interface → Quotes); A18's old switch, if it was turned off, reads as still */
+const rnd = ([a, b]: [number, number]) => a + Math.random() * (b - a);
+
+/** the setting (Settings → Interface → Quotes) · A18b's candy left the chat, its moving rides on as auto;
+ *  A18's old switch, if it was turned off, reads as still */
 export function fxMode(): QuoteFxMode {
-	const s = get(settings);
+	const s = get(settings) as { quoteFx?: string; quoteShimmer?: boolean } | undefined;
 	const m = s?.quoteFx;
-	if (m === 'still' || m === 'shimmer' || m === 'candy' || m === 'hypnotic') return m;
-	return s?.quoteShimmer === false ? 'still' : 'candy';
+	if (m === 'still' || m === 'shimmer' || m === 'auto') return m;
+	if (m === 'candy' || m === 'hypnotic') return 'auto';
+	return s?.quoteShimmer === false ? 'still' : 'auto';
 }
 
-/** how the candy may move right now (hypnotic while she's away: a quote landing just blooms) */
-const candyMode = (): CandyMode =>
-	reducedMotion() ? 'still' : fxMode() === 'hypnotic' && !away() ? 'flow' : 'once';
+const away = () => !awake.size && Date.now() - lastInput >= IDLE_MS;
 
-const movingCount = () => {
+/** how the gloss lives right now: full · glint (auto, on a low battery that isn't charging) · off */
+export function glossLevel(): GlossLevel {
+	const mode = fxMode();
+	if (mode === 'still' || reducedMotion() || hidden() || away()) return 'off';
+	return mode === 'auto' && batteryLow() ? 'glint' : 'full';
+}
+
+/** the gloss lives on it: settled, on screen, past its first reveal, not revealing, not being selected */
+const glossy = (q: Quote) => q.settled && q.onScreen && q.seen && !q.revealing && !q.selecting;
+/** and a beat may take it now: a breath past its last reveal */
+const eligible = (q: Quote) => glossy(q) && Date.now() - q.endedAt >= BREATH_MS;
+
+const revealingCount = () => {
 	let n = 0;
-	for (const q of quotes.values()) if (q.moving) n++;
+	for (const q of quotes.values()) if (q.revealing) n++;
 	return n;
 };
-
-const words = (q: Quote) => (q.el.innerText || q.el.textContent || '').trim();
 
 function clearEnd(q: Quote) {
 	if (q.endTimer) clearTimeout(q.endTimer);
 	q.endTimer = null;
 }
 
-/** stop a quote moving now; it keeps its look (the shimmer's resting gradient, the candy's still) */
+/** stop a reveal now; the quote keeps its resting look */
 function rest(q: Quote) {
-	if (!q.moving) return;
+	if (!q.revealing) return;
 	q.ticket++;
 	clearEnd(q);
-	if (q.shimmering) q.hooks.stop();
-	else effect()?.rest?.(q.el);
-	q.moving = q.shimmering = q.flowing = false;
+	q.hooks.stop();
+	q.revealing = false;
 	q.endedAt = Date.now();
 }
 
-function endMove(q: Quote, ticket: number, capped: boolean) {
-	if (ticket !== q.ticket || !q.moving) return;
+function endReveal(q: Quote, ticket: number) {
+	if (ticket !== q.ticket || !q.revealing) return;
 	clearEnd(q);
-	if (q.shimmering) q.hooks.stop();
-	else if (capped) effect()?.rest?.(q.el);
-	q.moving = q.shimmering = q.flowing = false;
+	q.hooks.stop();
+	q.revealing = false;
 	q.endedAt = Date.now();
 	pump();
 }
 
-function startShimmer(q: Quote) {
+function startReveal(q: Quote) {
 	const ticket = ++q.ticket;
 	q.seen = true;
-	q.moving = q.shimmering = true;
-	q.hooks.play();
-	q.endTimer = setTimeout(() => endMove(q, ticket, false), PLAY_MS);
-}
-
-function callFx(q: Quote, verb: 'play' | 'replay', mode: CandyMode): unknown {
-	const f = effect();
-	if (!f) return null;
-	q.dressed = true;
+	q.revealing = true;
+	glossCount.reveals++;
 	try {
-		return f[verb](q.el, { mode, words: words(q) });
+		q.hooks.reveal();
 	} catch (e) {
-		console.warn('🌸 quote fx:', e);
-		return null;
+		console.warn('🌸 quote reveal:', e);
 	}
+	q.endTimer = setTimeout(() => endReveal(q, ticket), PLAY_MS);
 }
 
-function startCandy(q: Quote, verb: 'play' | 'replay', mode: CandyMode) {
-	const ticket = ++q.ticket;
-	q.seen = true;
-	q.moving = true;
-	q.flowing = mode === 'flow';
-	const r = callFx(q, verb, mode);
-	if (q.flowing) {
-		armIdle();
-		return;
-	}
-	q.endTimer = setTimeout(() => endMove(q, ticket, true), PLAY_CAP_MS);
-	if (r && typeof (r as Promise<unknown>).then === 'function')
-		(r as Promise<unknown>).then(
-			() => endMove(q, ticket, false),
-			() => endMove(q, ticket, false)
-		);
-	else setTimeout(() => endMove(q, ticket, false), NOMINAL_MS);
-}
+const motionAllowed = () => !hidden() && !reducedMotion() && fxMode() !== 'still';
 
-/** drop the candy's drawing of this quote (A17's ink comes back) */
-function undress(q: Quote) {
-	if (q.moving && !q.shimmering) rest(q);
-	if (q.dressed) effect()?.release?.(q.el);
-	q.dressed = false;
-}
-
-/** who paints this settled quote now: still → nobody · shimmer → the shimmer · candy → the candy when
- *  an effect is awake and the quote is one for it, else the shimmer. a change of painter starts fresh */
-function choose(q: Quote): Paint {
-	const mode = fxMode();
-	let paint: Paint = mode === 'still' ? 'none' : 'shimmer';
-	const f = mode === 'candy' || mode === 'hypnotic' ? effect() : null;
-	if (f) {
-		if (q.fitsFor !== q.raw) {
-			q.fitsFor = q.raw;
-			try {
-				q.fits = f.fits ? f.fits(q.el, { mode: candyMode(), words: words(q) }) !== false : true;
-			} catch {
-				q.fits = false;
-			}
-		}
-		if (q.fits) paint = 'candy';
-	}
-	if (paint !== q.paint) {
-		if (q.moving) rest(q);
-		if (q.paint === 'candy') undress(q);
-		q.paint = paint;
-		q.seen = false;
-	}
-	return paint;
-}
-
-/** give every settled quote on screen what the setting allows, in page order, while there's room */
+/** every settled quote that lands framed gets its first reveal, in page order, while there's room */
 function pump() {
-	if (hidden()) return;
-	const motion = !reducedMotion();
-	for (const q of quotes.values()) {
-		if (!q.settled || !q.onScreen || q.moving) continue;
-		const paint = choose(q);
-		if (paint === 'none') continue;
-		const room = movingCount() < MAX_MOVING;
-		if (paint === 'shimmer') {
-			if (!q.seen && q.framed && motion && room) startShimmer(q);
-			continue;
+	if (motionAllowed()) {
+		for (const q of quotes.values()) {
+			if (!q.settled || !q.framed || q.seen || q.revealing) continue;
+			if (revealingCount() >= MAX_MOVING) break;
+			startReveal(q);
 		}
-		const cm = candyMode();
-		if (cm === 'still') {
-			if (!q.dressed) callFx(q, 'play', 'still');
-			continue;
-		}
-		if (!q.seen) {
-			// its first bloom, once it lands framed (a quote already dressed still is asked to bloom again)
-			if (q.framed && room) startCandy(q, q.dressed ? 'replay' : 'play', cm);
-			continue;
-		}
-		if (!q.dressed) {
-			callFx(q, 'play', 'still');
-			continue;
-		}
-		if (cm === 'flow' && q.framed && room) startCandy(q, 'play', 'flow');
+	}
+	beat();
+}
+
+// ── the gloss: one clock for the page, ticking only while some quote can gloss ───────────────────────
+function stopBeat() {
+	if (beatTimer) clearTimeout(beatTimer);
+	beatTimer = null;
+}
+
+function beat() {
+	const level = glossLevel();
+	let any = false;
+	if (level !== 'off') for (const q of quotes.values()) if (glossy(q)) any = true;
+	if (!any) return stopBeat();
+	if (beatTimer) return;
+	beatTimer = setTimeout(tick, level === 'glint' ? rnd(GLINT_MS) : rnd(BEAT_MS));
+}
+
+function glint(q: Quote, kind: 'shine' | 'star') {
+	if (!eligible(q) || glossLevel() === 'off') return; // things changed since it was planned
+	try {
+		if (kind === 'shine') q.hooks.shine();
+		else q.hooks.star();
+		glossCount[kind === 'shine' ? 'shines' : 'stars']++;
+	} catch (e) {
+		console.warn('🌸 quote gloss:', e);
 	}
 }
 
-// ── hypnotic's rest: no input for IDLE_MS, every flow rests; her next touch wakes the framed ones ──
-function armIdle() {
-	if (idleTimer || typeof window === 'undefined') return;
-	idleTimer = setTimeout(
-		() => {
-			idleTimer = null;
-			if (away()) {
-				rested = true;
-				for (const q of quotes.values()) if (q.flowing) rest(q);
-			} else if ([...quotes.values()].some((q) => q.flowing)) armIdle();
-		},
-		Math.max(250, IDLE_MS - (Date.now() - lastInput))
-	);
+function tick() {
+	beatTimer = null;
+	const level = glossLevel();
+	if (level === 'off') return; // her touch, the tab, the setting or a quote landing starts it again
+	const ready = [...quotes.values()].filter(eligible);
+	if (level === 'glint') {
+		// one glint on the page: a star most times, now and then a shine
+		const q = ready[Math.floor(Math.random() * ready.length)];
+		if (q) glint(q, Math.random() < 0.3 ? 'shine' : 'star');
+	} else if (ready.length) {
+		// a beat: the quotes that shone longest ago catch the light together (never in lockstep), and a
+		// faint star or two rides along while the light crosses · then stillness until the next beat
+		const now = Date.now();
+		const order = [...ready].sort((a, b) => a.lastShine - b.lastShine || Math.random() - 0.5);
+		order.slice(0, MAX_SHINES).forEach((q, i) => {
+			q.lastShine = now;
+			setTimeout(() => glint(q, 'shine'), i * 220);
+		});
+		const stars = Math.min(MAX_STARS, Math.random() < 0.5 ? 1 : 2);
+		for (let i = 0; i < stars; i++) {
+			const q = ready[Math.floor(Math.random() * ready.length)];
+			setTimeout(() => glint(q, 'star'), 600 + Math.random() * 900);
+		}
+	}
+	beat();
+}
+
+/** keep the gloss awake without her touch while `key` holds (her voice playing, a battery measure) */
+export function holdAwake(key: string, on: boolean) {
+	if (on) awake.add(key);
+	else awake.delete(key);
+	if (on) beat();
 }
 
 function onInput() {
-	const back = rested || away();
+	const was = away();
 	lastInput = Date.now();
-	if (back) {
-		rested = false;
-		pump();
+	if (was) beat();
+}
+
+function onSelection() {
+	const sel = document.getSelection();
+	const range = sel && !sel.isCollapsed && sel.rangeCount ? sel.getRangeAt(0) : null;
+	for (const q of quotes.values()) {
+		let on = false;
+		try {
+			on = !!range && range.intersectsNode(q.el);
+		} catch {}
+		if (on === q.selecting) continue;
+		q.selecting = on;
+		q.hooks.selecting?.(on);
+		if (!on) beat();
 	}
 }
 
@@ -288,32 +259,43 @@ function wire() {
 		},
 		{ threshold: [0, 0.4, 1] }
 	);
-	// a hidden tab stops everything; coming back, a quote that arrived meanwhile has its first play
+	// a hidden or background tab, a minimized window: everything rests; coming back, the gloss picks up
+	// and a quote that arrived meanwhile has its first reveal
 	document.addEventListener('visibilitychange', () => {
-		if (hidden()) for (const q of quotes.values()) rest(q);
-		else pump();
+		if (hidden()) {
+			for (const q of quotes.values()) rest(q);
+			stopBeat();
+		} else pump();
 	});
 	window.matchMedia?.('(prefers-reduced-motion: reduce)').addEventListener?.('change', (e) => {
-		if (e.matches) for (const q of quotes.values()) rest(q);
+		if (e.matches) {
+			for (const q of quotes.values()) rest(q);
+			stopBeat();
+		}
 		pump();
 	});
 	let last: QuoteFxMode | null = null;
 	settings.subscribe(() => {
 		const mode = fxMode();
-		if (last !== null && mode !== last && last === 'hypnotic')
-			for (const q of quotes.values()) if (q.flowing) rest(q);
-		if ((mode === 'candy' || mode === 'hypnotic') && quotes.size)
-			window.petalFxOpen?.().catch(() => {}); // knock on the rig's door (quiet if it's asleep)
+		if (last !== null && mode !== last) {
+			if (mode === 'still') for (const q of quotes.values()) rest(q);
+			stopBeat(); // the new rhythm starts from the next beat
+		}
 		last = mode;
-		pump(); // choose() moves every quote on screen to its new painter
-	});
-	for (const ev of ['pointermove', 'pointerdown', 'keydown', 'wheel', 'touchstart'])
-		window.addEventListener(ev, onInput, { passive: true, capture: true });
-	// an effect waking late: quotes it may paint are judged again
-	window.addEventListener(FX_EVENT, () => {
-		for (const q of quotes.values()) q.fitsFor = null;
 		pump();
 	});
+	// auto follows the battery: a low one slows the clock to rare glints, charging brings it back
+	watchBattery();
+	let low = batteryLow();
+	battery.subscribe(() => {
+		if (batteryLow() === low) return;
+		low = batteryLow();
+		stopBeat();
+		beat();
+	});
+	for (const ev of ['pointermove', 'pointerdown', 'keydown', 'wheel', 'touchstart', 'scroll'])
+		window.addEventListener(ev, onInput, { passive: true, capture: true });
+	document.addEventListener('selectionchange', onSelection);
 }
 
 function settle(q: Quote) {
@@ -329,7 +311,7 @@ function settle(q: Quote) {
 }
 
 /** a display quote joins the door; the returned function lets it go (on destroy) */
-export function enroll(el: HTMLElement, hooks: ShimmerHooks): () => void {
+export function enroll(el: HTMLElement, hooks: QuoteHooks): () => void {
 	wire();
 	const q: Quote = {
 		el,
@@ -339,27 +321,21 @@ export function enroll(el: HTMLElement, hooks: ShimmerHooks): () => void {
 		settled: false,
 		framed: false,
 		onScreen: false,
-		paint: 'none',
-		fitsFor: null,
-		fits: false,
 		seen: false,
-		dressed: false,
-		moving: false,
-		shimmering: false,
-		flowing: false,
+		revealing: false,
+		selecting: false,
 		endedAt: 0,
 		ticket: 0,
+		lastShine: 0,
 		settleTimer: null,
 		endTimer: null
 	};
 	quotes.set(el, q);
 	io?.observe(el);
-	if (fxMode() === 'candy' || fxMode() === 'hypnotic') window.petalFxOpen?.().catch(() => {});
 	return () => {
 		io?.unobserve(el);
 		if (q.settleTimer) clearTimeout(q.settleTimer);
 		rest(q);
-		undress(q);
 		quotes.delete(el);
 		pump();
 	};
@@ -375,27 +351,25 @@ export function touch(el: HTMLElement, raw: string, done: boolean) {
 	q.done = done;
 	if (changed) {
 		rest(q);
-		undress(q);
-		q.paint = 'none';
 		q.seen = false;
 	}
 	if (changed || doneChanged) settle(q);
 }
 
-/** a hover or a tap: play it once more, if it's settled, on screen and allowed to move */
-export function replay(el: HTMLElement) {
+/** a hover, a click or her voice: the reveal once more, if it's settled, on screen and allowed to move.
+ *  a hover waits its turn (and a breath after the last reveal); a click or her voice goes first */
+export function replay(el: HTMLElement, insist = false): boolean {
 	const q = quotes.get(el);
-	if (!q || !q.settled || !q.onScreen || hidden() || reducedMotion()) return;
-	if (q.paint === 'none' || Date.now() - q.endedAt < REPLAY_REST_MS) return;
-	if (q.paint === 'candy' && q.flowing) {
-		callFx(q, 'replay', 'flow'); // a flow blooms again and keeps flowing
-		return;
-	}
-	if (q.moving || movingCount() >= MAX_MOVING) return;
-	if (q.paint === 'shimmer') startShimmer(q);
-	else if (effect()) startCandy(q, 'replay', candyMode());
+	if (!q || !q.settled || !q.onScreen || !motionAllowed()) return false;
+	if (q.revealing) return true;
+	if (!insist && (Date.now() - q.endedAt < REPLAY_REST_MS || revealingCount() >= MAX_MOVING))
+		return false;
+	startReveal(q);
+	return true;
 }
 
-/** how many quotes are moving, and how many of them shimmer (for tests and the eyes) */
-export const moving = () => movingCount();
-export const shimmering = () => [...quotes.values()].filter((q) => q.shimmering).length;
+/** her voice reached this quote: its reveal plays again */
+export const voiceReveal = (el: HTMLElement) => replay(el, true);
+
+/** how many quotes reveal right now (for tests and the eyes) */
+export const moving = () => revealingCount();
