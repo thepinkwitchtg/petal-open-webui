@@ -14,6 +14,7 @@
 	import { getTerminalServers } from '$lib/apis/terminal';
 	import { getUserSettings } from '$lib/apis/users';
 	import { setAppFontFamily, setTextScale } from '$lib/utils/text-scale';
+	import { reportBattery } from '$lib/utils/petal-battery'; // 🔋 petal-live hears this device's battery (A19)
 
 	import { WEBUI_VERSION, WEBUI_API_BASE_URL, WEBUI_BUILD_CHANNEL } from '$lib/constants';
 	import { compareVersion } from '$lib/utils';
@@ -261,6 +262,8 @@
 		}
 
 		clearChatInputStorage();
+		// 🔋 petal (A19): petal-live hears this device's battery (her senses are hers: admin only)
+		if ($user?.role === 'admin') reportBattery();
 		try {
 			await Promise.all([
 				setBanners().catch((e) => console.error('Failed to load banners:', e)),

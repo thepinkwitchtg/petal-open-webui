@@ -310,8 +310,10 @@ type Settings = {
 	webSearch?: any;
 	memory?: boolean;
 	petalSight?: { thumbs?: boolean; notes?: boolean; debug?: boolean }; // 🌸👁 what Petal sees (slice A8)
-	quoteFx?: 'still' | 'shimmer' | 'candy' | 'hypnotic'; // ✨ how a reply's display quotes move: still · shimmer · candy · candy hypnotic (slices A18 + A18b)
+	quoteFx?: 'still' | 'shimmer' | 'auto' | 'candy' | 'hypnotic'; // ✨ how display quotes move: still · shimmer · auto (A19 · battery-aware); candy and hypnotic (A18b, retired) read as auto
 	quoteShimmer?: boolean; // A18's switch, read once for the move to quoteFx (false = still)
+	quoteWho?: 'petal' | 'both'; // 💬 whose quotes display: Petal's only · both (A19, default both)
+	voiceControl?: 'bubble' | 'speaker'; // 🎙️ her voice's one control: the bubble · the speaker by her name (A19b, default bubble)
 	autoTags?: boolean;
 	autoFollowUps?: boolean;
 	splitLargeChunks?(body: any, splitLargeChunks: any): unknown;

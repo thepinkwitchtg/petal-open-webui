@@ -153,7 +153,7 @@ from open_webui.routers import petal_markers  # 🌙 trip markers
 from open_webui.routers import petal_forge  # 🔮 the forge
 from open_webui.routers import petal_eyes  # 👁 what Petal received, for Lily's eyes
 from open_webui.routers import petal_diary  # 📔 her diary (notes + ✧ orbits, 🌊 climaxes, trips, 🔥 vows)
-from open_webui.routers import petal_fx  # ✨ the fx door: a read-only window onto the rig's effects service
+from open_webui.routers import petal_observe  # 🔋 live device readings, passed on to petal-live (127.0.0.1)
 from open_webui.utils import petal_temp_chats  # 🧪 contract 0's times-only counter
 from open_webui.utils import petal_gentle_stop  # 🌙 contract 8 · the outlet waits while Petal is tucked in
 from open_webui.utils import petal_state  # 🌸👁 what Petal sees of Lily's state (climaxes, thumbs, the trail)
@@ -859,7 +859,7 @@ app.include_router(petal_markers.router, prefix='/api/v1/petal', tags=['petal'])
 app.include_router(petal_forge.router, prefix='/api/v1/petal', tags=['petal'])
 app.include_router(petal_eyes.router, prefix='/api/v1/petal', tags=['petal'])
 app.include_router(petal_diary.router, prefix='/api/v1/petal', tags=['petal'])
-app.include_router(petal_fx.router, prefix='/api/v1/petal', tags=['petal'])
+app.include_router(petal_observe.router, prefix='/api/v1/petal', tags=['petal'])
 app.include_router(notes.router, prefix='/api/v1/notes', tags=['notes'])
 app.include_router(search.router, prefix='/api/v1/search', tags=['search'])
 

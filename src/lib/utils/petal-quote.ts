@@ -82,3 +82,44 @@ export function quoteSegs(text: string): QuoteSeg[] {
 	marks(text.slice(at));
 	return out;
 }
+
+// ── 🌸 A19: a quote without `>` ─────────────────────────────────────────────────────────────────────
+// a paragraph that is only a quoted line ("…" “…” « … »), optionally in italic or bold, optionally
+// ending in an emoji, is a display quote too. every line of it must be one. a quote inside a sentence
+// (words before or after it) stays normal.
+const PAIRS: Record<string, string> = { '"': '"”“', '“': '”"', '„': '“”', '«': '»' };
+const WRAP = /^(\*{1,3}|_{1,3})(.+)\1$/s; // *…* **…** ***…*** _…_ __…__ ___…___
+const TAIL_EMOJI = new RegExp(`(?:\\s*(?:${EMOJI.source}))+[.!?…]*$`, 'u'); // a stop after them, too
+const AFTER_CLOSE = /[.!?…,;:]*$/u; // "I am her". ends with its period outside, the way some write
+
+/** one line: a whole quote, nothing around it but emphasis, an emoji or two, a final stop */
+export function isQuoteLine(line: string): boolean {
+	let s = line.trim().replace(/\\$/, '').trim(); // a markdown hard break at the end
+	for (let i = 0; i < 4; i++) {
+		const before = s;
+		s = s.replace(TAIL_EMOJI, '').trim();
+		const w = s.match(WRAP);
+		if (w) s = w[2].trim();
+		if (s === before) break;
+	}
+	const closers = PAIRS[s[0]];
+	if (!closers) return false;
+	const tail = s.match(AFTER_CLOSE)?.[0] ?? '';
+	const body = s.slice(0, s.length - tail.length);
+	const close = body[body.length - 1];
+	if (body.length < 3 || !closers.includes(close)) return false;
+	const inner = body.slice(1, -1);
+	// one quote, not two with words between (“a” and “b”): no double mark of its kind inside
+	const marks = s[0] === '«' ? /[«»]/ : /["“”„]/;
+	if (marks.test(inner)) return false;
+	return /[\p{L}\p{N}]/u.test(inner);
+}
+
+/** a paragraph (its markdown as written) that is only quoted lines */
+export function isQuoteParagraph(raw: string): boolean {
+	const lines = (raw ?? '')
+		.split('\n')
+		.map((l) => l.trim())
+		.filter(Boolean);
+	return lines.length > 0 && lines.every(isQuoteLine);
+}

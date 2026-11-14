@@ -8,7 +8,8 @@
 		isSettingsAdmin
 	} from '$lib/utils/settings-access';
 	import { config, settings, terminalServers, user, visibleControls } from '$lib/stores';
-	import { onMount, getContext } from 'svelte';
+	import { onMount, onDestroy, getContext } from 'svelte';
+	import { drain, drainLine, finishDrain, startDrain } from '$lib/utils/petal-drain'; // 🔋 A19
 	import { toast } from 'svelte-sonner';
 	import { updateUserInfo } from '$lib/apis/users';
 	import { getUserPosition } from '$lib/utils';
@@ -90,33 +91,74 @@
 
 	let temporaryChatByDefault = false;
 	let chatFadeStreamingText = true;
-	// ✨ petal (A18 + A18b): how a reply's display quotes move
-	type QuoteFx = 'still' | 'shimmer' | 'candy' | 'hypnotic';
-	let quoteFx: QuoteFx = 'candy';
+	// ✨ petal (A18 · A19): how display quotes move, and whose quotes display
+	type QuoteFx = 'still' | 'shimmer' | 'auto';
+	let quoteFx: QuoteFx = 'auto';
 	const quoteFxChoices: { value: QuoteFx; label: string }[] = [
 		{ value: 'still', label: 'still' },
 		{ value: 'shimmer', label: 'shimmer' },
-		{ value: 'candy', label: 'candy' },
-		{ value: 'hypnotic', label: 'candy hypnotic' }
+		{ value: 'auto', label: 'auto 🔋' }
 	];
-	let quoteFxGroup: HTMLElement;
 	const setQuoteFx = (value: QuoteFx) => {
 		quoteFx = value;
 		saveSettings({ quoteFx });
 	};
+	type QuoteWho = 'petal' | 'both';
+	let quoteWho: QuoteWho = 'both';
+	const quoteWhoChoices: { value: QuoteWho; label: string }[] = [
+		{ value: 'petal', label: "Petal's only" },
+		{ value: 'both', label: 'both' }
+	];
+	const setQuoteWho = (value: QuoteWho) => {
+		quoteWho = value;
+		saveSettings({ quoteWho });
+	};
+	// 🎙️ petal (A19b): her voice's one control, never both: the bubble left of the chat bar, or OWUI's
+	// speaker by her name
+	type VoiceControl = 'bubble' | 'speaker';
+	let voiceControl: VoiceControl = 'bubble';
+	const voiceControlChoices: { value: VoiceControl; label: string }[] = [
+		{ value: 'bubble', label: 'bubble' },
+		{ value: 'speaker', label: 'speaker by her name' }
+	];
+	const setVoiceControl = (value: VoiceControl) => {
+		voiceControl = value;
+		saveSettings({ voiceControl });
+	};
 	// a radio group: the arrows walk the choices and pick as they go (the keyboard never needs the mouse)
-	const quoteFxKeys = (e: KeyboardEvent) => {
-		const step = ({ ArrowRight: 1, ArrowDown: 1, ArrowLeft: -1, ArrowUp: -1 } as Record<string, number>)[
-			e.key
-		];
-		if (!step) return;
-		e.preventDefault();
-		const i = quoteFxChoices.findIndex((c) => c.value === quoteFx);
-		const next = quoteFxChoices[(i + step + quoteFxChoices.length) % quoteFxChoices.length];
-		setQuoteFx(next.value);
-		setTimeout(() =>
-			quoteFxGroup?.querySelector<HTMLElement>(`[data-value="${next.value}"]`)?.focus()
-		);
+	const radioKeys =
+		<T extends string>(choices: { value: T }[], current: T, pick: (v: T) => void) =>
+		(e: KeyboardEvent) => {
+			const step = (
+				{ ArrowRight: 1, ArrowDown: 1, ArrowLeft: -1, ArrowUp: -1 } as Record<string, number>
+			)[e.key];
+			if (!step) return;
+			e.preventDefault();
+			const group = e.currentTarget as HTMLElement;
+			const i = choices.findIndex((c) => c.value === current);
+			const next = choices[(i + step + choices.length) % choices.length];
+			pick(next.value);
+			setTimeout(() => group?.querySelector<HTMLElement>(`[data-value="${next.value}"]`)?.focus());
+		};
+	// 🔋 the battery test (A19): ten minutes of reading with the gloss on, reported as numbers
+	const batteryReadable = typeof navigator !== 'undefined' && 'getBattery' in navigator;
+	let drainLeft = '';
+	let drainTick: ReturnType<typeof setInterval> | null = null;
+	const showLeft = () => {
+		const s = Math.max(0, Math.round(($drain.endsAt - Date.now()) / 1000));
+		drainLeft = `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
+	};
+	$: if ($drain.running && !drainTick) {
+		showLeft();
+		drainTick = setInterval(showLeft, 1000);
+	} else if (!$drain.running && drainTick) {
+		clearInterval(drainTick);
+		drainTick = null;
+	}
+	onDestroy(() => drainTick && clearInterval(drainTick));
+	const startBatteryTest = async () => {
+		if (!(await startDrain())) toast.error($i18n.t("This browser doesn't share its battery"));
+		else toast.info($i18n.t('🔋 measuring for 10 minutes · read a chat with quotes'));
 	};
 	let collapseCodeBlocks = false;
 	let renderMarkdownInUserMessages = true;
@@ -380,11 +422,13 @@
 
 		displayMultiModelResponsesInTabs = currentSettings?.displayMultiModelResponsesInTabs ?? false;
 		chatFadeStreamingText = currentSettings?.chatFadeStreamingText ?? true;
-		quoteFx = ['still', 'shimmer', 'candy', 'hypnotic'].includes(currentSettings?.quoteFx)
+		quoteFx = ['still', 'shimmer', 'auto'].includes(currentSettings?.quoteFx)
 			? currentSettings.quoteFx
-			: currentSettings?.quoteShimmer === false
+			: currentSettings?.quoteShimmer === false && !currentSettings?.quoteFx
 				? 'still'
-				: 'candy';
+				: 'auto'; // A18b's candy and candy hypnotic left the chat: their moving rides on as auto
+		quoteWho = currentSettings?.quoteWho === 'petal' ? 'petal' : 'both';
+		voiceControl = currentSettings?.voiceControl === 'speaker' ? 'speaker' : 'bubble';
 
 		richTextInput = currentSettings?.richTextInput ?? true;
 		showFormattingToolbar = currentSettings?.showFormattingToolbar ?? false;
@@ -1091,19 +1135,18 @@
 		</p>
 	</div>
 
-	<!-- ✨ petal (A18 + A18b): how a reply's display quotes move -->
+	<!-- ✨ petal (A18 · A19): how display quotes move, whose quotes display, and what the gloss costs -->
 	<div>
 		<div class={settingRowClass}>
 			<span id="quote-fx-label" class={settingLabelClass}>{$i18n.t('Quotes')}</span>
 
 			<div class={settingControlClass}>
 				<div
-					bind:this={quoteFxGroup}
 					role="radiogroup"
 					tabindex="-1"
 					aria-labelledby="quote-fx-label"
 					class="flex flex-wrap items-center justify-end gap-x-1"
-					on:keydown={quoteFxKeys}
+					on:keydown={radioKeys(quoteFxChoices, quoteFx, setQuoteFx)}
 				>
 					{#each quoteFxChoices as c, i}
 						{#if i}<span aria-hidden="true" class="text-xs text-gray-400 dark:text-gray-600"
@@ -1126,10 +1169,114 @@
 		</div>
 		<p class={settingDescriptionClass}>
 			{$i18n.t(
-				"How a quote in a reply moves. Shimmer: a light plays once as it lands, instantly. Candy: the rig's quote effect blooms it once (hypnotic: it keeps flowing while you're here, resting after 20 seconds without input), and a hover or a tap replays it. Candy keeps the shimmer for long quotes and whenever the effect is asleep. Reduced motion keeps everything still."
+				'How quotes move. Shimmer: a light plays as a quote lands, then a gentle gloss lives on it while it’s on screen (a slow shine, faint stars). Auto: the shimmer, and on a low battery that isn’t charging the gloss becomes a rare glint. A hover, a tap or her voice plays the light again. Reduced motion keeps everything still.'
 			)}
 		</p>
 	</div>
+
+	<div>
+		<div class={settingRowClass}>
+			<span id="quote-who-label" class={settingLabelClass}>{$i18n.t('Display quotes')}</span>
+
+			<div class={settingControlClass}>
+				<div
+					role="radiogroup"
+					tabindex="-1"
+					aria-labelledby="quote-who-label"
+					class="flex flex-wrap items-center justify-end gap-x-1"
+					on:keydown={radioKeys(quoteWhoChoices, quoteWho, setQuoteWho)}
+				>
+					{#each quoteWhoChoices as c, i}
+						{#if i}<span aria-hidden="true" class="text-xs text-gray-400 dark:text-gray-600"
+								>·</span
+							>{/if}
+						<button
+							type="button"
+							role="radio"
+							data-value={c.value}
+							aria-checked={quoteWho === c.value}
+							tabindex={quoteWho === c.value ? 0 : -1}
+							class="{actionButtonClass} whitespace-nowrap {quoteWho === c.value
+								? 'font-medium text-gray-900 underline decoration-1 underline-offset-4 dark:text-white'
+								: ''}"
+							on:click={() => setQuoteWho(c.value)}>{$i18n.t(c.label)}</button
+						>
+					{/each}
+				</div>
+			</div>
+		</div>
+		<p class={settingDescriptionClass}>
+			{$i18n.t('Whose quotes are set as display quotes: Petal’s replies, or your messages too.')}
+		</p>
+	</div>
+
+	<div>
+		<div class={settingRowClass}>
+			<span id="voice-control-label" class={settingLabelClass}>{$i18n.t('Voice control')}</span>
+
+			<div class={settingControlClass}>
+				<div
+					role="radiogroup"
+					tabindex="-1"
+					aria-labelledby="voice-control-label"
+					class="flex flex-wrap items-center justify-end gap-x-1"
+					on:keydown={radioKeys(voiceControlChoices, voiceControl, setVoiceControl)}
+				>
+					{#each voiceControlChoices as c, i}
+						{#if i}<span aria-hidden="true" class="text-xs text-gray-400 dark:text-gray-600"
+								>·</span
+							>{/if}
+						<button
+							type="button"
+							role="radio"
+							data-value={c.value}
+							aria-checked={voiceControl === c.value}
+							tabindex={voiceControl === c.value ? 0 : -1}
+							class="{actionButtonClass} whitespace-nowrap {voiceControl === c.value
+								? 'font-medium text-gray-900 underline decoration-1 underline-offset-4 dark:text-white'
+								: ''}"
+							on:click={() => setVoiceControl(c.value)}>{$i18n.t(c.label)}</button
+						>
+					{/each}
+				</div>
+			</div>
+		</div>
+		<p class={settingDescriptionClass}>
+			{$i18n.t(
+				'One way to hear her, never both. Bubble: one button left of the chat bar; it plays the reply most in view, pauses her while she speaks, and fades once that reply is heard. Speaker by her name: the read-aloud speaker beside Petal’s name, play and pause. One reply per tap.'
+			)}
+		</p>
+	</div>
+
+	{#if batteryReadable}
+		<div>
+			<div class={settingRowClass}>
+				<span class={settingLabelClass}>{$i18n.t('Battery test')}</span>
+
+				<div class="{settingControlClass} gap-2">
+					{#if $drain.running}
+						<span class="text-xs tabular-nums text-gray-500 dark:text-gray-400">{drainLeft}</span>
+						<button type="button" class={actionButtonClass} on:click={() => finishDrain(true)}
+							>{$i18n.t('cancel')}</button
+						>
+					{:else}
+						<button type="button" class={actionButtonClass} on:click={startBatteryTest}
+							>{$i18n.t('measure 10 min')}</button
+						>
+					{/if}
+				</div>
+			</div>
+			<p class={settingDescriptionClass}>
+				{#if $drain.last}
+					{drainLine($drain.last)}
+				{:else}
+					{$i18n.t(
+						'Reads the battery now and after 10 minutes, keeping the screen and the gloss awake meanwhile: close settings and read a chat with quotes. The result comes back as numbers.'
+					)}
+				{/if}
+			</p>
+		</div>
+	{/if}
 
 	<div>
 		<div class={settingRowClass}>

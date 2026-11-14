@@ -134,6 +134,7 @@ import { isSavedChatId, isTemporaryChatId } from '$lib/utils/chatId';
 	import TaskList from './Messages/ResponseMessage/TaskList.svelte';
 	import PetalStatusChip from './MessageInput/PetalStatusChip.svelte'; // 🌙 trip markers
 	import PetalModeChip from './MessageInput/PetalModeChip.svelte'; // 🌀 the forge's modes, by send
+	import PetalVoiceBubble from './MessageInput/PetalVoiceBubble.svelte'; // 🎙️ her voice, always at hand (slice A19)
 
 	const i18n: any = getContext('i18n');
 
@@ -2260,6 +2261,10 @@ import { isSavedChatId, isTemporaryChatId } from '$lib/utils/chatId';
 								: ''}  transition px-0.5 bg-white/5 dark:bg-gray-500/5 backdrop-blur-sm dark:text-gray-100"
 							dir={$settings?.chatDirection ?? 'auto'}
 						>
+							{#if history?.currentId}
+								<!-- 🎙️ petal (A19b): the voice bubble, on the left of the chat bar -->
+								<PetalVoiceBubble />
+							{/if}
 							{#if atSelectedModel !== undefined}
 								<div class="px-2.5 pt-2.5 text-left w-full flex flex-col z-10">
 									<div class="flex items-center justify-between w-full">
