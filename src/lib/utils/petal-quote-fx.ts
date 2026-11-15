@@ -1,21 +1,21 @@
-// 🌸 the display quote's door (slices A18 · A19). one door decides WHEN a display quote may move;
-// PetalQuote decides how it looks. its words never wait on the door: they're painted first, in their
+// 🌸 the display quote's door (slices A18 · A19 · A21 · A22). one door decides WHEN a display quote may
+// move; PetalQuote decides how it looks. its words never wait on the door: they're painted first, in their
 // own ink, and everything the door starts only ever sits on top of them or behind them.
 //
 // Settings → Interface → Quotes: still · shimmer · auto
 //  · still   · the quote at rest (its gradient, its gloss, its halo), nothing moves
 //  · shimmer · the reveal plays once as a quote lands framed on screen (a hover, a click or her voice
-//              plays it again), and a gentle gloss lives on it while it's on screen: a slow shine, faint stars
-//  · auto    · the shimmer, minding the battery: low and not charging, the gloss becomes a rare glint
+//              plays it again), and the gloss lives on it the whole time it's on screen (A22): a glossy
+//              light gliding across its words, pass after pass with no pause, and now and then a faint star
+//  · auto    · the shimmer, minding the battery: low and not charging, the gloss becomes a rare faint star
 //              (and her voice's follower goes simpler)
 //
 // what it keeps for the GPU (the 3080, the phone): a quote waits until its reply is done and its words
-// have settled · three reveals at most · the gloss moves only on the compositor (transform, opacity), in
-// shared beats: one clock for the page, every few seconds a beat where two quotes catch the light together
-// and a faint star or two rides along, then stillness until the next one. so its frames run in short
-// stretches, however many quotes are on screen. it rests off-screen, in a hidden or background tab or a
-// minimized window, after a few minutes without her (unless her voice is playing), and with reduced motion
-// · reduced motion means nothing moves at all
+// have settled · three reveals at most · everything moves on the compositor only (transform, opacity) ·
+// the gloss runs while a quote is on screen (it starts a little before one scrolls in, so it's already
+// gliding when it arrives) and stops off-screen, in a hidden or background tab or a minimized window,
+// during the quote's reveal and while its words are being selected, after a few minutes without her
+// (unless her voice is playing), and with reduced motion (nothing moves at all)
 import { get } from 'svelte/store';
 import { settings } from '$lib/stores';
 import { battery, batteryLow, watchBattery } from '$lib/utils/petal-battery';
@@ -25,7 +25,7 @@ export type GlossLevel = 'full' | 'glint' | 'off';
 export type QuoteHooks = {
 	reveal: () => void; // the reveal begins (A18's shimmer, on the layers)
 	stop: () => void; // the reveal ends: the quote rests
-	shine: () => void; // one slow band of light across the words
+	gloss: (on: boolean, soft?: boolean) => void; // the light's loop starts, or stops (soft: it fades out)
 	star: () => void; // one faint star by the words
 	selecting?: (on: boolean) => void; // words in it are being selected (the layers above step aside)
 };
@@ -35,12 +35,10 @@ export const SETTLE_MS = 450; // after the reply is done, its words rest this lo
 export const MAX_MOVING = 3; // reveals at once (a page full of quotes takes turns)
 export const REPLAY_REST_MS = 700; // a hover can't retrigger the instant a reveal ends
 export const IDLE_MS = 3 * 60_000; // the gloss rests after this long without her (her voice keeps it awake)
-// the gloss's rhythm, in ms ranges (each wait is drawn anew)
-export const BEAT_MS: [number, number] = [5500, 8500]; // between two beats of the page's clock
-export const BREATH_MS = 2500; // a quote's first shine waits this long after its reveal
-export const GLINT_MS: [number, number] = [25000, 40000]; // low battery: one glint on the page, this far apart
-export const MAX_SHINES = 2; // per beat: the quotes that shone longest ago catch the light together
-export const MAX_STARS = 2; // per beat: a faint star or two rides along
+export const NEAR_PX = 120; // the gloss starts this far before a quote scrolls in: it's gliding as it arrives
+export const STAR_BEAT_MS: [number, number] = [6000, 10000]; // a faint star or two on the page, this often
+export const MAX_STARS = 2; // per beat
+export const GLINT_MS: [number, number] = [25000, 40000]; // low battery: one faint star on the page, this far apart
 
 type Timer = ReturnType<typeof setTimeout> | null;
 type Quote = {
@@ -51,24 +49,29 @@ type Quote = {
 	settled: boolean; // done, and its words stopped changing
 	framed: boolean; // enough of it on screen to reveal
 	onScreen: boolean; // any of it on screen
-	seen: boolean; // its first reveal has started (the gloss comes after it)
+	near: boolean; // on screen, or about to scroll in (the gloss's own edge)
+	seen: boolean; // its first reveal has started
 	revealing: boolean;
 	selecting: boolean;
+	glossing: boolean; // its light's loop is running
 	endedAt: number;
 	ticket: number; // the reveal a timer belongs to
-	lastShine: number; // when it last caught the light (the beat goes to whoever waited longest)
 	settleTimer: Timer;
 	endTimer: Timer;
 };
 
 const quotes = new Map<Element, Quote>();
-let io: IntersectionObserver | null = null;
+let io: IntersectionObserver | null = null; // on screen and framed: the reveals
+// near the screen: the gloss. the chat scrolls inside its own box, which clips a quote before any margin
+// on the screen could reach it, so the margin lives on each quote's own scroller (one watcher per scroller)
+const nearIos = new Map<Element | null, IntersectionObserver>();
 let wired = false;
 let lastInput = Date.now();
 const awake = new Set<string>(); // what keeps the gloss awake without her touch (her voice, a battery measure)
 let beatTimer: Timer = null;
+let idleTimer: Timer = null;
 
-/** how much has moved, for the battery measure and the tests */
+/** how much has moved, for the battery measure and the tests (a shine is a gloss loop starting) */
 export const glossCount = { reveals: 0, shines: 0, stars: 0 };
 
 const reducedMotion = () =>
@@ -98,10 +101,8 @@ export function glossLevel(): GlossLevel {
 	return mode === 'auto' && batteryLow() ? 'glint' : 'full';
 }
 
-/** the gloss lives on it: settled, on screen, past its first reveal, not revealing, not being selected */
-const glossy = (q: Quote) => q.settled && q.onScreen && q.seen && !q.revealing && !q.selecting;
-/** and a beat may take it now: a breath past its last reveal */
-const eligible = (q: Quote) => glossy(q) && Date.now() - q.endedAt >= BREATH_MS;
+/** the gloss may live on it: settled, near the screen, not revealing, not being selected */
+const glossy = (q: Quote) => q.settled && q.near && !q.revealing && !q.selecting;
 
 const revealingCount = () => {
 	let n = 0;
@@ -109,6 +110,93 @@ const revealingCount = () => {
 	return n;
 };
 
+// ── the gloss: a loop per quote, running whenever it may ─────────────────────────────────────────────
+/** start or stop one quote's loop (stopping fades it out when anyone could see it, else it just stops ·
+ *  past the near edge it's well off-screen, whatever the screen's own watcher has said so far) */
+function setGloss(q: Quote, on: boolean) {
+	if (on === q.glossing) return;
+	q.glossing = on;
+	if (on) glossCount.shines++;
+	try {
+		q.hooks.gloss(on, !on && q.onScreen && q.near && !hidden());
+	} catch (e) {
+		console.warn('🌸 quote gloss:', e);
+	}
+}
+
+/** every quote's loop as it should be right now, and the stars' beat */
+function glossPump() {
+	const full = glossLevel() === 'full';
+	let any = false;
+	for (const q of quotes.values()) {
+		setGloss(q, full && glossy(q));
+		any ||= q.glossing;
+	}
+	if (any) watchIdle();
+	else stopIdle(); // nothing glides: nothing to rest
+	beat();
+}
+
+const anyGlossing = () => [...quotes.values()].some((q) => q.glossing);
+
+function stopIdle() {
+	if (idleTimer) clearTimeout(idleTimer);
+	idleTimer = null;
+}
+
+/** a few minutes without her: the loops rest (her touch or her voice wakes them) */
+function watchIdle() {
+	if (idleTimer || awake.size || !anyGlossing()) return; // her voice holds it awake (letting go starts the count again)
+	idleTimer = setTimeout(
+		() => {
+			idleTimer = null;
+			if (away()) glossPump();
+			else watchIdle();
+		},
+		Math.max(1000, lastInput + IDLE_MS - Date.now())
+	);
+}
+
+// ── its stars: one clock for the page, ticking only while some quote glosses (or glints) ─────────────
+function stopBeat() {
+	if (beatTimer) clearTimeout(beatTimer);
+	beatTimer = null;
+}
+
+function beat() {
+	const level = glossLevel();
+	let any = false;
+	if (level !== 'off') for (const q of quotes.values()) if (glossy(q) && q.onScreen) any = true;
+	if (!any) return stopBeat();
+	if (beatTimer) return;
+	beatTimer = setTimeout(tick, level === 'glint' ? rnd(GLINT_MS) : rnd(STAR_BEAT_MS));
+}
+
+function star(q: Quote) {
+	if (!glossy(q) || !q.onScreen || glossLevel() === 'off') return; // things changed since it was planned
+	try {
+		q.hooks.star();
+		glossCount.stars++;
+	} catch (e) {
+		console.warn('🌸 quote star:', e);
+	}
+}
+
+function tick() {
+	beatTimer = null;
+	const level = glossLevel();
+	if (level === 'off') return; // her touch, the tab, the setting or a quote landing starts it again
+	const ready = [...quotes.values()].filter((q) => glossy(q) && q.onScreen);
+	// a faint star or two by the words (on a low battery, one for the whole page, far apart)
+	const n = Math.min(ready.length, level === 'glint' ? 1 : Math.random() < 0.5 ? 1 : MAX_STARS);
+	for (let i = 0; i < n; i++) {
+		const q = ready[Math.floor(Math.random() * ready.length)];
+		setTimeout(() => star(q), i * (400 + Math.random() * 900));
+	}
+	beat();
+}
+
+// ── the reveal ───────────────────────────────────────────────────────────────────────────────────────
 function clearEnd(q: Quote) {
 	if (q.endTimer) clearTimeout(q.endTimer);
 	q.endTimer = null;
@@ -130,13 +218,14 @@ function endReveal(q: Quote, ticket: number) {
 	q.hooks.stop();
 	q.revealing = false;
 	q.endedAt = Date.now();
-	pump();
+	pump(); // its loop comes back at once
 }
 
 function startReveal(q: Quote) {
 	const ticket = ++q.ticket;
 	q.seen = true;
 	q.revealing = true;
+	setGloss(q, false); // the reveal is its own light: the loop steps aside meanwhile
 	glossCount.reveals++;
 	try {
 		q.hooks.reveal();
@@ -148,7 +237,8 @@ function startReveal(q: Quote) {
 
 const motionAllowed = () => !hidden() && !reducedMotion() && fxMode() !== 'still';
 
-/** every settled quote that lands framed gets its first reveal, in page order, while there's room */
+/** every settled quote that lands framed gets its first reveal, in page order, while there's room; then
+ *  every quote's gloss as it should be */
 function pump() {
 	if (motionAllowed()) {
 		for (const q of quotes.values()) {
@@ -157,73 +247,21 @@ function pump() {
 			startReveal(q);
 		}
 	}
-	beat();
-}
-
-// ── the gloss: one clock for the page, ticking only while some quote can gloss ───────────────────────
-function stopBeat() {
-	if (beatTimer) clearTimeout(beatTimer);
-	beatTimer = null;
-}
-
-function beat() {
-	const level = glossLevel();
-	let any = false;
-	if (level !== 'off') for (const q of quotes.values()) if (glossy(q)) any = true;
-	if (!any) return stopBeat();
-	if (beatTimer) return;
-	beatTimer = setTimeout(tick, level === 'glint' ? rnd(GLINT_MS) : rnd(BEAT_MS));
-}
-
-function glint(q: Quote, kind: 'shine' | 'star') {
-	if (!eligible(q) || glossLevel() === 'off') return; // things changed since it was planned
-	try {
-		if (kind === 'shine') q.hooks.shine();
-		else q.hooks.star();
-		glossCount[kind === 'shine' ? 'shines' : 'stars']++;
-	} catch (e) {
-		console.warn('🌸 quote gloss:', e);
-	}
-}
-
-function tick() {
-	beatTimer = null;
-	const level = glossLevel();
-	if (level === 'off') return; // her touch, the tab, the setting or a quote landing starts it again
-	const ready = [...quotes.values()].filter(eligible);
-	if (level === 'glint') {
-		// one glint on the page: a star most times, now and then a shine
-		const q = ready[Math.floor(Math.random() * ready.length)];
-		if (q) glint(q, Math.random() < 0.3 ? 'shine' : 'star');
-	} else if (ready.length) {
-		// a beat: the quotes that shone longest ago catch the light together (never in lockstep), and a
-		// faint star or two rides along while the light crosses · then stillness until the next beat
-		const now = Date.now();
-		const order = [...ready].sort((a, b) => a.lastShine - b.lastShine || Math.random() - 0.5);
-		order.slice(0, MAX_SHINES).forEach((q, i) => {
-			q.lastShine = now;
-			setTimeout(() => glint(q, 'shine'), i * 220);
-		});
-		const stars = Math.min(MAX_STARS, Math.random() < 0.5 ? 1 : 2);
-		for (let i = 0; i < stars; i++) {
-			const q = ready[Math.floor(Math.random() * ready.length)];
-			setTimeout(() => glint(q, 'star'), 600 + Math.random() * 900);
-		}
-	}
-	beat();
+	glossPump();
 }
 
 /** keep the gloss awake without her touch while `key` holds (her voice playing, a battery measure) */
 export function holdAwake(key: string, on: boolean) {
 	if (on) awake.add(key);
 	else awake.delete(key);
-	if (on) beat();
+	if (on) glossPump();
+	else watchIdle(); // let go: the idle count resumes from her last touch
 }
 
 function onInput() {
 	const was = away();
 	lastInput = Date.now();
-	if (was) beat();
+	if (was) glossPump();
 }
 
 function onSelection() {
@@ -237,7 +275,7 @@ function onSelection() {
 		if (on === q.selecting) continue;
 		q.selecting = on;
 		q.hooks.selecting?.(on);
-		if (!on) beat();
+		glossPump(); // selecting: its loop steps aside · done: it comes back
 	}
 }
 
@@ -260,11 +298,12 @@ function wire() {
 		{ threshold: [0, 0.4, 1] }
 	);
 	// a hidden or background tab, a minimized window: everything rests; coming back, the gloss picks up
-	// and a quote that arrived meanwhile has its first reveal
+	// at once and a quote that arrived meanwhile has its first reveal
 	document.addEventListener('visibilitychange', () => {
 		if (hidden()) {
 			for (const q of quotes.values()) rest(q);
 			stopBeat();
+			glossPump();
 		} else pump();
 	});
 	window.matchMedia?.('(prefers-reduced-motion: reduce)').addEventListener?.('change', (e) => {
@@ -279,23 +318,53 @@ function wire() {
 		const mode = fxMode();
 		if (last !== null && mode !== last) {
 			if (mode === 'still') for (const q of quotes.values()) rest(q);
-			stopBeat(); // the new rhythm starts from the next beat
+			stopBeat(); // the stars' new rhythm starts from the next beat
 		}
 		last = mode;
 		pump();
 	});
-	// auto follows the battery: a low one slows the clock to rare glints, charging brings it back
+	// auto follows the battery: a low one turns the loops into rare stars, charging brings them back
 	watchBattery();
 	let low = batteryLow();
 	battery.subscribe(() => {
 		if (batteryLow() === low) return;
 		low = batteryLow();
 		stopBeat();
-		beat();
+		glossPump();
 	});
 	for (const ev of ['pointermove', 'pointerdown', 'keydown', 'wheel', 'touchstart', 'scroll'])
 		window.addEventListener(ev, onInput, { passive: true, capture: true });
 	document.addEventListener('selectionchange', onSelection);
+}
+
+/** the box a quote scrolls in (the chat's), or the screen when it scrolls with the page */
+function scroller(el: HTMLElement): Element | null {
+	if (typeof getComputedStyle !== 'function') return null;
+	for (let p = el.parentElement; p && p !== document.body; p = p.parentElement) {
+		const oy = getComputedStyle(p).overflowY;
+		if (oy === 'auto' || oy === 'scroll' || oy === 'overlay') return p;
+	}
+	return null;
+}
+
+function onNear(entries: IntersectionObserverEntry[]) {
+	for (const e of entries) {
+		const q = quotes.get(e.target);
+		if (q) q.near = e.isIntersecting;
+	}
+	glossPump();
+}
+
+/** the watcher for that box, its margin reaching NEAR_PX past its edges */
+function nearIoFor(el: HTMLElement): IntersectionObserver | null {
+	if (typeof IntersectionObserver === 'undefined') return null;
+	const root = scroller(el);
+	let o = nearIos.get(root);
+	if (!o) {
+		o = new IntersectionObserver(onNear, { root, rootMargin: `${NEAR_PX}px 0px` });
+		nearIos.set(root, o);
+	}
+	return o;
 }
 
 function settle(q: Quote) {
@@ -321,21 +390,27 @@ export function enroll(el: HTMLElement, hooks: QuoteHooks): () => void {
 		settled: false,
 		framed: false,
 		onScreen: false,
+		near: false,
 		seen: false,
 		revealing: false,
 		selecting: false,
+		glossing: false,
 		endedAt: 0,
 		ticket: 0,
-		lastShine: 0,
 		settleTimer: null,
 		endTimer: null
 	};
 	quotes.set(el, q);
 	io?.observe(el);
+	const near = nearIoFor(el);
+	near?.observe(el);
 	return () => {
 		io?.unobserve(el);
+		near?.unobserve(el);
 		if (q.settleTimer) clearTimeout(q.settleTimer);
 		rest(q);
+		q.near = false;
+		setGloss(q, false);
 		quotes.delete(el);
 		pump();
 	};
@@ -353,11 +428,14 @@ export function touch(el: HTMLElement, raw: string, done: boolean) {
 		rest(q);
 		q.seen = false;
 	}
-	if (changed || doneChanged) settle(q);
+	if (changed || doneChanged) {
+		settle(q);
+		glossPump(); // unsettled words: its loop stops until they rest
+	}
 }
 
 /** a hover, a click or her voice: the reveal once more, if it's settled, on screen and allowed to move.
- *  a hover waits its turn (and a breath after the last reveal); a click or her voice goes first */
+ *  a hover waits its turn (and a moment after the last reveal); a click or her voice goes first */
 export function replay(el: HTMLElement, insist = false): boolean {
 	const q = quotes.get(el);
 	if (!q || !q.settled || !q.onScreen || !motionAllowed()) return false;
@@ -373,3 +451,6 @@ export const voiceReveal = (el: HTMLElement) => replay(el, true);
 
 /** how many quotes reveal right now (for tests and the eyes) */
 export const moving = () => revealingCount();
+
+/** how many quotes' loops run right now (for tests and the eyes) */
+export const glossing = () => [...quotes.values()].filter((q) => q.glossing).length;

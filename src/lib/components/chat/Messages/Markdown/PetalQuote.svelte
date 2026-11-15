@@ -11,6 +11,8 @@
 	//   glow  · a copy behind the letters, its own soft halo (the glyphs are never blurred)
 	//   ink   · a copy on top in the accent gradient, with a soft gloss on every line
 	//   sheen · a band of light crossing a copy now and then (moved by the compositor, never repainted)
+	// 🌙 A22: the sheen loops while the quote is on screen, a glossy light gliding across its words pass after
+	// pass with no pause (about 85 px a second, 4–7 s a crossing) · the door starts and stops the loop
 	// if a layer ever fails to paint, the words beneath still show. the door ($lib/utils/petal-quote-fx)
 	// decides when anything moves; a click reveals it and lets her voice say just that line.
 	import { onDestroy, setContext } from 'svelte';
@@ -68,40 +70,90 @@
 		syncFrame = 0;
 		copyInto(glowEl);
 		copyInto(inkEl);
+		if (glossAnims.length) copyInto(sheenEl?.firstElementChild?.firstElementChild as HTMLElement | null);
 	};
 	const syncSoon = () => {
 		if (!syncFrame) syncFrame = requestAnimationFrame(sync);
 	};
 
-	// ── a band of light across the words: a window slides over a copy that slides back the other
-	// way, so the copy stays on its letters (two transforms, run by the compositor) ───────────────
-	function shine() {
-		if (!sheenEl || reduced()) return;
+	// ── the gloss: a glossy light gliding across the words, pass after pass. a window slides over a copy
+	// that slides back the other way, so the copy stays on its letters, and the window's mask repeats the
+	// light every period: as one band leaves the words the next comes in, so the loop has no seam and no
+	// pause (two transforms on a loop, run by the compositor) ───────────────────────────────────────────
+	let glossAnims: Animation[] = [];
+	let glossW = 0;
+	let glossRO: ResizeObserver | null = null;
+	function gloss(on: boolean, soft = false) {
+		const win = sheenEl?.firstElementChild as HTMLElement | null;
+		const words = win?.firstElementChild as HTMLElement | null;
+		if (!win || !words) return;
+		if (!on) {
+			if (!glossAnims.length) return;
+			const going = glossAnims;
+			glossAnims = [];
+			const end = () => {
+				for (const a of going) a.cancel();
+				if (!glossAnims.length) words.replaceChildren();
+			};
+			if (!soft || reduced()) return end();
+			// seen: it fades out, then stops
+			const fade = win.animate([{ opacity: getComputedStyle(win).opacity }, { opacity: 0 }], {
+				duration: 350,
+				easing: 'ease-in',
+				fill: 'forwards'
+			});
+			fade.onfinish = () => {
+				end();
+				fade.cancel();
+			};
+			going.push(fade);
+			return;
+		}
+		if (!sheenEl || !baseEl || reduced() || glossAnims.length) return;
 		const W = sheenEl.clientWidth;
 		if (W < 40) return;
-		const win = sheenEl.firstElementChild as HTMLElement | null;
-		const words = win?.firstElementChild as HTMLElement | null;
-		if (!win || !words || words.childNodes.length) return; // one shine at a time
-		const w = Math.max(90, W * 0.38);
+		// the words' own span (their lines, not the block they sit in): the light crosses that, so it's
+		// always on the words, never gliding over empty space at the end of a short line
+		const box = sheenEl.getBoundingClientRect();
+		const lines = document.createRange();
+		lines.selectNodeContents(baseEl);
+		let x0 = Infinity;
+		let x1 = -Infinity;
+		for (const r of lines.getClientRects()) {
+			if (r.width < 1) continue;
+			x0 = Math.min(x0, r.left - box.left);
+			x1 = Math.max(x1, r.right - box.left);
+		}
+		if (!(x1 > x0)) [x0, x1] = [0, W];
+		x0 = Math.max(0, x0);
+		x1 = Math.min(W, x1);
+		// the period: as one light leaves the words the next comes in (and wide enough that the tilted light
+		// never reaches its tile's edge on a tall quote)
+		const P = Math.max(x1 - x0, sheenEl.clientHeight * 0.7, 80);
+		glossW = W;
 		copyInto(words);
 		words.style.width = `${W}px`;
-		win.style.width = `${w}px`;
-		const timing: KeyframeAnimationOptions = {
-			duration: 2000 + Math.min(800, W), // slow: a gloss, not a flash (and done within its beat)
-			easing: 'cubic-bezier(0.45, 0.05, 0.55, 0.95)'
+		win.style.width = `${x1 - x0 + P}px`;
+		win.style.setProperty('--pq-period', `${P}px`);
+		const loop: KeyframeAnimationOptions = {
+			duration: Math.min(7000, Math.max(4000, (P / 85) * 1000)), // about 85 px a second
+			iterations: Infinity,
+			easing: 'linear' // an even glide: no surge, no stall where one pass meets the next
 		};
-		win.animate(
-			[
-				{ transform: `translateX(${-w}px)`, opacity: 1 },
-				{ transform: `translateX(${W}px)`, opacity: 1 }
-			],
-			timing
-		);
-		const a = words.animate(
-			[{ transform: `translateX(${w}px)` }, { transform: `translateX(${-W}px)` }],
-			timing
-		);
-		a.onfinish = a.oncancel = () => words.replaceChildren();
+		glossAnims = [
+			win.animate([{ transform: `translateX(${x0 - P}px)` }, { transform: `translateX(${x0}px)` }], loop),
+			words.animate([{ transform: `translateX(${P - x0}px)` }, { transform: `translateX(${-x0}px)` }], loop),
+			win.animate([{ opacity: 0 }, { opacity: 1 }], { duration: 600, easing: 'ease-out', fill: 'forwards' })
+		];
+		// the quote changes width (a resize, the sidebar): the loop starts again at the new size
+		if (!glossRO && typeof ResizeObserver !== 'undefined') {
+			glossRO = new ResizeObserver(() => {
+				if (!glossAnims.length || !sheenEl || Math.abs(sheenEl.clientWidth - glossW) < 2) return;
+				gloss(false);
+				gloss(true);
+			});
+			glossRO.observe(sheenEl);
+		}
 	}
 
 	// ── one faint star near the words, once (its own little element, gone when it's done) ──────────
@@ -137,7 +189,7 @@
 				revealing = false;
 				sparks = [];
 			},
-			shine,
+			gloss,
 			star,
 			selecting: (on) => (selecting = on)
 		});
@@ -146,6 +198,8 @@
 	function disarm() {
 		mo?.disconnect();
 		mo = null;
+		glossRO?.disconnect();
+		glossRO = null;
 		if (syncFrame) cancelAnimationFrame(syncFrame);
 		syncFrame = 0;
 		off?.();
@@ -321,7 +375,7 @@
 		--pq-select-bg: rgb(212 64 143 / 0.18);
 		--pq-gloss: rgb(255 255 255 / 0.26);
 		--pq-sheen: rgb(255 255 255 / 0.42);
-		--pq-sheen-ink: rgb(255 255 255 / 0.78);
+		--pq-sheen-ink: rgb(255 255 255 / 0.72); /* A22: a glossy, juicy light */
 		--pq-aura: rgb(212 64 143 / 0.34);
 		--pq-glow: rgb(143 91 209 / 0.22);
 		--pq-rest-glow: 0.5;
@@ -359,7 +413,7 @@
 		--pq-select-bg: oklch(0.711 0.214 var(--p-h-accent, 352) / 0.28);
 		--pq-gloss: rgb(255 255 255 / 0.3);
 		--pq-sheen: rgb(255 255 255 / 0.55);
-		--pq-sheen-ink: rgb(255 246 252 / 0.92);
+		--pq-sheen-ink: rgb(255 244 251 / 0.86); /* A22: a glossy, juicy light */
 		--pq-aura: rgb(255 77 190 / 0.72); /* the aura's candy */
 		--pq-glow: rgb(255 122 206 / 0.42); /* the glow around it */
 		--pq-rest-glow: 0.55;
@@ -532,8 +586,27 @@
 		left: 0;
 		overflow: hidden;
 		opacity: 0;
-		-webkit-mask-image: linear-gradient(105deg, transparent 12%, #000 50%, transparent 88%);
-		mask-image: linear-gradient(105deg, transparent 12%, #000 50%, transparent 88%);
+		/* A22: one light per period, repeating, so the loop is seamless: a soft rise, a glossy middle */
+		-webkit-mask-image: linear-gradient(
+			105deg,
+			transparent 22%,
+			rgb(0 0 0 / 0.35) 36%,
+			#000 50%,
+			rgb(0 0 0 / 0.35) 64%,
+			transparent 78%
+		);
+		mask-image: linear-gradient(
+			105deg,
+			transparent 22%,
+			rgb(0 0 0 / 0.35) 36%,
+			#000 50%,
+			rgb(0 0 0 / 0.35) 64%,
+			transparent 78%
+		);
+		-webkit-mask-size: var(--pq-period, 300px) 100%;
+		mask-size: var(--pq-period, 300px) 100%;
+		-webkit-mask-repeat: repeat-x;
+		mask-repeat: repeat-x;
 	}
 	.pq-sheen-words {
 		position: absolute;
