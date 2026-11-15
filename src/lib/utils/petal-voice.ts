@@ -1,12 +1,12 @@
-// 🎙️ her voice on the page (slices A19 · A19b): the way in, where she is, and what she lights on the way.
+// 🎙️ her voice on the page (slices A19 · A19b · A20 · A21 · A22): the way in, where she is, and what she lights on the way.
 //  · the registry: every reply on screen says how to speak it (ResponseMessage registers itself)
 //  · one control, Lily's choice (Settings → Interface → Voice control): the bubble (PetalVoiceBubble, left
 //    of the chat bar: plays the reply most in view, pause while she speaks, fades once that reply is heard)
 //    or OWUI's speaker by her name (PetalPlayButton). one reply per tap: she never reads on by herself
-//  · the trail: where she is, as a small run of soft pink sparkles under the words she's saying (where she
-//    is in a sentence is estimated from its timing). it pauses with her, and nothing of it moves off-screen,
-//    in a hidden tab or with reduced motion (a still dot marks her sentence then); on a low battery (auto
-//    quotes) only the leading sparkle travels
+//  · the trail (petal-trail.ts): where she is, as a small run of soft pink under the words she's saying
+//    (where she is in a sentence is estimated from its timing). it pauses with her, and nothing of it moves
+//    off-screen, in a hidden tab or with reduced motion (a still dot marks her sentence then); on a low
+//    battery (auto quotes) only the leading mark travels
 //  · quotes: when her voice reaches a display quote, its reveal plays again; a click on a quote reveals it
 //    and has her say only that line (the speaker path, under B's ceiling), if she isn't already speaking
 // built on contract ch. 11.6 (B7's events): petal stream's events door gives each `sentence {message_id,
@@ -28,7 +28,7 @@ import {
 	type VoiceSentence
 } from '$lib/utils/petalStream';
 import { holdAwake, voiceReveal } from '$lib/utils/petal-quote-fx';
-import { batteryLow } from '$lib/utils/petal-battery';
+import { Trail } from '$lib/utils/petal-trail';
 
 // ── the registry ─────────────────────────────────────────────────────────────────────────────────────
 export type VoiceReply = {
@@ -196,8 +196,6 @@ let shown: Shown | null = null;
 let nextTimer: ReturnType<typeof setTimeout> | null = null;
 let hostRO: ResizeObserver | null = null;
 
-const reduced = () =>
-	typeof window !== 'undefined' && !!window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
 const LETTER = /[\p{L}\p{N}]/u;
 // what never carries her words: code blocks, buttons, icons, layers that only echo the words
 const SKIP =
@@ -262,35 +260,6 @@ export function locate(host: HTMLElement, text: string, from = 0): { range: Rang
 	return { range, end: pos + len };
 }
 
-/** the lines a range covers, as boxes (text only: each text node measured on its own) */
-function lineBoxes(range: Range) {
-	const out: { left: number; right: number; top: number; bottom: number }[] = [];
-	const root = range.commonAncestorContainer;
-	const texts: Text[] = [];
-	if (root.nodeType === Node.TEXT_NODE) texts.push(root as Text);
-	else {
-		const w = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
-		for (let n = w.nextNode(); n; n = w.nextNode()) if (range.intersectsNode(n)) texts.push(n as Text);
-	}
-	for (const t of texts) {
-		const r = document.createRange();
-		r.setStart(t, t === range.startContainer ? range.startOffset : 0);
-		r.setEnd(t, t === range.endContainer ? range.endOffset : t.length);
-		for (const b of r.getClientRects()) {
-			if (b.width < 0.5 || b.height < 0.5) continue;
-			const mid = (b.top + b.bottom) / 2;
-			const line = out.find((l) => Math.abs((l.top + l.bottom) / 2 - mid) < b.height * 0.5);
-			if (line) {
-				line.left = Math.min(line.left, b.left);
-				line.right = Math.max(line.right, b.right);
-				line.top = Math.min(line.top, b.top);
-				line.bottom = Math.max(line.bottom, b.bottom);
-			} else out.push({ left: b.left, right: b.right, top: b.top, bottom: b.bottom });
-		}
-	}
-	return out.sort((a, b) => a.top - b.top);
-}
-
 const BLOCKS = 'p, li, h1, h2, h3, h4, h5, h6, blockquote, td, th, dd, dt, figcaption';
 function blockOf(range: Range): Element | null {
 	const n = range.startContainer;
@@ -298,210 +267,24 @@ function blockOf(range: Range): Element | null {
 	return el?.closest(BLOCKS) ?? el;
 }
 
-// ── the trail: a leading sparkle under the words, soft pink sparkles fading behind it ─────────────────
-type Road = { lines: { x0: number; x1: number; y: number }[]; total: number };
-const POOL = 18; // the sparkles it leaves behind, reused
-const DROP_MS: [number, number] = [60, 85]; // one dropped this often while she speaks
-const FADE_MS: [number, number] = [750, 1100]; // each one fades over this long
-let road: Road | null = null;
-let roadMs = 0;
-let roadHost: HTMLElement | null = null;
-let lead: HTMLElement | null = null; // the leading sparkle (a still dot with reduced motion)
-let leadAnim: Animation | null = null;
-const dust: HTMLElement[] = [];
-let dustAt = 0;
-let dropTimer: ReturnType<typeof setTimeout> | null = null;
-let onScreen = true; // her sentence's block, against the screen (nothing moves off it)
-let blockIO: IntersectionObserver | null = null;
-const rnd = ([a, b]: [number, number]) => a + Math.random() * (b - a);
+// ── the trail (petal-trail.ts): a leading sparkle under the words, sparkles and a rare petal behind ─────
+const trail = new Trail(
+	() => (lineState !== 'idle' ? lineSync : sync)() // her block came back on screen: meet her again
+);
 
-function mark(cls: string, host: HTMLElement) {
-	const i = document.createElement('i');
-	i.className = `pv-mark ${cls}`;
-	i.setAttribute('aria-hidden', 'true');
-	host.appendChild(i);
-	return i;
-}
-
-/** where the road is at progress p (0 → 1), in the host's own px */
-function roadAt(p: number) {
-	if (!road) return null;
-	let left = Math.max(0, Math.min(1, p)) * road.total;
-	for (const l of road.lines) {
-		const w = l.x1 - l.x0;
-		if (left <= w || l === road.lines[road.lines.length - 1])
-			return { x: l.x0 + Math.min(left, w), y: l.y };
-		left -= w;
-	}
-	return null;
-}
-
-/** lay the road under a sentence (or a line) for `ms` of her voice, and set the leading sparkle on it */
-function layRoad(range: Range, host: HTMLElement, ms: number) {
-	leadAnim?.cancel();
-	leadAnim = null;
-	stopDrops();
-	if (roadHost && roadHost !== host) dropTrail();
-	roadHost = host;
-	roadMs = Math.max(120, ms);
-	const box = host.getBoundingClientRect();
-	const lines = lineBoxes(range).map((l) => ({
-		x0: l.left - box.left,
-		x1: l.right - box.left,
-		y: l.bottom - box.top - (l.bottom - l.top) * 0.08 // just under the words
-	}));
-	road = lines.length ? { lines, total: lines.reduce((n, l) => n + (l.x1 - l.x0), 0) || 1 } : null;
-	if (!road) return lead?.classList.remove('pv-on');
-	if (!lead || lead.parentElement !== host) {
-		lead?.remove();
-		lead = mark('pv-lead', host);
-	}
-	if (reduced()) {
-		// reduced motion: a still dot under the start of her sentence, nothing travels
-		const at = roadAt(0)!;
-		lead.style.transform = `translate(${at.x}px, ${at.y}px)`;
-		lead.classList.add('pv-on', 'pv-still');
-		return;
-	}
-	lead.classList.remove('pv-still');
-	lead.style.transform = '';
-	const frames: Keyframe[] = [];
-	let acc = 0;
-	for (const l of road.lines) {
-		frames.push({ offset: acc / road.total, transform: `translate(${l.x0}px, ${l.y}px)` });
-		acc += l.x1 - l.x0;
-		frames.push({ offset: Math.min(1, acc / road.total), transform: `translate(${l.x1}px, ${l.y}px)` });
-	}
-	leadAnim = lead.animate(frames, { duration: roadMs, easing: 'linear', fill: 'forwards' });
-	leadAnim.pause();
-	lead.classList.add('pv-on');
-}
-
-/** may the trail move right now: she's speaking, her sentence is on screen, the tab is visible */
-const moving = () =>
-	!!leadAnim && leadAnim.playState === 'running' && onScreen && document.visibilityState === 'visible';
-
-/** one soft sparkle where the lead is now, left behind to fade */
-function drop() {
-	if (!roadHost || !leadAnim || batteryLow()) return;
-	const at = roadAt(Number(leadAnim.currentTime ?? 0) / roadMs);
-	if (!at) return;
-	let s = dust[dustAt];
-	if (!s || s.parentElement !== roadHost) {
-		s?.remove();
-		s = dust[dustAt] = mark('pv-dust', roadHost);
-	}
-	dustAt = (dustAt + 1) % POOL;
-	for (const a of s.getAnimations()) a.cancel();
-	const star = Math.random() < 0.35; // now and then a tiny four-ray sparkle among the soft ones
-	const size = star ? 7 + Math.random() * 4 : 4 + Math.random() * 5;
-	s.classList.toggle('pv-star', star);
-	s.style.setProperty('--s', `${size.toFixed(1)}px`);
-	const x = at.x + (Math.random() - 0.5) * 5;
-	const y = at.y + (Math.random() - 0.5) * 4;
-	const dx = (Math.random() - 0.5) * 6;
-	const dy = 2 + Math.random() * 4;
-	s.animate(
-		[
-			{ transform: `translate(${x}px, ${y}px) scale(0.5)`, opacity: 0 },
-			{ transform: `translate(${x}px, ${y}px) scale(1)`, opacity: 0.95, offset: 0.16 },
-			{ transform: `translate(${x + dx}px, ${y + dy}px) scale(0.25)`, opacity: 0 }
-		],
-		{ duration: rnd(FADE_MS), easing: 'ease-out', fill: 'forwards' }
-	);
-}
-
-function stopDrops() {
-	if (dropTimer) clearTimeout(dropTimer);
-	dropTimer = null;
-}
-
-function startDrops() {
-	stopDrops();
-	if (batteryLow() || reduced()) return; // a low battery keeps just the lead; reduced motion, the dot
-	const tick = () => {
-		dropTimer = null;
-		if (!moving()) return;
-		drop();
-		dropTimer = setTimeout(tick, rnd(DROP_MS));
-	};
-	tick();
-}
-
-/** keep the lead on her clock: where she is in it, at her speed, paused with her and off-screen */
-function keepTime(at: number, rate: number, paused: boolean) {
-	if (!leadAnim) return;
-	try {
-		leadAnim.playbackRate = rate || 1;
-		leadAnim.currentTime = Math.max(0, at * 1000);
-		if (paused || !onScreen || document.visibilityState !== 'visible') {
-			leadAnim.pause();
-			stopDrops();
-		} else {
-			leadAnim.play();
-			for (const s of dust) for (const a of s.getAnimations()) if (a.playState === 'paused') a.play();
-			startDrops();
-		}
-	} catch {}
-}
-
-/** she paused (or her sentence left the screen, or the tab hid): the whole trail holds still */
+/** she paused (or the tab hid): the whole trail holds still, and the next edge waits for her */
 function freeze() {
 	if (nextTimer) clearTimeout(nextTimer);
 	nextTimer = null;
-	stopDrops();
-	try {
-		leadAnim?.pause();
-		for (const s of dust) for (const a of s.getAnimations()) a.pause();
-	} catch {}
-}
-
-/** between two sentences: the lead fades; what it left behind finishes fading */
-function restTrail() {
-	stopDrops();
-	leadAnim?.pause();
-	lead?.classList.remove('pv-on');
-}
-
-/** the end: the trail is gone */
-function dropTrail() {
-	stopDrops();
-	leadAnim?.cancel();
-	leadAnim = null;
-	lead?.remove();
-	lead = null;
-	for (const s of dust) s.remove();
-	dust.length = 0;
-	dustAt = 0;
-	road = null;
-	roadHost = null;
-}
-
-/** watch her sentence's block: off the screen, nothing of the trail moves */
-function watchBlock(el: Element | null) {
-	blockIO?.disconnect();
-	blockIO = null;
-	onScreen = true;
-	if (!el || typeof IntersectionObserver === 'undefined') return;
-	blockIO = new IntersectionObserver(([e]) => {
-		if (!e) return;
-		const was = onScreen;
-		onScreen = e.isIntersecting;
-		if (was && !onScreen) freeze();
-		else if (!was && onScreen) (lineState !== 'idle' ? lineSync : sync)();
-	});
-	blockIO.observe(el);
+	trail.freeze();
 }
 
 function clearFollower() {
 	if (nextTimer) clearTimeout(nextTimer);
 	nextTimer = null;
-	dropTrail();
+	trail.clear();
 	hostRO?.disconnect();
 	hostRO = null;
-	blockIO?.disconnect();
-	blockIO = null;
-	onScreen = true;
 	shown = null;
 }
 
@@ -518,17 +301,17 @@ function show(seg: VoiceSentence) {
 	const host = replies.get(segsMessage ?? '')?.words() ?? null;
 	const found = host ? locate(host, seg.text, cursor) : null;
 	shown = { seg, range: found?.range ?? null, host, block: found ? blockOf(found.range) : null };
-	if (!found || !host) return restTrail();
+	if (!found || !host) return trail.rest();
 	cursor = found.end;
-	layRoad(found.range, host, seg.duration * 1000);
-	watchBlock(shown.block);
+	trail.lay(found.range, host, seg.duration * 1000);
+	trail.watch(shown.block);
 	for (const q of host.querySelectorAll<HTMLElement>('.petal-quote'))
 		if (found.range.intersectsNode(q)) voiceReveal(q); // her voice reached it: the reveal plays again
 	if (!hostRO && typeof ResizeObserver !== 'undefined') {
 		hostRO = new ResizeObserver(() => {
 			// the page moved under her (a resize, an image arriving): the road is laid again
 			if (shown?.range && shown.host) {
-				layRoad(shown.range, shown.host, shown.seg.duration * 1000);
+				trail.lay(shown.range, shown.host, shown.seg.duration * 1000);
 				sync();
 			}
 		});
@@ -547,11 +330,11 @@ function sync() {
 	const rate = a.playbackRate || 1;
 	const cur = segs.find((s) => s.start <= t && t < s.start + s.duration) ?? null;
 	if (!cur) {
-		if (shown) restTrail();
+		if (shown) trail.rest();
 		shown = null;
 	} else {
 		if (cur !== shown?.seg) show(cur);
-		if (shown?.seg === cur) keepTime(t - cur.start, rate, a.paused);
+		if (shown?.seg === cur) trail.time(t - cur.start, rate, a.paused);
 	}
 	if (a.paused || document.visibilityState === 'hidden') return;
 	let edge = Infinity;
@@ -673,12 +456,12 @@ function lineSync() {
 	const on = seg.duration > 0 && seg.start <= t && t < seg.start + seg.duration;
 	if (on) {
 		if (!lineFollowed) {
-			layRoad(lineRange, lineHost, seg.duration * 1000);
-			watchBlock(lineQuote);
+			trail.lay(lineRange, lineHost, seg.duration * 1000);
+			trail.watch(lineQuote);
 			lineFollowed = true;
 		}
-		keepTime(t - seg.start, a.playbackRate, a.paused);
-	} else if (lineFollowed) restTrail();
+		trail.time(t - seg.start, a.playbackRate, a.paused);
+	} else if (lineFollowed) trail.rest();
 	if (a.paused) return;
 	const edge = t < seg.start ? seg.start : t < seg.start + seg.duration ? seg.start + seg.duration : Infinity;
 	if (edge < Infinity)
@@ -784,45 +567,9 @@ function hookClips() {
 	el.addEventListener('emptied', () => set('idle'));
 }
 
-// Lily's pink, in gradients only: candy on the night skins, a deeper candy on light ones
-const STYLE = `
-.pv-mark { position: absolute; left: 0; top: 0; z-index: 3; pointer-events: none; }
-.pv-lead {
-	--pv-core: 255 91 176; width: 12px; height: 12px; margin: -6px 0 0 -6px; border-radius: 50%;
-	opacity: 0; transition: opacity 0.3s ease;
-	background:
-		radial-gradient(circle, rgb(255 255 255 / 0.95) 0, rgb(255 255 255 / 0) 30%),
-		radial-gradient(circle, rgb(var(--pv-core) / 0.95) 0, rgb(var(--pv-core) / 0.45) 40%, rgb(var(--pv-core) / 0) 70%),
-		linear-gradient(90deg, rgb(var(--pv-core) / 0), rgb(var(--pv-core) / 0.85) 50%, rgb(var(--pv-core) / 0)) center / 100% 1.5px no-repeat,
-		linear-gradient(0deg, rgb(var(--pv-core) / 0), rgb(var(--pv-core) / 0.85) 50%, rgb(var(--pv-core) / 0)) center / 1.5px 100% no-repeat;
-}
-.pv-lead.pv-on { opacity: 1; }
-.pv-lead.pv-still { transition: none; }
-.pv-dust {
-	--pv-core: 255 144 207; width: var(--s, 6px); height: var(--s, 6px);
-	margin: calc(var(--s, 6px) / -2) 0 0 calc(var(--s, 6px) / -2); border-radius: 50%; opacity: 0;
-	background: radial-gradient(circle, rgb(255 255 255 / 0.85) 0, rgb(var(--pv-core) / 0.9) 30%, rgb(var(--pv-core) / 0) 72%);
-}
-.pv-dust.pv-star {
-	border-radius: 0;
-	background:
-		radial-gradient(circle, rgb(255 255 255 / 0.9) 0, rgb(var(--pv-core) / 0.8) 18%, rgb(var(--pv-core) / 0) 42%),
-		linear-gradient(90deg, rgb(var(--pv-core) / 0), rgb(var(--pv-core) / 0.9) 50%, rgb(var(--pv-core) / 0)) center / 100% 1.2px no-repeat,
-		linear-gradient(0deg, rgb(var(--pv-core) / 0), rgb(var(--pv-core) / 0.9) 50%, rgb(var(--pv-core) / 0)) center / 1.2px 100% no-repeat;
-}
-html:not(.dark) .pv-lead { --pv-core: 212 64 143; }
-html:not(.dark) .pv-dust { --pv-core: 222 84 160; }
-@media (prefers-reduced-motion: reduce) { .pv-dust { display: none; } .pv-lead { transition: none; } }
-`;
-
 function wire() {
 	if (wired || typeof window === 'undefined') return;
 	wired = true;
-	const style = document.createElement('style');
-	style.id = 'petal-voice-style';
-	style.textContent = STYLE;
-	document.head.appendChild(style);
-
 	voiceNow.subscribe((v) => {
 		hookAudio();
 		hookClips();
