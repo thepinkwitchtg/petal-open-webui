@@ -9,6 +9,9 @@
 //  · 💗 A23b · she hears how it went, one toast per reply whose words change in place: "sent" the moment it
 //    leaves · "Thanks for your feedback 💗" only once the rig answered that the row is in the database · if every
 //    try fails, "couldn't save your feedback · tap to retry" (a retry button), once per failure, never per try
+//  · 💗 A26 · the "saved" moment says a thank-you Petal wrote ahead of time, handed back with the landing itself
+//    (`thanks`, routers/petal_thumbs.py → utils/petal_thanks.py): no second request, no model call on the tap.
+//    none ready, or anything amiss → the plain "Thanks for your feedback 💗". she never learns the verdict
 //  · a page reload keeps what's still waiting, in localStorage: ids and verdicts only (the rating, the reason
 //    key, the 1–10). never words: not her note, not the tags, not the reply
 //  · what the tap doesn't need rides after it: OWUI's tag step, on her first thumb of a reply, run on the rig
@@ -54,14 +57,21 @@ export const MAX_TRIES = BACKOFF_MS.length;
 const KEY = 'petal-thumbs';
 const SETTLE_MS = 1200; // a landed mark lingers this long (its fade), then leaves
 const SENT_MS = 20_000; // "sent" stays until the answer replaces it (a failure needs ~15 s of tries)
+export const PLAIN_THANKS = 'Thanks for your feedback 💗';
+const THANKS_MAX = 120; // her lines are ≤ 70 characters; anything longer from the rig isn't hers
+
+/** her line when the rig handed one back, else the plain thanks */
+export function thanksLine(line: unknown): string {
+	const words = typeof line === 'string' ? line.replace(/\s+/g, ' ').trim() : '';
+	return words && words.length <= THANKS_MAX ? words : PLAIN_THANKS;
+}
 
 // 💗 one toast per reply: an update keeps the old toast's duration and action unless given new ones, so every
 // state names its own
-function say(id: string, what: 'sent' | 'saved' | 'failed') {
+function say(id: string, what: 'sent' | 'saved' | 'failed', thanks?: unknown) {
 	const base = { id: `petal-thumb-${id}`, description: undefined, action: undefined };
 	if (what === 'sent') toast.message('sent', { ...base, duration: SENT_MS });
-	else if (what === 'saved')
-		toast.success('Thanks for your feedback 💗', { ...base, duration: PETAL_TOAST_MS.default });
+	else if (what === 'saved') toast.success(thanksLine(thanks), { ...base, duration: PETAL_TOAST_MS.default });
 	else
 		toast.error("couldn't save your feedback · tap to retry", {
 			...base,
@@ -239,7 +249,7 @@ async function send(entry: Entry) {
 		meta: entry.meta
 	});
 	let res: Response | null = null;
-	let out: { feedback_id?: string; annotation?: Annotation } | null = null;
+	let out: { feedback_id?: string; annotation?: Annotation; thanks?: string | null } | null = null;
 	try {
 		res = await fetch(`${WEBUI_API_BASE_URL}/petal/thumbs`, {
 			method: 'POST',
@@ -267,7 +277,7 @@ async function send(entry: Entry) {
 			});
 			persist();
 			settleLater(entry.message_id);
-			say(entry.message_id, 'saved'); // the rig answered: the row is in the database
+			say(entry.message_id, 'saved', out.thanks); // the rig answered: the row is in the database
 			void tagsAfter(entry, out.annotation ?? entry.annotation);
 		} else {
 			persist(); // a newer verdict waited: it goes now, onto the same row

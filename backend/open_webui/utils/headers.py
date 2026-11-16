@@ -1,4 +1,5 @@
 import logging
+import re
 import time
 from string import punctuation
 from typing import Any, Optional
@@ -227,7 +228,16 @@ async def get_headers_and_cookies(
         custom_headers = await get_custom_headers(config.get('headers'), user, metadata, request=request)
         headers.update(custom_headers)
 
+    # 🌸 Petal (A26) · a worker inside OWUI names itself at the wellspring (ch11: User-Agent petal-<app>/<role>),
+    # so its ask is never taken for her turn. set only on the worker's own server-side request, never by a page
+    caller = getattr(getattr(request, 'state', None), 'petal_caller', None)
+    if isinstance(caller, str) and _PETAL_CALLER.fullmatch(caller):
+        headers['User-Agent'] = caller
+
     return headers, cookies
+
+
+_PETAL_CALLER = re.compile(r'petal-open-webui/[a-z][a-z0-9-]{0,31}')
 
 
 def get_microsoft_entra_id_access_token():
