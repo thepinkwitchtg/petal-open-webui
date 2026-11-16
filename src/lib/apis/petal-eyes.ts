@@ -13,6 +13,7 @@ export type EyesRecord = {
 	round: number; // 2+ = a tool follow-up or a continue for the same reply
 	to: string | null; // host:port the bytes went to
 	mode?: string; // the mode chip's pick (A15): which of the forge's modes dressed it, when one was sent
+	turn?: string; // (A25) whose turn this reply answered when it wasn't hers: 'subagent_result'
 	payload: Record<string, any>;
 	parts: EyesPart[];
 };

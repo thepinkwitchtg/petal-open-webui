@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-🌸📏 petal long chats — what opening her longest chats costs, numbers only (slice A24)
+🌸📏 petal long chats — what opening her longest chats costs, numbers only (slice A24 · the login line A25)
 
 opens her N largest chats one by one in a headless browser, through OWUI's own pages and routes, as a reader
 only, and reports per chat:
@@ -24,7 +24,12 @@ usage (through petal-long-chats.sh, which brings its own browser):
   ./petal-long-chats.sh            the 12 largest chats
   ./petal-long-chats.sh 20         the 20 largest
   ./petal-long-chats.sh 8 --phone  as her phone would (360×780 @3x, CPU ×4)
-env: OWUI_URL (default http://127.0.0.1:3000) · OWUI_DB (else found) · OWUI_TOKEN (else asked: email + password)
+env: OWUI_URL (default http://127.0.0.1:3000) · OWUI_DB (else found) · PETAL_PROBE_DEBUG=1 (a traceback, if it fails)
+
+signing in: OWUI opens chats in a browser only for a human session. an sk- key (PETAL_OWUI_KEY, OWUI_TOKEN, then
+Petal-App-Data/_secrets/owui.key, the one home for it) is refused there by OWUI's design, so with one the probe
+says so in one line and asks for her login, once per run, kept in memory only, never stored. a session token
+found in those same places (not sk-) is used as is. the key is never printed.
 """
 
 import argparse
@@ -37,6 +42,7 @@ import sqlite3
 import statistics
 import sys
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
 from pathlib import Path
@@ -162,22 +168,87 @@ def backend_mb(pids: list[int]) -> float | None:
     return round(total, 1)
 
 
+class Stop(Exception):
+    """one line for her, never a traceback"""
+
+
+def owui_key() -> tuple[str | None, str | None]:
+    """(key, where it lives) · the one home for the OWUI key (ch11): env PETAL_OWUI_KEY, OWUI_TOKEN, then the file.
+    never printed, never copied"""
+    for name in ('PETAL_OWUI_KEY', 'OWUI_TOKEN'):
+        value = (os.environ.get(name) or '').strip()
+        if value:
+            return value, f'${name}'
+    home = Path(os.environ.get('PETAL_APP_DATA') or '~/Gardens/Documents/Petal-App-Data').expanduser()
+    try:
+        value = (home / '_secrets' / 'owui.key').read_text(encoding='utf-8').strip().split('\n', 1)[0].strip()
+    except (OSError, UnicodeDecodeError):
+        value = ''
+    return (value, 'Petal-App-Data/_secrets/owui.key') if value else (None, None)
+
+
+def owui_json(req: urllib.request.Request) -> dict:
+    with urllib.request.urlopen(req, timeout=30) as r:
+        return json.loads(r.read())
+
+
+def http_reason(e: urllib.error.HTTPError) -> str:
+    try:
+        detail = json.loads(e.read() or b'{}').get('detail')
+    except Exception:
+        detail = None
+    said = isinstance(detail, str) and len(detail) <= 120 and not detail.startswith(str(e.code))
+    return f'HTTP {e.code}' + (f' · {detail}' if said else '')
+
+
+def ask_login(base: str) -> tuple[str, str]:
+    """her login, once per run: in memory only, never stored, never printed"""
+    for left in (2, 1, 0):
+        email = input('OWUI email: ').strip()
+        password = getpass.getpass('OWUI password (kept in memory only): ')
+        req = urllib.request.Request(
+            f'{base}/api/v1/auths/signin',
+            method='POST',
+            data=json.dumps({'email': email, 'password': password}).encode(),
+            headers={'Content-Type': 'application/json'},
+        )
+        try:
+            me = owui_json(req)
+        except urllib.error.HTTPError as e:
+            if e.code in (400, 401, 403) and left:
+                more = f"{left} more {'try' if left == 1 else 'tries'}"
+                print(f"💔 OWUI didn't take that login ({http_reason(e)}) · {more}")
+                continue
+            raise Stop(f"💔 OWUI didn't take that login ({http_reason(e)})") from None
+        if isinstance(me, dict) and me.get('token') and me.get('id'):
+            return me['token'], me['id']
+        step = me.get('next_step') if isinstance(me, dict) else None
+        raise Stop(
+            f'💔 OWUI asks for a second step at sign-in ({step or "no session given"}), which the probe can\'t pass: '
+            'a session token in OWUI_TOKEN works instead'
+        )
+    raise Stop("💔 OWUI didn't take that login")
+
+
 def sign_in(base: str) -> tuple[str, str]:
-    token = os.environ.get('OWUI_TOKEN')
-    if token:
-        req = urllib.request.Request(f'{base}/api/v1/auths/', headers={'Authorization': f'Bearer {token}'})
-        me = json.loads(urllib.request.urlopen(req, timeout=30).read())
-        return token, me['id']
-    email = input('OWUI email: ').strip()
-    password = getpass.getpass('OWUI password (kept in memory only): ')
-    req = urllib.request.Request(
-        f'{base}/api/v1/auths/signin',
-        method='POST',
-        data=json.dumps({'email': email, 'password': password}).encode(),
-        headers={'Content-Type': 'application/json'},
-    )
-    me = json.loads(urllib.request.urlopen(req, timeout=30).read())
-    return me['token'], me['id']
+    """a human session (token, her user id) · OWUI opens chats in a browser for nothing less"""
+    key, where = owui_key()
+    if key and key.startswith('sk-'):
+        print(
+            f'🔑 the key in {where} is an sk- key, and OWUI requires a human session to open chats in a browser: '
+            'your login, once, kept in memory only'
+        )
+        return ask_login(base)
+    if key:
+        req = urllib.request.Request(f'{base}/api/v1/auths/', headers={'Authorization': f'Bearer {key}'})
+        try:
+            me = owui_json(req)
+            return key, me['id']
+        except urllib.error.HTTPError as e:
+            print(f'🔑 OWUI refused the session in {where} ({http_reason(e)}): your login instead, kept in memory only')
+            return ask_login(base)
+    print('🔑 OWUI requires a human session to open chats in a browser: your login, once, kept in memory only')
+    return ask_login(base)
 
 
 def largest_chats(db: str, user_id: str, n: int) -> list[tuple[str, int]]:
@@ -288,15 +359,12 @@ def open_one(pw, base: str, token: str, chat_id: str, phone: bool, pids: list[in
     }
 
 
-def main():
-    ap = argparse.ArgumentParser(description='what opening her longest chats costs (numbers only)')
-    ap.add_argument('n', nargs='?', type=int, default=12)
-    ap.add_argument('--phone', action='store_true', help='as her phone would: 360×780 @3x, CPU ×4')
-    ap.add_argument('--url', default=os.environ.get('OWUI_URL', 'http://127.0.0.1:3000'))
-    args = ap.parse_args()
-    from playwright.sync_api import sync_playwright
-
-    base = args.url.rstrip('/')
+def run(args, base: str):
+    try:
+        from playwright.sync_api import sync_playwright
+    except ImportError:
+        why = "💔 playwright isn't here: run it through ./petal-long-chats.sh (it brings its own browser)"
+        raise Stop(why) from None
     db = find_db()
     token, user_id = sign_in(base)
     chats = largest_chats(db, user_id, args.n)
@@ -352,6 +420,35 @@ def main():
     f.write_text(json.dumps({'at': int(time.time()), 'phone': args.phone, 'chats': rows}, indent=1))
     os.chmod(f, 0o600)
     print(f'\nkept: {f}')
+
+
+def main():
+    ap = argparse.ArgumentParser(description='what opening her longest chats costs (numbers only)')
+    ap.add_argument('n', nargs='?', type=int, default=12)
+    ap.add_argument('--phone', action='store_true', help='as her phone would: 360×780 @3x, CPU ×4')
+    ap.add_argument('--url', default=os.environ.get('OWUI_URL', 'http://127.0.0.1:3000'))
+    args = ap.parse_args()
+    base = args.url.rstrip('/')
+    try:
+        run(args, base)
+    except KeyboardInterrupt:
+        print('\n🌙 stopped · nothing kept')
+        sys.exit(130)
+    except EOFError:
+        print('\n🌙 no login given · stopped')
+        sys.exit(1)
+    except Stop as e:
+        sys.exit(str(e))
+    except urllib.error.HTTPError as e:
+        sys.exit(f'💔 OWUI answered {http_reason(e)}')
+    except urllib.error.URLError as e:
+        sys.exit(f"💔 OWUI isn't answering at {base} ({e.reason}) · is it running? (OWUI_URL)")
+    except Exception as e:
+        if os.environ.get('PETAL_PROBE_DEBUG') == '1':
+            raise
+        why = re.sub(r'https?://\S+', '<url>', str(e)).strip().splitlines()
+        sys.exit(f'💔 the probe stopped: {type(e).__name__}' + (f' · {why[0][:160]}' if why else '')
+                 + ' · PETAL_PROBE_DEBUG=1 shows where')
 
 
 if __name__ == '__main__':

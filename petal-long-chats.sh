@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 🌸📏 petal long chats — what opening her longest chats costs, numbers only (slice A24)
+# 🌸📏 petal long chats — what opening her longest chats costs, numbers only (slice A24 · the login line A25)
 #
 #   ./petal-long-chats.sh            the 12 largest chats, opened the way her desktop opens them
 #   ./petal-long-chats.sh 20         the 20 largest
@@ -8,8 +8,10 @@
 # a reader only: every API call that isn't a GET is refused in the probe's browser and its socket never sends a
 # "read" mark (no "viewed" stamps, her unread dots untouched, no device readings, no whispers). never a title or
 # a word: chats are picked by size and named by a hash of their id.
-# OWUI must be running (OWUI_URL, default http://127.0.0.1:3000); it asks for her OWUI email + password once
-# (kept in memory only), or reads OWUI_TOKEN. the report is printed and kept in Petal-App-Data/petal-probes/.
+# OWUI must be running (OWUI_URL, default http://127.0.0.1:3000). OWUI opens chats in a browser only for a human
+# session, so an sk- key (PETAL_OWUI_KEY · OWUI_TOKEN · Petal-App-Data/_secrets/owui.key) gets one line and her
+# login is asked once (kept in memory only, never stored); a session token found there is used as is.
+# the report is printed and kept in Petal-App-Data/petal-probes/.
 # the first run brings its own headless browser: a small venv at ~/.venvs/petal-probe (playwright + chromium).
 set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
