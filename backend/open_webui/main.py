@@ -1119,6 +1119,18 @@ def _petal_mode(value) -> str | None:
     return (value.strip()[:64] or None) if isinstance(value, str) else None
 
 
+def _petal_turn(user_message, request: Request) -> str | None:
+    """Petal (A25) · whose turn this reply answers, when it isn't hers. a background subagent's result comes
+    back as a user turn (meta: internal · subagent) and OWUI runs the reply as an ordinary request, so without
+    this mark the filters would read the result as her words. timer turns stay unmarked: those are her intent."""
+    meta = user_message.get('meta') if isinstance(user_message, dict) else None
+    if getattr(request.state, 'internal', False) is True or not isinstance(meta, dict):
+        return None  # the subagent's own work turn is internal already
+    if meta.get('internal') is True and meta.get('type') == 'subagent':
+        return 'subagent_result'
+    return None
+
+
 @app.post('/api/chat/completions')
 @app.post('/api/v1/chat/completions')  # Experimental: Compatibility with OpenAI API
 async def chat_completion(
@@ -1325,6 +1337,8 @@ async def chat_completion(
             # Petal · the mode chip (A15): which of the forge's modes dresses this message · popped
             # here so it never rides on to the model · the forge's filter reads it from metadata
             'petal_mode': _petal_mode(form_data.pop('petal_mode', None)),
+            # Petal (A25) · 'subagent_result' when this reply answers a subagent's result, not her
+            'petal_turn': _petal_turn(user_message, request),
             'automation_id': automation_id,
             'folder_id': form_data.pop('folder_id', None),
             'filter_ids': form_data.pop('filter_ids', []),

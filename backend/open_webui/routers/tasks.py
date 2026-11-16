@@ -622,7 +622,7 @@ async def generate_moa_response(request: Request, form_data: dict, user=Depends(
 # >>> petal · hush · begin >>>
 ##################################
 #
-# 🌸 petal · hush  ·  v0.15  (petal-patch, grafted by petal-hush-apply.sh)
+# 🌸 petal · hush  ·  v0.16  (petal-patch, grafted by petal-hush-apply.sh)
 # Petal writes the whisper in the empty chat field, at runtime.
 # called directly through generate_chat_completion, like title
 # generation — never through the chat pipeline, so memory injection,
@@ -687,12 +687,21 @@ async def generate_moa_response(request: Request, form_data: dict, user=Depends(
 #         starts nothing new — no ask, no 'shorter please' retry — and answers
 #         {whisper: null, gentle_stop: true}, a quiet 200, so the page lets the pool carry
 #         the room and never counts it as a miss. work already in flight finishes.
+# v0.16 · the clock switch (ch11 §11.7): when petal-witch-forge says the clock is hidden
+#         (forge_core.clock_hidden(doc), `forge.py clock --hide`), every hush line Petal reads
+#         keeps the day and loses the hour: {{CURRENT_TIME}} leaves (with the comma before it),
+#         {{CURRENT_DATETIME}} becomes the date. whispers, the pin and the pulse alike. no forge
+#         core, no forge.json, an error or an answer that isn't a bool → hidden. asked at most
+#         every 2 s; debug says clock: hidden|shown and why.
 #
 ##################################
 
 import asyncio as _petal_asyncio
+import importlib.util as _petal_importlib_util
 import json as _petal_json
 import os as _petal_os
+import sys as _petal_sys
+import threading as _petal_threading
 import time as _petal_time
 from pathlib import Path as _PetalPath
 
@@ -747,6 +756,88 @@ def _petal_hush_resting(mode, stop):
         'gentle_stop': True,
         'reason': 'gentle stop — Petal is being tucked in' + (f' ({why})' if why else '') + ', the pool carries the room',
     }
+
+
+# ── the clock switch (ch11 §11.7): the forge keeps the day and drops the hour ─────────
+# forge_core is petal-witch-forge's own (stdlib), read by path: $PETAL_FORGE_CORE, else the forge's
+# default home (the same lookup as the forge's door, routers/petal_forge.py). it is put in sys.modules
+# BEFORE exec_module: its dataclasses (`from __future__ import annotations`) look their own module up
+# there while each class is built, and raise AttributeError when it isn't (ANA-HOUR's note).
+_PETAL_FORGE_CORE = '~/Gardens/Transformation Sequences - Automation/petal_core/petal-witch-forge/core/forge_core.py'
+_PETAL_FORGE_MODULE = '_petal_hush_forge_core'  # its own name: never shares a module with another reader
+_PETAL_CLOCK_MEMO_S = 2.0
+_PETAL_CLOCK_LOCK = _petal_threading.Lock()
+_PETAL_CLOCK = {'at': None, 'hidden': True, 'by': 'not asked yet', 'core': None, 'module': None}
+_PETAL_HOUR = r'(?:\(\s*\{\{CURRENT_TIME\}\}\s*\)|\[\s*\{\{CURRENT_TIME\}\}\s*\]|\{\{CURRENT_TIME\}\})'
+_PETAL_HOUR_CUTS = (  # in this order, so each lens line keeps its own grammar
+    re.compile(r'[ \t]*(?:,|·|—|–|-|\bat\b|\baround\b)[ \t]*' + _PETAL_HOUR),  # "Monday, 3 PM" · "Monday at 3 PM"
+    re.compile(_PETAL_HOUR + r'[ \t]*(?:,|·)[ \t]*'),  # "3 PM, Monday"
+    re.compile(r'[ \t]*' + _PETAL_HOUR),  # anywhere else
+)
+
+
+def _petal_forge_core():
+    """the forge's own core, loaded once per version of its file (a new forge is read again)"""
+    path = _PetalPath(_petal_os.getenv('PETAL_FORGE_CORE') or _PETAL_FORGE_CORE).expanduser()
+    st = path.stat()  # FileNotFoundError: no forge here
+    key = (str(path), st.st_mtime_ns, st.st_size)
+    if _PETAL_CLOCK['core'] == key and _PETAL_CLOCK['module'] is not None:
+        return _PETAL_CLOCK['module']
+    spec = _petal_importlib_util.spec_from_file_location(_PETAL_FORGE_MODULE, path)
+    module = _petal_importlib_util.module_from_spec(spec)
+    _petal_sys.modules[_PETAL_FORGE_MODULE] = module  # before exec_module, or its dataclasses break
+    try:
+        spec.loader.exec_module(module)
+    except BaseException:
+        _petal_sys.modules.pop(_PETAL_FORGE_MODULE, None)
+        _PETAL_CLOCK.update(core=None, module=None)
+        raise
+    _PETAL_CLOCK.update(core=key, module=module)
+    return module
+
+
+def _petal_clock_hidden():
+    """(hidden, by) · the hour reaches her only when the forge says shown · asked at most every 2 s"""
+    with _PETAL_CLOCK_LOCK:
+        now = _petal_time.monotonic()
+        if _PETAL_CLOCK['at'] is not None and now - _PETAL_CLOCK['at'] < _PETAL_CLOCK_MEMO_S:
+            return _PETAL_CLOCK['hidden'], _PETAL_CLOCK['by']
+        try:
+            fc = _petal_forge_core()
+        except FileNotFoundError:
+            hidden, by = True, 'no forge core'
+        except BaseException as e:  # a forge that can't load keeps the hour away
+            hidden, by = True, f'the forge core did not load ({type(e).__name__})'
+        else:
+            try:
+                if callable(getattr(fc, 'forge_path', None)) and callable(getattr(fc, 'home', None)) \
+                        and not _PetalPath(fc.forge_path(fc.home())).exists():
+                    hidden, by = True, 'no forge.json'
+                else:
+                    answer = fc.clock_hidden(fc.load())
+                    hidden, by = (answer, 'the forge') if isinstance(answer, bool) else (True, 'the forge said no bool')
+            except BaseException as e:
+                hidden, by = True, f'the forge raised ({type(e).__name__})'
+        _PETAL_CLOCK.update(at=now, hidden=hidden, by=by)
+        return hidden, by
+
+
+def _petal_hush_hide_hour(template: str) -> str:
+    """the day stays, the hour leaves: {{CURRENT_DATETIME}} → the date, {{CURRENT_TIME}} (and its comma) out"""
+    template = template.replace('{{CURRENT_DATETIME}}', '{{CURRENT_DATE}}')
+    for cut in _PETAL_HOUR_CUTS:
+        template = cut.sub('', template)
+    return template
+
+
+async def _petal_hush_template(template: str, user, stats=None) -> str:
+    """OWUI's own filling (day, date, name…), once the clock switch has had its say"""
+    hidden, by = await _petal_asyncio.to_thread(_petal_clock_hidden)
+    if hidden:
+        template = _petal_hush_hide_hour(template)
+    if stats is not None:
+        stats.update(clock='hidden' if hidden else 'shown', clock_by=by)
+    return await _petal_prompt_template(template, user)
 
 
 # where the old copies lived — read only as a migration fallback, and reported while they linger
@@ -1254,7 +1345,7 @@ async def _petal_hush_reply_context(request, form_data, user, models, admin_defa
     last_user = next((t['content'] for t in reversed(turns) if t['role'] == 'user'), '')
     template = _petal_replace_prompt(template, last_user)
     template = _petal_replace_messages(template, turns)
-    content = await _petal_prompt_template(template, user)
+    content = await _petal_hush_template(template, user, stats)
     stats.update({
         'lens': lens,
         'context_turns': len(turns),
@@ -1314,7 +1405,7 @@ async def petal_hush(request: Request, form_data: dict, user=Depends(get_verifie
                 last_chat_s = None
             template = _petal_hush_fill(template, {'LAST_CHAT': _petal_hush_ago(last_chat_s)})
             stats['last_chat_seconds'] = last_chat_s
-        content = await _petal_prompt_template(template, user)
+        content = await _petal_hush_template(template, user, stats)
 
     avoid = [a for a in (form_data.get('avoid') or []) if isinstance(a, str)][:8]
     if avoid:
@@ -1469,7 +1560,7 @@ async def petal_hush_pin(request: Request, form_data: dict, user=Depends(get_ver
         'DEVICE': device,
     }
     template, lens = _petal_hush_pin_prompt()
-    note = (await _petal_prompt_template(_petal_hush_fill(template, values), user)).strip()
+    note = (await _petal_hush_template(_petal_hush_fill(template, values), user)).strip()
     if not note:
         return {'note': None, 'recorded': False, 'reason': 'the pin lens rendered empty'}
 
@@ -1589,7 +1680,7 @@ async def petal_hush_pulse(request: Request, form_data: dict, user=Depends(get_v
         'DEVICE': device,
     }
     template, lens = _petal_hush_pulse_prompt()
-    note = (await _petal_prompt_template(_petal_hush_fill(template, values), user)).strip()
+    note = (await _petal_hush_template(_petal_hush_fill(template, values), user)).strip()
     if not note:
         return {'recorded': False, 'chars': 0, 'reason': 'the pulse lens rendered empty'}
 

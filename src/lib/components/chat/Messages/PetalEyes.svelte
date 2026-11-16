@@ -427,6 +427,9 @@
 				<span class="pe-dot">·</span><span class="pe-mono">{stamp(rec.at)}</span>
 				{#if rec.to}<span class="pe-dot">·</span><span class="pe-mono">→ {rec.to}</span>{/if}
 				{#if modeLabel}<span class="pe-dot">·</span><span title="the mode chip's pick for this reply">{modeLabel}</span>{/if}
+				{#if rec.turn === 'subagent_result'}<span class="pe-dot">·</span><span
+						title="this reply answers a background subagent's result, not her words">↩ a subagent's result</span
+					>{/if}
 				<span class="pe-dot">·</span><span>{kept === 'ring' ? 'temp chat · held in memory' : 'kept on disk'}</span>
 			</div>
 			<div class="pe-meta">

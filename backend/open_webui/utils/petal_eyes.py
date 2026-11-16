@@ -123,6 +123,8 @@ def see(metadata: Optional[dict], body: bytes, model: Optional[str] = None, url:
             'req_sha': req_sha,
             'to': _host(url),
             **({'mode': metadata['petal_mode']} if isinstance(metadata.get('petal_mode'), str) else {}),
+            # (A25) whose turn this reply answers when it isn't hers: 'subagent_result'
+            **({'turn': metadata['petal_turn']} if isinstance(metadata.get('petal_turn'), str) else {}),
         }
         parts = _parts(metadata)
         if is_saved_chat_id(head['chat_id']):
