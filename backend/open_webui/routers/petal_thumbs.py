@@ -30,6 +30,14 @@ the chat as its snapshot → POST the whole chat back), without the page carryin
   reply), read from the chat on the rig, so the phone never uploads the conversation. its answer is read the
   way the page read it (the JSON block's `tags`, [] on any failure, as the page saved). the tags land in the
   row's `data` and the reply's annotation, the snapshot kept (as OWUI's tag step re-sent the tap's)
+
+💗 A26 · her thank-yous (utils/petal_thanks.py): a landed verdict also answers `thanks`, the next line Petal wrote
+ahead of time (shown once, then retired; null when none is ready, and the page says its plain thanks). the take
+is a file read, never a model call; it wakes one refill in the background, written when vLLM is quiet. it is
+handed only the reply's model id: never the verdict, never the note
+
+    GET  /api/v1/petal/thumbs/thanks         (admin) → { ready, target, recent, written, shown, writing, last }
+    POST /api/v1/petal/thumbs/thanks/refill  (admin) → the same, after waking a refill
 """
 
 import asyncio
@@ -51,7 +59,8 @@ from open_webui.models.chats import ChatResponse, Chats
 from open_webui.models.feedbacks import Feedback, FeedbackForm, Feedbacks
 from open_webui.routers.chats import get_chat_by_id as read_chat_as_the_page_did
 from open_webui.routers.tasks import generate_chat_tags
-from open_webui.utils.auth import get_verified_user
+from open_webui.utils import petal_thanks
+from open_webui.utils.auth import get_admin_user, get_verified_user
 from open_webui.utils.chat_id import is_saved_chat_id
 from open_webui.utils.misc import get_message_list
 
@@ -174,7 +183,22 @@ async def land_thumb(
             'created': created,
             'annotation': annotation,
             'updated_at': landed.updated_at,
+            # 💗 A26 · the next line she wrote ahead of time · verdict-blind: only the model id goes along
+            'thanks': await petal_thanks.take(request, user, model_id=form.model_id),
         }
+
+
+@router.get('/thumbs/thanks')
+async def thanks_status(user=Depends(get_admin_user)):
+    """numbers only: how many lines wait, how many were shown, how the last refill went"""
+    return await petal_thanks.status()
+
+
+@router.post('/thumbs/thanks/refill')
+async def thanks_refill(request: Request, user=Depends(get_admin_user)):
+    """top the pool up now (one line at a time, when vLLM is quiet), e.g. right after installing"""
+    petal_thanks.wake(request.app, user)
+    return await petal_thanks.status()
 
 
 class TagsForm(BaseModel):
