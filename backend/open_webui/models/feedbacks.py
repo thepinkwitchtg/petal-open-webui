@@ -1,11 +1,12 @@
 import logging
 import time
 import uuid
+from collections.abc import AsyncIterator
 from typing import Optional
 
 from open_webui.internal.db import Base, JSONField, get_async_db_context
 from open_webui.models.users import User, UserModel
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, TypeAdapter
 from sqlalchemy import JSON, BigInteger, Boolean, Column, Text, delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -278,6 +279,26 @@ class FeedbackTable:
         async with get_async_db_context(db) as db:
             result = await db.execute(select(Feedback).order_by(Feedback.updated_at.desc()))
             return [FeedbackModel.model_validate(feedback) for feedback in result.scalars().all()]
+
+    async def export_all_feedbacks_json(self, model_id: str | None = None) -> AsyncIterator[bytes]:
+        """Petal (A24) · the export route's answer, byte for byte, one row at a time, straight to the wire.
+
+        Same query, same order, same serializer as ``get_all_feedbacks`` behind ``response_model=list[...]``,
+        but each row (its snapshot is a whole chat, ~10× its JSON size once decoded) is fetched, written out and
+        let go before the next one, instead of the whole table being decoded and held at once: an export now
+        costs the backend one row, not the table. Its own session, so the stream outlives the request's.
+        """
+        adapter = TypeAdapter(FeedbackModel)
+        sep = b''
+        yield b'['
+        async with get_async_db_context() as db:
+            stmt = select(Feedback).order_by(Feedback.updated_at.desc()).execution_options(yield_per=1)
+            async for feedback in (await db.stream(stmt)).scalars():
+                model = FeedbackModel.model_validate(feedback)
+                if not model_id or (model.data and model.data.get('model_id') == model_id):
+                    yield sep + adapter.dump_json(model, by_alias=True)
+                    sep = b','
+        yield b']'
 
     async def get_all_feedback_ids(self, db: Optional[AsyncSession] = None) -> list[FeedbackIdResponse]:
         async with get_async_db_context(db) as db:

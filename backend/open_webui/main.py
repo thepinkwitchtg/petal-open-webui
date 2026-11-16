@@ -2315,15 +2315,20 @@ async def list_tasks_by_chat_id_endpoint(request: Request, chat_id: str, user=De
         owner_id = owner['user_id'] if owner else get_user_id_from_session_pool(socket_id)
         if owner_id != user.id and not (user.role == 'admin' and ENABLE_ADMIN_CHAT_ACCESS):
             return {'task_ids': []}
-    else:
-        chat = await Chats.get_accessible_chat_by_id(chat_id, user, permission='write')
-        if chat is None:
-            return {'task_ids': []}
+    # Petal (A24) · the access answer without decoding the whole chat; the chat itself is read only when there
+    # are running tasks to sort (a long chat was read in full here on every open, nearly always for none)
+    elif not await Chats.has_chat_access(chat_id, user, permission='write'):
+        return {'task_ids': []}
 
     task_ids = await list_task_ids_by_item_id(request.app.state.redis, chat_id)
 
-    if not socket_id:
+    if not socket_id and task_ids:
+        chat = await Chats.get_accessible_chat_by_id(chat_id, user, permission='write')
+        if chat is None:
+            return {'task_ids': []}
         task_ids = await Chats.filter_task_ids_by_user_id(chat, user.id, task_ids)
+    elif not socket_id:
+        task_ids = []
 
     log.debug('Task IDs for chat %s: %s', chat_id, task_ids)
     return {'task_ids': task_ids}

@@ -2,6 +2,7 @@ import logging
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi.responses import StreamingResponse
 from fastapi.concurrency import run_in_threadpool
 from open_webui.constants import ERROR_MESSAGES
 from open_webui.env import MPS_INFERENCE_LOCK
@@ -281,10 +282,8 @@ async def export_all_feedbacks(
     user=Depends(get_admin_user),
     db: AsyncSession = Depends(get_async_session),
 ):
-    feedbacks = await Feedbacks.get_all_feedbacks(db=db)
-    if model_id:
-        feedbacks = [f for f in feedbacks if f.data and f.data.get('model_id') == model_id]
-    return feedbacks
+    # Petal (A24) · the same bytes, one row at a time, straight to the wire (see Feedbacks.export_all_feedbacks_json)
+    return StreamingResponse(Feedbacks.export_all_feedbacks_json(model_id), media_type='application/json')
 
 
 PAGE_ITEM_COUNT = 30

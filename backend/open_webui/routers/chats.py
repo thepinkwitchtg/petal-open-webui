@@ -1498,7 +1498,9 @@ async def get_chat_view(
     user=Depends(get_verified_user),
     db: AsyncSession = Depends(get_async_session),
 ):
-    if not await Chats.get_accessible_chat_by_id(id, user, db=db):
+    # Petal (A24) · the same access answer without decoding the whole chat (a long chat was read in full here,
+    # on every open, just to say yes)
+    if not await Chats.has_chat_access(id, user, db=db):
         raise HTTPException(status_code=404, detail='Chat not found')
     return {'state': await ChatViewStates.get(user.id, id, db)}
 
@@ -1518,7 +1520,7 @@ async def update_chat_view(
     form: ChatViewStateForm = Depends(bounded_chat_view),
     db: AsyncSession = Depends(get_async_session),
 ):
-    if not await Chats.get_accessible_chat_by_id(id, user, db=db):
+    if not await Chats.has_chat_access(id, user, db=db):  # Petal (A24) · as above
         raise HTTPException(status_code=404, detail='Chat not found')
     return await ChatViewStates.upsert(user.id, id, form.state.model_dump(exclude_unset=True), db)
 
@@ -2477,13 +2479,10 @@ async def update_chat_folder_id_by_id(
 
 @router.get('/{id}/tags', response_model=list[TagModel])
 async def get_chat_tags_by_id(id: str, user=Depends(get_verified_user), db: AsyncSession = Depends(get_async_session)):
-    chat = await Chats.get_accessible_chat_by_id(
-        id,
-        user,
-        db=db,
-    )
+    # Petal (A24) · the chat's owner and meta are all this needs: read those columns, never the whole chat
+    chat = await Chats.get_chat_access_fields_by_id(id, db=db)
 
-    if chat:
+    if chat and await Chats.has_chat_access(id, user, db=db, chat=chat):
         return await Tags.get_tags_by_resource('chat', id, db=db)
     else:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=ERROR_MESSAGES.NOT_FOUND)
