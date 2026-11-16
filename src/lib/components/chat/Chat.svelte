@@ -61,6 +61,8 @@
 		desktopEvent
 	} from '$lib/stores';
 	import { adoptMode, modeToSend } from '$lib/utils/petal-mode'; // 🌀 the mode chip (A15)
+	import { thumbsNudge } from '$lib/utils/petal-thumbs'; // 👍🏻 instant thumbs (A23): waiting verdicts go first
+	import { playReply } from '$lib/utils/petal-voice'; // 🔈 auto-playback in speaker mode (A23)
 	import { refreshChatList, refreshFolderChatLists, setChatTitle } from '$lib/stores/chatList';
 	import { updateFolderById } from '$lib/apis/folders';
 	import {
@@ -4288,7 +4290,10 @@
 
 			if ($settings.responseAutoPlayback && !$voiceCall && !bridge?.connected) {
 				await tick();
-				document.getElementById(`speak-button-${message.id}`)?.click();
+				const speaker = document.getElementById(`speak-button-${message.id}`);
+				// speaker mode (A23): the row's Read Aloud steps aside for the speaker by her name
+				if (speaker) speaker.click();
+				else if (($settings?.voiceControl ?? 'bubble') === 'speaker') playReply(message.id);
 			}
 
 			// Emit chat event for TTS (only when call overlay is active)
@@ -4344,6 +4349,7 @@
 			messageInput?.setText(prompt);
 			return { status: 'deferred' as const };
 		}
+		thumbsNudge(); // a verdict still waiting tries now, so Petal can see it in this turn (never waited on)
 		const _files = structuredClone(inputFiles);
 
 		chatFiles.push(
