@@ -4,16 +4,21 @@
 // included, built on the rig instead of carried through the phone twice)
 //  · one entry per reply, the latest verdict wins: double taps and flips collapse. a verdict tapped while an
 //    earlier one is on its way goes right after it, with the row id the first one minted (one row per reply)
-//  · offline or an error: tried again with backoff (1 · 2 · 4 · 8 · 15 s), then a quiet mark on that thumb
-//    (tap it to try again). back online, or the page shown again: one more try each. never a toast
+//  · offline or an error: tried again with backoff (1 · 2 · 4 · 8 s), then a quiet ring on that thumb (tap it to
+//    try again). back online, the page shown again, a message sent: one more try each
+//  · 💗 A23b · she hears how it went, one toast per reply whose words change in place: "sent" the moment it
+//    leaves · "Thanks for your feedback 💗" only once the rig answered that the row is in the database · if every
+//    try fails, "couldn't save your feedback · tap to retry" (a retry button), once per failure, never per try
 //  · a page reload keeps what's still waiting, in localStorage: ids and verdicts only (the rating, the reason
 //    key, the 1–10). never words: not her note, not the tags, not the reply
 //  · what the tap doesn't need rides after it: OWUI's tag step, on her first thumb of a reply, run on the rig
 //    from its own copy of the chat (POST /api/v1/petal/thumbs/tags): the phone never uploads the conversation
 //  · temporary chats queue nothing (contract 0; the page shows no thumbs there)
 import { writable, get } from 'svelte/store';
+import { toast } from 'svelte-sonner';
 import { WEBUI_API_BASE_URL } from '$lib/constants';
 import { isSavedChatId } from '$lib/utils/chatId';
+import { PETAL_TOAST_MS } from '$lib/utils/petal-toast-touch';
 
 type Annotation = Record<string, unknown>;
 
@@ -41,12 +46,36 @@ type Entry = Verdict & {
 	due: number;
 	gen: number; // grows with every verdict on this reply: a landing only settles the verdict it carried
 	flying: boolean;
+	announced: boolean; // its failure toast was shown: a background try that fails again stays quiet
 };
 
 export const BACKOFF_MS = [1000, 2000, 4000, 8000, 15000];
 export const MAX_TRIES = BACKOFF_MS.length;
 const KEY = 'petal-thumbs';
 const SETTLE_MS = 1200; // a landed mark lingers this long (its fade), then leaves
+const SENT_MS = 20_000; // "sent" stays until the answer replaces it (a failure needs ~15 s of tries)
+
+// 💗 one toast per reply: an update keeps the old toast's duration and action unless given new ones, so every
+// state names its own
+function say(id: string, what: 'sent' | 'saved' | 'failed') {
+	const base = { id: `petal-thumb-${id}`, description: undefined, action: undefined };
+	if (what === 'sent') toast.message('sent', { ...base, duration: SENT_MS });
+	else if (what === 'saved')
+		toast.success('Thanks for your feedback 💗', { ...base, duration: PETAL_TOAST_MS.default });
+	else
+		toast.error("couldn't save your feedback · tap to retry", {
+			...base,
+			duration: PETAL_TOAST_MS.action,
+			// the toast stays (sonner deletes it after an action unless told not to) and turns into "sent"
+			action: {
+				label: 'retry',
+				onClick: (event: Event) => {
+					event?.preventDefault?.();
+					thumbRetry(id);
+				}
+			}
+		});
+}
 
 /** per reply: its pending rating and how its save is going. ResponseMessage reads it for the thumb's
  *  light (a verdict still on its way after a reload) and its quiet mark */
@@ -131,7 +160,8 @@ function restore() {
 			tries: Math.min(Number(x.n) || 0, MAX_TRIES - 1), // a reload always earns one more try
 			due: 0,
 			gen: 1,
-			flying: false
+			flying: false,
+			announced: false
 		});
 		marks[x.m] = { rating: ratingOf(annotation), state: 'saving' };
 	}
@@ -154,10 +184,25 @@ export function thumbVerdict(v: Verdict) {
 		tries: 0,
 		due: 0,
 		gen: (was?.gen ?? 0) + 1,
-		flying: was?.flying ?? false
+		flying: was?.flying ?? false,
+		announced: false
 	};
 	queue.set(v.message_id, entry);
 	setMark(v.message_id, { rating: ratingOf(v.annotation), state: 'saving' });
+	say(v.message_id, 'sent');
+	persist();
+	pump();
+}
+
+/** her retry (the failure toast's button): a full round of tries again, said aloud */
+export function thumbRetry(id: string) {
+	const entry = queue.get(id);
+	if (!entry) return;
+	entry.tries = 0;
+	entry.due = 0;
+	entry.announced = false;
+	setMark(id, { rating: ratingOf(entry.annotation), state: 'saving' });
+	say(id, 'sent');
 	persist();
 	pump();
 }
@@ -166,8 +211,7 @@ function pump() {
 	if (pumpTimer) clearTimeout(pumpTimer);
 	pumpTimer = null;
 	if (typeof window === 'undefined') return;
-	if (typeof navigator !== 'undefined' && navigator.onLine === false) return; // 'online' wakes it
-	const now = Date.now();
+	const now = Date.now(); // offline tries fail at once: the ladder runs, so a failure is said (and 'online' retries)
 	let next = Infinity;
 	for (const entry of queue.values()) {
 		if (entry.flying || entry.tries >= MAX_TRIES) continue; // a quiet mark waits for a tap, 'online' or a look
@@ -223,6 +267,7 @@ async function send(entry: Entry) {
 			});
 			persist();
 			settleLater(entry.message_id);
+			say(entry.message_id, 'saved'); // the rig answered: the row is in the database
 			void tagsAfter(entry, out.annotation ?? entry.annotation);
 		} else {
 			persist(); // a newer verdict waited: it goes now, onto the same row
@@ -233,17 +278,22 @@ async function send(entry: Entry) {
 
 	const status = res?.status ?? 0;
 	if (current !== entry || current.gen !== gen) return pump(); // a newer verdict replaced this one: send it
-	if (status === 400 || status === 404 || status === 422) {
-		// a temporary chat, a reply or chat that's gone, a shape the rig refuses: nothing left to keep
+	if (status === 404) {
+		// the reply or its chat is gone: nothing left to save, nothing to say
 		queue.delete(entry.message_id);
 		setMark(entry.message_id, null);
+		toast.dismiss(`petal-thumb-${entry.message_id}`);
 		persist();
 		return;
 	}
 	// offline, the rig out of reach, a server error, signed out: again later, then the quiet mark
 	entry.tries += 1;
 	entry.due = Date.now() + BACKOFF_MS[Math.min(entry.tries - 1, BACKOFF_MS.length - 1)];
-	if (entry.tries >= MAX_TRIES) setMark(entry.message_id, { rating: ratingOf(entry.annotation), state: 'failed' });
+	if (entry.tries >= MAX_TRIES) {
+		setMark(entry.message_id, { rating: ratingOf(entry.annotation), state: 'failed' });
+		if (!entry.announced) say(entry.message_id, 'failed'); // once per failure, never per try
+		entry.announced = true;
+	}
 	persist();
 	pump();
 }

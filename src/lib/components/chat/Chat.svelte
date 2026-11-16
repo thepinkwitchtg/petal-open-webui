@@ -1372,6 +1372,27 @@
 	};
 
 	let joinedChatId = '';
+	// 🌸 A24 · one download per open: with the socket up, the chat's room is joined *before* the chat is read
+	// (the server enters the room before it answers), so nothing can slip between the read and the join and the
+	// catch-up refetch below (a second full download of the chat) has nothing left to catch. a refused, slow or
+	// late join falls back to that refetch, as before
+	const JOIN_WAIT_MS = 400;
+	let joinWaiter: { id: string; settle: () => void } | null = null;
+	const joinBeforeRead = (id: string) =>
+		new Promise<void>((resolve) => {
+			joinWaiter?.settle(); // a newer open lets an older one go at once (its load is already aborted)
+			if (!id || isTemporaryChatId(id) || !$socket?.connected || joinedChatId === id) return resolve();
+			const waiter = {
+				id,
+				settle: () => {
+					clearTimeout(timer);
+					if (joinWaiter === waiter) joinWaiter = null;
+					resolve();
+				}
+			};
+			const timer = setTimeout(waiter.settle, JOIN_WAIT_MS);
+			joinWaiter = waiter;
+		});
 	let liveParticipants: { id: string; name: string }[] = [];
 	const clearPresence = () => (liveParticipants = []);
 	let chatRefresh: { id: string; promise: Promise<void> } | null = null;
@@ -1507,6 +1528,9 @@
 			socket.emit('events:chat', { chat_id: next, data: { type: 'join' } }, (accepted: boolean) => {
 				if (!socket.connected || socket.id !== connectionId || $chatId !== next) return;
 				if (!accepted) clearPresence();
+				const waiter = joinWaiter?.id === next ? joinWaiter : null;
+				waiter?.settle(); // the read starts now, after the join (A24)
+				if (waiter && accepted) return;
 				// A refused join can mean access was lost; the refresh then sends the reader home.
 				void refreshChat();
 			});
@@ -3012,6 +3036,8 @@
 		}
 
 		const id = $chatId;
+		await joinBeforeRead(id); // A24: one download per open
+		if (signal.aborted) return;
 		const loadedChat = await getChatById(localStorage.token, id, signal).catch(async (error) => {
 			console.error('[note-chat] getChatById failed', {
 				chatIdProp,
