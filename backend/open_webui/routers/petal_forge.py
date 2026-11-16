@@ -14,7 +14,9 @@ the forge it began from (base): what the jewelry box saved meanwhile is merged f
 Her words never reach the log: only versions and counts.
 
     GET  /api/v1/petal/forge          → {installed, doc, versions, home} | {installed: false, why}
-    POST /api/v1/petal/forge/preview  {model, template, doc?, at?, overrides?, knobs?, force?} → the assembly
+    POST /api/v1/petal/forge/preview  {model, template, doc?, at?, overrides?, knobs?, force?, mode?} → the assembly
+                                      mode (W20): one of her modes (the chip's pick): the preview wears it · never
+                                      `private`: her private values stay on the rig (petal-live's door withholds them)
     POST /api/v1/petal/forge/save     {doc, note, base, prefer?} → {version, doc, versions, merged, clashes}
                                       409 {conflict, error, latest} when both hands touched one field
 """
@@ -36,7 +38,7 @@ router = APIRouter()
 MAX_BODY = 1024 * 1024  # a whole draft of her forge rides in one question
 TIMEOUT_S = 30
 DEFAULT_HOME = '~/Gardens/Transformation Sequences - Automation/petal_core/petal-witch-forge'
-PREVIEW_KEYS = ('model', 'template', 'doc', 'at', 'overrides', 'knobs', 'force')
+PREVIEW_KEYS = ('model', 'template', 'doc', 'at', 'overrides', 'knobs', 'force', 'mode')   # never 'private'
 SAVE_KEYS = ('doc', 'note', 'base', 'prefer')
 
 
