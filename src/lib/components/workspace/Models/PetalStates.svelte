@@ -5,6 +5,8 @@
 	// here, and on the phone: rewrite a gem's words, retire or restore one, turn a knob, touch the readout.
 	// every keep is a whole version in the forge's history, merged field by field if the rig saved meanwhile.
 	// it asks when it opens, after a pause in an edit, and when ↻ is tapped: no polling, no animation.
+	// W20 · a preview may wear one of her modes (the chip's pick by the send button): `mode` rides through the door,
+	// never `private` · and a toggle says whether this card wears the forge (her cards list, kept like any edit).
 	import { getContext, onDestroy } from 'svelte';
 	import { page } from '$app/stores';
 	import { user } from '$lib/stores';
@@ -51,6 +53,7 @@
 	let letGo: { name: string; text: string }[] = [];
 	let timer: ReturnType<typeof setTimeout> | null = null;
 	let seq = 0;
+	let previewMode: string | null = null; // W20 · null: the lead (what a new chat starts in)
 
 	$: model = modelId ?? $page?.url?.searchParams?.get('id') ?? null;
 	$: admin = $user?.role === 'admin';
@@ -74,9 +77,16 @@
 	$: dirty = !!saved && !same(saved, draft);
 	$: live = preview?.gems_live ?? [];
 	$: liveHere = here.filter((g) => live.includes(g.id)).length;
+	// her modes, read the chip's way (A15): a list (its order the cycle) or an object keyed by name · key: id, else
+	// key, else name, else the object key · retired ones stay out · the lead: the one marked default, else the first
+	$: modes = modeList(draft?.modes);
+	$: if (previewMode !== null && !modes.some((m) => m.key === previewMode)) previewMode = null;
+	// her cards (W13) · none written: every card the filter runs on wears the forge
+	$: cards = Array.isArray(draft?.cards) ? (draft?.cards as string[]) : null;
+	$: wears = cards === null || (!!model && cards.includes(model));
 	// a fresh look when an edit pauses, the prompt above changes, or it opens · one look while folded, for the
 	// count above · the answer itself never asks again (kick reads preview without depending on it)
-	$: kick(draft, system, model, open, installed);
+	$: kick(draft, system, model, open, installed, previewMode);
 	function kick(..._: unknown[]) {
 		if (!installed || empty) return;
 		if (open) previewSoon(preview ? 450 : 0);
@@ -133,7 +143,7 @@
 		const mine = ++seq;
 		const doc = clone(draft);
 		try {
-			const r = await call('/preview', { model, template: system ?? '', doc });
+			const r = await call('/preview', { model, template: system ?? '', doc, ...(previewMode ? { mode: previewMode } : {}) });
 			if (mine !== seq) return;
 			preview = r;
 			previewDoc = doc;
@@ -184,6 +194,37 @@
 		}
 		setLine(id, { words });
 	};
+	type Mode = { key: string; name: string; emoji: string; lead: boolean };
+	function modeList(raw: any): Mode[] {
+		const entries: [string | null, any][] = Array.isArray(raw)
+			? raw.map((m: any) => [null, m])
+			: raw && typeof raw === 'object'
+				? Object.entries(raw)
+				: [];
+		const out: Mode[] = [];
+		const seen = new Set<string>();
+		for (const [k, m] of entries) {
+			if (!m || typeof m !== 'object' || m.retired === true) continue;
+			const key = [m.id, m.key, m.name, k].find((v) => typeof v === 'string' && v.trim())?.trim();
+			if (!key || seen.has(key)) continue;
+			seen.add(key);
+			const name = typeof m.name === 'string' && m.name.trim() ? m.name.trim() : key;
+			out.push({ key, name, emoji: typeof m.emoji === 'string' ? m.emoji.trim() : '', lead: m.default === true });
+		}
+		if (out.length && !out.some((m) => m.lead)) out[0].lead = true;
+		return out;
+	}
+	// this card wears the forge, or steps aside (her cards list · the filter clears every token where it steps aside)
+	const setCards = (list: string[] | null) => {
+		const d: Doc = { ...draft };
+		if (list === null) delete d.cards;
+		else d.cards = list;
+		draft = d;
+	};
+	const toggleWear = () => {
+		if (!model || cards === null) return;
+		setCards(cards.includes(model) ? cards.filter((c) => c !== model) : [...cards, model]);
+	};
 	const nudge = (k: any, dir: number) => {
 		const step = Number.isInteger(k.value) ? 1 : 0.5;
 		setKnob(k.id, Math.round(((Number(k.value) || 0) + dir * step) * 100) / 100);
@@ -207,6 +248,7 @@
 			}
 		}
 		for (const k of ['head', 'foot']) if ((a.readout?.[k] ?? '') !== (b.readout?.[k] ?? '')) out.push(`readout ${k}`);
+		if (!same(a.cards ?? null, b.cards ?? null)) out.push('cards');
 		return out;
 	}
 
@@ -410,6 +452,56 @@
 						<button type="button" class="ml-auto rounded-md px-2.5 py-1 text-sm hover:bg-gray-50 hover:text-gray-900 dark:hover:bg-gray-850 dark:hover:text-gray-100" on:click={refresh} title="read the forge and her senses again">↻</button>
 					</div>
 					{#if previewError}<p class="text-[0.6875rem] text-pink-600 dark:text-pink-400">{previewError}</p>{/if}
+
+					<div class="flex flex-wrap items-center gap-x-2 gap-y-1 text-[0.6875rem] text-gray-500">
+						{#if cards === null}
+							<span>every card the filter runs on wears the forge · no list yet</span>
+							<button
+								type="button"
+								class="rounded-md px-2 py-1 hover:bg-gray-50 hover:text-gray-900 disabled:opacity-50 dark:hover:bg-gray-850 dark:hover:text-gray-100"
+								disabled={disabled || !model}
+								title={model ? 'only the cards she picks wear the forge: her list begins with this card' : 'this card’s id is unknown here'}
+								on:click={() => model && setCards([model])}>only the cards I pick · start with this one</button
+							>
+						{:else}
+							<button
+								type="button"
+								role="switch"
+								aria-checked={wears}
+								class="flex items-center gap-1.5 rounded-md px-2 py-1 hover:bg-gray-50 hover:text-gray-900 disabled:opacity-50 dark:hover:bg-gray-850 dark:hover:text-gray-100"
+								disabled={disabled || !model}
+								title={model ? 'whether this card wears the forge (her cards list · kept with this version)' : 'this card’s id is unknown here'}
+								on:click={toggleWear}
+							>
+								<span class="relative inline-block h-3.5 w-6 rounded-full {wears ? 'bg-linear-to-r from-pink-300 to-fuchsia-500' : 'bg-gray-300 dark:bg-gray-700'}">
+									<span class="absolute top-0.5 size-2.5 rounded-full bg-white {wears ? 'left-3' : 'left-0.5'}"></span>
+								</span>
+								<span class={wears ? 'text-gray-900 dark:text-gray-100' : ''}>this card wears the forge</span>
+							</button>
+							<span class="text-gray-400 dark:text-gray-600">
+								{#if !cards.length}no card wears it now · every card steps aside{:else}{cards.length} card{cards.length === 1 ? '' : 's'} in her list{/if}
+							</span>
+							<button type="button" class="rounded-md px-2 py-1 hover:bg-gray-50 hover:text-gray-900 dark:hover:bg-gray-850 dark:hover:text-gray-100" disabled={disabled} on:click={() => setCards(null)} title="let the list go: every card the filter runs on wears the forge">every card</button>
+						{/if}
+					</div>
+
+					{#if modes.length}
+						<div class="flex flex-wrap items-center gap-1 text-[0.6875rem] text-gray-500" role="radiogroup" aria-label="preview as one of her modes">
+							<span class="mr-1">preview as</span>
+							{#each modes as m (m.key)}
+								{@const on = (previewMode ?? modes.find((x) => x.lead)?.key) === m.key}
+								<button
+									type="button"
+									role="radio"
+									aria-checked={on}
+									class="rounded-full px-2.5 py-1 {on ? 'bg-pink-500/10 text-gray-900 shadow-[inset_0_0_0_1px_rgba(236,72,153,0.5)] dark:text-gray-100' : 'hover:bg-gray-50 hover:text-gray-900 dark:hover:bg-gray-850 dark:hover:text-gray-100'}"
+									title={m.lead ? `${m.name} · leads a new chat` : m.name}
+									on:click={() => (previewMode = m.lead ? null : m.key)}>{m.emoji ? `${m.emoji} ` : ''}{m.name}</button
+								>
+							{/each}
+							{#if preview?.mode && preview.mode.why !== 'asked' && previewMode}<span class="text-pink-600 dark:text-pink-400">· {preview.mode.name ?? preview.mode.key} instead</span>{/if}
+						</div>
+					{/if}
 
 					<fieldset {disabled} class="min-w-0 space-y-3">
 						{#each here as g (g.id)}
