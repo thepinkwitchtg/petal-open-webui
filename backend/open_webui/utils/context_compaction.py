@@ -279,12 +279,18 @@ async def get_chat_context_usage(chat: Any, model_id: str | None = None) -> dict
     if not current_id:
         return None
 
+    config = await _load_config()
+    # Petal (A24) · with compaction off the answer is None whatever the messages hold, so the read of every
+    # message (a second copy of a long chat, on each open) is skipped, unless that read would heal the chat's
+    # message rows: then it runs as before, so the table ends up the same
+    if not config['enable'] and not await Chats.messages_map_may_heal(chat.id):
+        return None
+
     messages_map = await Chats.get_messages_map_by_chat_id(chat.id)
     messages = get_message_list(messages_map or history.get('messages') or {}, current_id)
     if not messages:
         return None
 
-    config = await _load_config()
     if not config['enable']:
         return None
 
