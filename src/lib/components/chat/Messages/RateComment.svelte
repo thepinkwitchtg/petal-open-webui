@@ -98,7 +98,7 @@
 			}
 		});
 
-		toast.success($i18n.t('Thanks for your feedback!'));
+		// 👍🏻 A23: no "thanks" toast. the note is queued, not saved yet: the thumb's quiet mark tells how it goes
 		show = false;
 	};
 </script>

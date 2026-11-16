@@ -18,9 +18,7 @@
 
 	const dispatch = createEventDispatcher();
 
-	import { createNewFeedback, getFeedbackById, updateFeedbackById } from '$lib/apis/evaluations';
-	import { getChatById } from '$lib/apis/chats';
-	import { generateTags } from '$lib/apis';
+	import { thumbMarks, thumbVerdict } from '$lib/utils/petal-thumbs'; // 👍🏻 instant thumbs (slice A23)
 
 	import {
 		audioQueue,
@@ -230,6 +228,14 @@
 	$: visibleResponseContent =
 		getOutputText(message.output) || removeAllDetails(message.content ?? '');
 	$: hasResponseContent = Boolean((message.content ?? '').trim() || message.output?.length);
+	// 🔈 A23: the speaker by her name is her one control in speaker mode, so the action row's Read Aloud steps
+	// aside for it there (bubble mode keeps the row's speaker; the bubble already gives way to it)
+	$: speakerByName =
+		!readOnly &&
+		($settings?.voiceControl ?? 'bubble') === 'speaker' &&
+		message.done &&
+		hasResponseContent &&
+		message.error !== true;
 
 	let edit = false;
 	let editButtonElement: HTMLButtonElement;
@@ -600,135 +606,89 @@
 		editButtonElement?.focus();
 	};
 
-	let feedbackLoading = false;
+	// 👍🏻 A23 · instant thumbs: the tap's own task does one thing, light the thumb from this reply alone, so
+	// the very next frame shows it whatever the phone is doing. the frame after, the note opens and the save
+	// leaves (the thumbs queue: petal-thumbs → POST /api/v1/petal/thumbs, the same feedback row as before, one
+	// per reply, the latest verdict winning; OWUI's tag step follows on the rig once it landed); the chat's
+	// history catches up a frame later still (its update reaches every reply on screen). nothing waits on the
+	// network
+	let thumbPending: Record<string, unknown> | null = null; // her verdict before the history has it
+	const afterFrame = (fn: () => void) => requestAnimationFrame(() => setTimeout(fn, 0));
 
-	const feedbackHandler = async (rating: number | null = null, details: object | null = null) => {
-		if (feedbackLoading && rating !== null) return;
-		feedbackLoading = true;
-		console.log('Feedback', rating, details);
-
-		const updatedMessage = {
-			...message,
-			annotation: {
-				...(message?.annotation ?? {}),
-				...(rating !== null ? { rating: rating } : {}),
-				...(rating !== null && rating !== message?.annotation?.rating
-					? { reason: null, details: null }
-					: {}),
-				...(details ? details : {})
-			}
+	const feedbackHandler = (rating: number | null = null, details: object | null = null) => {
+		const before = thumbPending ?? message?.annotation ?? {};
+		const annotation = {
+			...before,
+			...(rating !== null ? { rating: rating } : {}),
+			...(rating !== null && rating !== before?.rating ? { reason: null, details: null } : {}),
+			...(details ? details : {})
 		};
+		thumbPending = annotation;
+		afterFrame(() => landVerdict(annotation, !details));
+	};
 
-		const chat = await getChatById(localStorage.token, chatId).catch((error) => {
-			toast.error(`${error}`);
-		});
-		if (!chat) {
-			return;
-		}
-
+	const landVerdict = (annotation: Record<string, unknown>, fromThumb: boolean) => {
+		if (thumbPending !== annotation) return; // a newer tap carries its own verdict
+		if (fromThumb) showRateComment = true;
 		const messages = createMessagesList(history, message.id);
+		const siblings = history.messages[message.parentId]?.childrenIds ?? [];
+		const model_id = message?.selectedModelId ?? message.model;
+		const sibling_model_ids =
+			siblings.length > 1
+				? siblings
+						.filter((id) => id !== message.id)
+						.map((id) => history.messages[id]?.selectedModelId ?? history.messages[id].model)
+				: null;
+		const base_models = [model_id, ...(sibling_model_ids ?? [])].reduce((acc, modelId) => {
+			const model = $models.find((m) => m.id === modelId);
+			if (model) {
+				acc[model.id] = model?.info?.base_model_id ?? null;
+			} else {
+				console.warn(`Model with ID ${modelId} not found`);
+			}
+			return acc;
+		}, {});
 
-		let feedbackItem = {
-			type: 'rating',
-			data: {
-				...(updatedMessage?.annotation ? updatedMessage.annotation : {}),
-				model_id: message?.selectedModelId ?? message.model,
-				...(history.messages[message.parentId].childrenIds.length > 1
-					? {
-							sibling_model_ids: history.messages[message.parentId].childrenIds
-								.filter((id) => id !== message.id)
-								.map((id) => history.messages[id]?.selectedModelId ?? history.messages[id].model)
-						}
-					: {})
-			},
+		thumbVerdict({
+			chat_id: chatId,
+			message_id: message.id,
+			feedback_id: message?.feedbackId ?? null,
+			annotation,
+			model_id,
+			sibling_model_ids,
 			meta: {
 				arena: message ? message.arena : false,
 				model_id: message.model,
 				message_id: message.id,
 				message_index: messages.length,
-				chat_id: chatId
+				chat_id: chatId,
+				base_models
 			},
-			snapshot: {
-				chat: chat
+			askTags: fromThumb && !annotation?.tags && (message?.content ?? '') !== ''
+		});
+
+		const id = message.id;
+		afterFrame(() => {
+			if (thumbPending !== annotation) return; // a newer tap writes its own
+			const source = history.messages?.[id];
+			if (source) {
+				const settled = { ...(source.annotation ?? {}), ...annotation };
+				saveMessage(id, { ...source, annotation: settled }, { local: true });
 			}
-		};
-
-		const baseModels = [
-			feedbackItem.data.model_id,
-			...(feedbackItem.data.sibling_model_ids ?? [])
-		].reduce((acc, modelId) => {
-			const model = $models.find((m) => m.id === modelId);
-			if (model) {
-				acc[model.id] = model?.info?.base_model_id ?? null;
-			} else {
-				// Log or handle cases where corresponding model is not found
-				console.warn(`Model with ID ${modelId} not found`);
-			}
-			return acc;
-		}, {});
-		feedbackItem.meta.base_models = baseModels;
-
-		let feedback = null;
-		if (message?.feedbackId) {
-			feedback = await updateFeedbackById(
-				localStorage.token,
-				message.feedbackId,
-				feedbackItem
-			).catch((error) => {
-				console.error(error);
-				return null;
-			});
-		}
-
-		if (!feedback) {
-			feedback = await createNewFeedback(localStorage.token, feedbackItem).catch((error) => {
-				toast.error(`${error}`);
-			});
-
-			if (feedback) {
-				updatedMessage.feedbackId = feedback.id;
-			}
-		}
-
-		console.log(updatedMessage);
-		saveMessage(message.id, updatedMessage);
-
-		await tick();
-
-		if (!details) {
-			showRateComment = true;
-
-			if (!updatedMessage.annotation?.tags && (message?.content ?? '') !== '') {
-				// attempt to generate tags
-				const tags = await generateTags(localStorage.token, message.model, messages, chatId).catch(
-					(error) => {
-						console.error(error);
-						return [];
-					}
-				);
-				console.log(tags);
-
-				if (tags) {
-					const taggedMessage = {
-						...message,
-						annotation: { ...(message?.annotation ?? {}), tags: tags }
-					};
-					feedbackItem.data = { ...feedbackItem.data, ...taggedMessage.annotation };
-
-					saveMessage(message.id, taggedMessage);
-					await updateFeedbackById(
-						localStorage.token,
-						taggedMessage.feedbackId,
-						feedbackItem
-					).catch((error) => {
-						toast.error(`${error}`);
-					});
-				}
-			}
-		}
-
-		feedbackLoading = false;
+			thumbPending = null;
+		});
 	};
+
+	// her verdict as the thumbs show it: the tap's own (until the history has it), one still on its way after
+	// a reload, else the reply's. once landed, Messages settles the rig's annotation + row id into the history
+	$: thumbMark = $thumbMarks[message?.id];
+	$: thumbRating = thumbPending
+		? thumbPending.rating
+		: thumbMark && thumbMark.state !== 'saved' && thumbMark.rating !== undefined
+			? thumbMark.rating
+			: message?.annotation?.rating;
+	// the note reads the tap's verdict at once too (its reasons follow the thumb)
+	$: noteMessage = thumbPending ? { ...message, annotation: thumbPending } : message;
 
 	const deleteMessageHandler = async () => {
 		deleteMessage(message.id);
@@ -844,7 +804,7 @@
 						</Tooltip>
 					</Name>
 					<!-- 🔈 petal (A19b): the speaker by her name, when it's her chosen voice control -->
-					{#if !readOnly && ($settings?.voiceControl ?? 'bubble') === 'speaker' && message.done && hasResponseContent && message.error !== true}
+					{#if speakerByName}
 						<PetalPlayButton id={message.id} />
 					{/if}
 				</div>
@@ -1258,7 +1218,7 @@
 									</button>
 								</Tooltip>
 
-								{#if !readOnly && ($user?.role === 'admin' || ($user?.permissions?.chat?.tts ?? true))}
+								{#if !readOnly && !speakerByName && ($user?.role === 'admin' || ($user?.permissions?.chat?.tts ?? true))}
 									<Tooltip content={$i18n.t('Read Aloud')} placement="bottom">
 										<button
 											aria-label={$i18n.t('Read Aloud')}
@@ -1613,25 +1573,31 @@
 
 								{#if (!readOnly && (!message.user_id || message.user_id === $user?.id)) || (shareMode === 'continue' && message.user_id === $user?.id)}
 									{#if !readOnly && !$temporaryChatEnabled && ($config?.features.enable_message_rating ?? true) && ($user?.role === 'admin' || ($user?.permissions?.chat?.rate_response ?? true))}
-										<Tooltip content={$i18n.t('Good Response')} placement="bottom">
+										<Tooltip
+											content={(thumbRating ?? '').toString() === '1' && thumbMark?.state === 'failed'
+												? $i18n.t('Not saved yet · tap to try again')
+												: $i18n.t('Good Response')}
+											placement="bottom"
+										>
 											<button
 												aria-label={$i18n.t('Good Response')}
 												class="{isLastMessage || ($settings?.highContrastMode ?? false)
 													? 'visible'
-													: 'hover-reveal'} inline-flex size-7 shrink-0 items-center justify-center p-1.5 hover:bg-black/5 dark:hover:bg-white/5 rounded-lg {(
-													message?.annotation?.rating ?? ''
+													: 'hover-reveal'} relative inline-flex size-7 shrink-0 items-center justify-center p-1.5 hover:bg-black/5 dark:hover:bg-white/5 rounded-lg {(
+													thumbRating ?? ''
 												).toString() === '1'
 													? 'bg-gray-100 dark:bg-gray-800'
-													: ''} dark:hover:text-gray-400 hover:text-gray-600 transition aria-disabled:cursor-progress aria-disabled:hover:bg-transparent"
-												aria-disabled={feedbackLoading}
-												on:click={async (e) => {
+													: ''} dark:hover:text-gray-400 hover:text-gray-600 transition"
+												on:click={(e) => {
 													e.stopPropagation();
-													await feedbackHandler(1);
-													window.setTimeout(() => {
-														document
-															.getElementById(`message-feedback-${message.id}`)
-															?.scrollIntoView();
-													}, 0);
+													feedbackHandler(1);
+													afterFrame(() =>
+														afterFrame(() =>
+															document
+																.getElementById(`message-feedback-${message.id}`)
+																?.scrollIntoView()
+														)
+													);
 												}}
 											>
 												<svg
@@ -1654,28 +1620,46 @@
 														stroke-linejoin="round"
 													/>
 												</svg>
+												{#if (thumbRating ?? '').toString() === '1' && thumbMark && thumbMark.state !== 'saved'}
+													<!-- 👍🏻 A23 · the quiet mark: a dot while a slow save is on its way, a ring if it couldn't land -->
+													<span
+														class="petal-thumb-mark"
+														data-thumb-state={thumbMark.state}
+														aria-hidden="true"
+														out:fade={{ duration: 250 }}
+													></span>
+													{#if thumbMark.state === 'failed'}
+														<span class="sr-only">{$i18n.t('Not saved yet · tap to try again')}</span>
+													{/if}
+												{/if}
 											</button>
 										</Tooltip>
 
-										<Tooltip content={$i18n.t('Bad Response')} placement="bottom">
+										<Tooltip
+											content={(thumbRating ?? '').toString() === '-1' && thumbMark?.state === 'failed'
+												? $i18n.t('Not saved yet · tap to try again')
+												: $i18n.t('Bad Response')}
+											placement="bottom"
+										>
 											<button
 												aria-label={$i18n.t('Bad Response')}
 												class="{isLastMessage || ($settings?.highContrastMode ?? false)
 													? 'visible'
-													: 'hover-reveal'} inline-flex size-7 shrink-0 items-center justify-center p-1.5 hover:bg-black/5 dark:hover:bg-white/5 rounded-lg {(
-													message?.annotation?.rating ?? ''
+													: 'hover-reveal'} relative inline-flex size-7 shrink-0 items-center justify-center p-1.5 hover:bg-black/5 dark:hover:bg-white/5 rounded-lg {(
+													thumbRating ?? ''
 												).toString() === '-1'
 													? 'bg-gray-100 dark:bg-gray-800'
-													: ''} dark:hover:text-gray-400 hover:text-gray-600 transition aria-disabled:cursor-progress aria-disabled:hover:bg-transparent"
-												aria-disabled={feedbackLoading}
-												on:click={async (e) => {
+													: ''} dark:hover:text-gray-400 hover:text-gray-600 transition"
+												on:click={(e) => {
 													e.stopPropagation();
-													await feedbackHandler(-1);
-													window.setTimeout(() => {
-														document
-															.getElementById(`message-feedback-${message.id}`)
-															?.scrollIntoView();
-													}, 0);
+													feedbackHandler(-1);
+													afterFrame(() =>
+														afterFrame(() =>
+															document
+																.getElementById(`message-feedback-${message.id}`)
+																?.scrollIntoView()
+														)
+													);
 												}}
 											>
 												<svg
@@ -1698,6 +1682,18 @@
 														stroke-linejoin="round"
 													/>
 												</svg>
+												{#if (thumbRating ?? '').toString() === '-1' && thumbMark && thumbMark.state !== 'saved'}
+													<!-- 👍🏻 A23 · the quiet mark: a dot while a slow save is on its way, a ring if it couldn't land -->
+													<span
+														class="petal-thumb-mark"
+														data-thumb-state={thumbMark.state}
+														aria-hidden="true"
+														out:fade={{ duration: 250 }}
+													></span>
+													{#if thumbMark.state === 'failed'}
+														<span class="sr-only">{$i18n.t('Not saved yet · tap to try again')}</span>
+													{/if}
+												{/if}
 											</button>
 										</Tooltip>
 									{/if}
@@ -1980,15 +1976,11 @@
 					</div>
 
 					{#if message.done && showRateComment}
-						{#key message?.annotation?.rating}
+						{#key noteMessage?.annotation?.rating}
 							<RateComment
-								bind:message
+								message={noteMessage}
 								bind:show={showRateComment}
-								on:save={async (e) => {
-									await feedbackHandler(null, {
-										...e.detail
-									});
-								}}
+								on:save={(e) => feedbackHandler(null, { ...e.detail })}
 							/>
 						{/key}
 					{/if}
@@ -2016,6 +2008,45 @@
 {/key}
 
 <style>
+	/* 👍🏻 A23 · the thumb's quiet mark. saving: a gradient dot that only appears if the save takes longer than
+	   a blink (most land before it shows). failed: a hollow ring; tapping the thumb tries again */
+	.petal-thumb-mark {
+		position: absolute;
+		top: 3px;
+		right: 3px;
+		width: 5px;
+		height: 5px;
+		border-radius: 9999px;
+		pointer-events: none;
+	}
+	.petal-thumb-mark[data-thumb-state='saving'] {
+		background-image: var(--grad-fill, linear-gradient(135deg, #ffcbe2 0%, #ff5bb0 48%, #b15cd1 100%));
+		animation: petal-thumb-dot 320ms ease-out 450ms both;
+	}
+	.petal-thumb-mark[data-thumb-state='failed'] {
+		top: 2px;
+		right: 2px;
+		width: 6px;
+		height: 6px;
+		border: 1.5px solid currentColor;
+		opacity: 0.6;
+	}
+	@keyframes petal-thumb-dot {
+		from {
+			opacity: 0;
+			transform: scale(0.6);
+		}
+		to {
+			opacity: 0.85;
+			transform: scale(1);
+		}
+	}
+	@media (prefers-reduced-motion: reduce) {
+		.petal-thumb-mark[data-thumb-state='saving'] {
+			animation-duration: 1ms;
+		}
+	}
+
 	.buttons::-webkit-scrollbar {
 		display: none; /* for Chrome, Safari and Opera */
 	}

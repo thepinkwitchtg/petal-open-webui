@@ -9,6 +9,8 @@
 	import { deleteChatMessageById, updateChatById } from '$lib/apis/chats';
 	import { copyToClipboard, extractCurlyBraceWords, getDeepestChildId } from '$lib/utils';
 	import { getOutputText } from './Messages/structuredOutput';
+	import { thumbMarks } from '$lib/utils/petal-thumbs'; // 👍🏻 instant thumbs (A23)
+	import equal from 'fast-deep-equal';
 
 	import Message from './Messages/Message.svelte';
 	import Loader from '../common/Loader.svelte';
@@ -64,8 +66,25 @@
 
 	const getMessagesContainer = () => document.getElementById(messagesContainerId);
 
+	// 👍🏻 A23 · a landed verdict settles into this chat's history (the annotation as the rig merged it, tags
+	// included, + the row id), mounted reply or not, so the next whole-chat save keeps them
+	const unsubscribeThumbs = thumbMarks.subscribe((marks) => {
+		const replies = (history as { messages?: Record<string, any> })?.messages;
+		if (!replies) return;
+		let changed = false;
+		for (const [id, mark] of Object.entries(marks)) {
+			const source = replies[id];
+			if (mark.state !== 'saved' || !mark.annotation || !source) continue;
+			if (source.feedbackId === mark.feedback_id && equal(source.annotation ?? {}, mark.annotation)) continue;
+			replies[id] = { ...source, annotation: mark.annotation, feedbackId: mark.feedback_id };
+			changed = true;
+		}
+		if (changed) history = history;
+	});
+
 	onDestroy(() => {
 		cancelAnimationFrame(pendingRebuild);
+		unsubscribeThumbs();
 	});
 
 	const loadMoreMessages = async () => {
@@ -445,12 +464,18 @@
 		await chatActionHandler(chatId, actionId, message.model, message.id, event);
 	};
 
-	const saveMessage = async (messageId, message) => {
+	// local: true (👍🏻 A23) → the reply changes in this page's history at once and nothing is sent: a
+	// verdict's save rides the thumbs queue (petal-thumbs), never a whole chat
+	const saveMessage = async (messageId, message, { local = false } = {}) => {
 		if (!history.messages?.[messageId]) {
 			return;
 		}
 
 		history.messages[messageId] = message;
+		if (local) {
+			history = history;
+			return;
+		}
 		await updateChat();
 	};
 
