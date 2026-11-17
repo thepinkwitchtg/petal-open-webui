@@ -669,7 +669,7 @@ async def generate_moa_response(request: Request, form_data: dict, user=Depends(
 # >>> petal · hush · begin >>>
 ##################################
 #
-# 🌸 petal · hush  ·  v0.16  (petal-patch, grafted by petal-hush-apply.sh)
+# 🌸 petal · hush  ·  v0.17  (petal-patch, grafted by petal-hush-apply.sh)
 # Petal writes the whisper in the empty chat field, at runtime.
 # called directly through generate_chat_completion, like title
 # generation — never through the chat pipeline, so memory injection,
@@ -740,6 +740,9 @@ async def generate_moa_response(request: Request, form_data: dict, user=Depends(
 #         {{CURRENT_DATETIME}} becomes the date. whispers, the pin and the pulse alike. no forge
 #         core, no forge.json, an error or an answer that isn't a bool → hidden. asked at most
 #         every 2 s; debug says clock: hidden|shown and why.
+# v0.17 · the pin knows her thank-you (A27): the line she wrote for your feedback now lives in the whisper
+#         (hush.js v0.13's reflex). answer it and the pin says so — kind 'thanks' — instead of calling it
+#         an opening line. verdict-blind like the line itself: it never says how you rated.
 #
 ##################################
 
@@ -1567,7 +1570,7 @@ async def petal_hush_pin(request: Request, form_data: dict, user=Depends(get_ver
     if not whisper:
         return {'note': None, 'recorded': False, 'reason': 'no whisper was glowing'}
 
-    kind = form_data.get('kind') if form_data.get('kind') in ('open', 'reply', 'linger') else 'open'
+    kind = form_data.get('kind') if form_data.get('kind') in ('open', 'reply', 'linger', 'thanks') else 'open'
     origin = form_data.get('origin') if form_data.get('origin') in ('petal', 'queue', 'pool') else 'petal'
     device = 'phone' if form_data.get('device') == 'phone' else 'computer'
     waited_s = _petal_hush_int(form_data.get('waited_seconds'))
@@ -1580,6 +1583,7 @@ async def petal_hush_pin(request: Request, form_data: dict, user=Depends(get_ver
         'open': 'your opening line on a fresh chat',
         'reply': 'your whisper after your last reply',
         'linger': 'a line you rewrote while she was quiet',
+        'thanks': 'your thank-you for the feedback she just gave you',
     }
     if lingers == 0:
         lingered = 'your first line there — no rewrites'
