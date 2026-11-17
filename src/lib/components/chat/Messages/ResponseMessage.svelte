@@ -16,7 +16,7 @@
 
 	const dispatch = createEventDispatcher();
 
-	import { thumbMarks, thumbVerdict } from '$lib/utils/petal-thumbs'; // 👍🏻 instant thumbs (slice A23)
+	import { thumbMarks, thumbNote, thumbVerdict } from '$lib/utils/petal-thumbs'; // 👍🏻 instant thumbs (A23) · her thank-you (A27)
 
 	import { config, settings, TTSWorker, user, visibleControls } from '$lib/stores';
 	import { synthesizeOpenAISpeech } from '$lib/apis/audio';
@@ -664,7 +664,9 @@
 				chat_id: chatId,
 				base_models
 			},
-			askTags: fromThumb && !annotation?.tags && (message?.content ?? '') !== ''
+			askTags: fromThumb && !annotation?.tags && (message?.content ?? '') !== '',
+			thumb: fromThumb, // 💗 A27 · a tap begins a feedback: her thank-you follows it, once
+			note: fromThumb && !!message.done // the note window opens with it: her line waits for its save or close
 		});
 
 		const id = message.id;
@@ -759,7 +761,11 @@
 		}
 	});
 
+	// 💗 A27 · the note window, open or closed: her thank-you waits while it's open (petal-thumbs)
+	$: thumbNote(message?.id, !!(message?.done && showRateComment));
+
 	onDestroy(() => {
+		if (showRateComment) thumbNote(message?.id, false); // the reply left the page: the window closed with it
 		unregisterVoice();
 		if (buttonsContainerElement) {
 			buttonsContainerElement.removeEventListener('wheel', buttonsWheelHandler);

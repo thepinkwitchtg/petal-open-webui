@@ -1,7 +1,15 @@
 /* ═══════════════════════════════════════════════════════════
-   🌸 petal · hush  ·  v0.12.2 · open + reply + linger + pin + pulse · she writes it in
+   🌸 petal · hush  ·  v0.13 · open + reply + linger + pin + pulse + reflex · she writes it in
    the empty chat field whispers — and Petal writes the words.
 
+   v0.13 · the reflex: petalHush.reflex(line) — her thank-you after your feedback
+          (petal-thumbs, A27) snaps into the field at once: no typing-in, and
+          whatever hush was showing or writing gives way (a reply whisper on its
+          way, the reading wait, a linger). it stays until you type, like any
+          whisper (nothing lingers over it); answered, it pins as 'thanks'.
+          a line too long for one row of the field (a phone) gets a second row.
+          answers false when it couldn't be seen (no 🌸 skin, no field, words
+          already in the field): the caller says it another way.
    v0.12.2 · the gentle stop: while the launcher tucks Petal in, the server answers
           {gentle_stop: true} — a quiet rest (never a miss), the pool carries the room.
    v0.12.1 · temp chats ('temporary:…', the new upstream prefix) no longer ask
@@ -201,9 +209,14 @@
 		typing = setTimeout(step, 60);
 	};
 
-	const paint = (line, from, mode = 'open', lingered = 0) => {
-		document.documentElement.style.setProperty('--p-hush', toCss(line));
-		writeIn(line);
+	const paint = (line, from, mode = 'open', lingered = 0, { snap = false } = {}) => {
+		const root = document.documentElement;
+		root.style.setProperty('--p-hush', toCss(line));
+		delete root.dataset.pHushTall; // a second row belongs to the line that asked for it
+		if (snap) {
+			clearTimeout(typing); // a reflex: no letters falling in, the whole line at once
+			document.querySelector('#chat-input')?.style.removeProperty('--p-hush');
+		} else writeIn(line);
 		shown = { line, from, mode, at: Date.now(), lingered };
 		stillest = 0;
 		if (mode === 'open' && line) {
@@ -682,7 +695,7 @@
 	   beforeinput fires before the first letter lands, so the field is still
 	   empty and her line is still the one glowing. typing into silence holds
 	   nothing; clearing the field and beginning again re-holds. */
-	const kindOf = (s) => (s.lingered ? 'linger' : s.mode === 'reply' ? 'reply' : 'open');
+	const kindOf = (s) => (s.mode === 'thanks' ? 'thanks' : s.lingered ? 'linger' : s.mode === 'reply' ? 'reply' : 'open');
 	const originOf = (from) => (/pool/.test(from ?? '') ? 'pool' : /queue/.test(from ?? '') ? 'queue' : 'petal');
 	document.addEventListener(
 		'beforeinput',
@@ -1112,7 +1125,55 @@
 		return `all well 🌸 — the field shows a line from ${shown.from}`;
 	};
 
+	/* ── the reflex: a line that snaps in at once (v0.13) ──── */
+	let measure = null;
+	const fitsOneRow = (line) => {
+		const p = document.querySelector('#chat-input p.is-editor-empty');
+		if (!p) return true;
+		try {
+			const cs = getComputedStyle(p, '::before');
+			measure = measure ?? document.createElement('canvas').getContext('2d');
+			measure.font = cs.font || `${cs.fontStyle} ${cs.fontWeight} ${cs.fontSize} ${cs.fontFamily}`;
+			return measure.measureText(line).width <= p.clientWidth - 4;
+		} catch (_) {
+			return true;
+		}
+	};
+	const reflex = (text, { kind = 'thanks', from = 'thanks (petal, written ahead of time)' } = {}) => {
+		const line = typeof text === 'string' ? text.replace(/[\u0000-\u001f\u007f]+/g, ' ').replace(/\s+/g, ' ').trim() : '';
+		const root = document.documentElement;
+		if (!line) return false;
+		if (!root.classList.contains('petal') || getComputedStyle(root).getPropertyValue('--abyss').trim() === '')
+			return note('reflex not seen', { why: 'no 🌸 skin' }), false;
+		if (!document.querySelector('#chat-input')) return note('reflex not seen', { why: 'no chat field' }), false;
+		if (!fieldIsEmpty()) return note('reflex not seen', { why: 'words already in the field' }), false;
+		// whatever hush had on its way lets go: this line wins
+		replyCtrl?.abort();
+		replyCtrl = null;
+		replyFor = null;
+		clearTimeout(openTimer);
+		readStop('a reflex line');
+		lingerStop('a reflex line');
+		const before = { shown, dial: root.style.getPropertyValue('--p-hush') };
+		paint(line, from, kind === 'thanks' ? 'thanks' : 'reflex', 0, { snap: true });
+		if (!fitsOneRow(line)) root.dataset.pHushTall = '2';
+		const empty = document.querySelector('#chat-input p.is-editor-empty');
+		const drawn = empty ? getComputedStyle(empty, '::before').content : null;
+		if (!empty || unquote(drawn) !== unquote(toCss(line))) {
+			// painted but not drawn (a stylesheet that doesn't draw the dial): put the old line back
+			delete root.dataset.pHushTall;
+			if (before.dial) root.style.setProperty('--p-hush', before.dial);
+			else root.style.removeProperty('--p-hush');
+			shown = before.shown;
+			return note('reflex not seen', { why: 'the field does not draw the dial' }), false;
+		}
+		note('reflex', { chars: line.length, kind, rows: root.dataset.pHushTall ? 2 : 1 });
+		return true; // no linger is armed: it stays until you type
+	};
+
 	window.petalHush = {
+		/** a line that snaps in at once (her thank-you, A27) · true when the field shows it */
+		reflex,
 		status() {
 			const f = facts();
 			const v = verdict(f);
