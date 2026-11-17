@@ -32,9 +32,11 @@ the chat as its snapshot → POST the whole chat back), without the page carryin
   row's `data` and the reply's annotation, the snapshot kept (as OWUI's tag step re-sent the tap's)
 
 💗 A26 · her thank-yous (utils/petal_thanks.py): a landed verdict also answers `thanks`, the next line Petal wrote
-ahead of time (shown once, then retired; null when none is ready, and the page says its plain thanks). the take
-is a file read, never a model call; it wakes one refill in the background, written when vLLM is quiet. it is
-handed only the reply's model id: never the verdict, never the note
+ahead of time (shown once, then retired; null when none is ready). the take is a file read, never a model call;
+it wakes one refill in the background, written when vLLM is quiet. it is handed only the reply's model id: never
+the verdict, never the note
+💗 A27 · one line per feedback: the page asks (`"thanks": true`) only on a feedback's first landing (the thumb),
+never on the note that follows it or a flip while the note is open; unasked, `thanks` is null and nothing is taken
 
     GET  /api/v1/petal/thumbs/thanks         (admin) → { ready, target, recent, written, shown, writing, last }
     POST /api/v1/petal/thumbs/thanks/refill  (admin) → the same, after waking a refill
@@ -79,6 +81,7 @@ class ThumbForm(BaseModel):
     model_id: Optional[str] = None
     sibling_model_ids: Optional[list[str]] = None
     meta: dict = {}
+    thanks: bool = False  # 💗 A27 · this landing begins a feedback: hand back her next line (once per feedback)
     model_config = ConfigDict(extra='ignore', protected_namespaces=())
 
 
@@ -184,7 +187,8 @@ async def land_thumb(
             'annotation': annotation,
             'updated_at': landed.updated_at,
             # 💗 A26 · the next line she wrote ahead of time · verdict-blind: only the model id goes along
-            'thanks': await petal_thanks.take(request, user, model_id=form.model_id),
+            # 💗 A27 · taken only when the page asks (a feedback's first landing): one line per feedback
+            'thanks': await petal_thanks.take(request, user, model_id=form.model_id) if form.thanks else None,
         }
 
 
