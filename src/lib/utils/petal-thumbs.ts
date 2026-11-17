@@ -18,6 +18,12 @@
 //    never asks again. the line waits while the note window is open, and goes when the note is saved or closed;
 //    a thumb with no note window sends it as soon as the row lands. no hush to show it (another theme, words in
 //    the field) → a toast instead, ~4 s + ~70 ms a character (≤ 10 s), held while hovered or touched
+//  · 💗 A28 · the two little words, one per click: a thumb's tap, once its row lands → "Thanks for your feedback
+//    💗" (THANKS); the note window's save, once that update lands → "saved ✓" (SAVED). never both for one click,
+//    never twice in a row for one feedback: a flip while its note window is open is owed nothing and stays quiet
+//    (no "sent", no word; a failure still speaks). a landing that also carries an older click (one that never
+//    landed on its own: offline, retrying) says the older word first, the newer one ~1.8 s later. both stay
+//    ~1.8 s whatever their length; her own line keeps living in hush, once per feedback (A27)
 //  · a page reload keeps what's still waiting, in localStorage: ids and verdicts only (the rating, the reason
 //    key, the 1–10). never words: not her note, not the tags, not the reply
 //  · what the tap doesn't need rides after it: OWUI's tag step, on her first thumb of a reply, run on the rig
@@ -48,7 +54,8 @@ export type Verdict = {
 	sibling_model_ids: string[] | null;
 	meta: Record<string, unknown>;
 	askTags?: boolean; // her first thumb of a reply: OWUI's tag step follows once the verdict landed
-	thumb?: boolean; // 💗 A27 · a thumb's tap: it begins a feedback (unless one is still open on this reply)
+	thumb?: boolean; // 💗 A27 · a thumb's tap: it begins a feedback (unless one is still open on this reply).
+	// without it, the verdict is the note window's save (💗 A28 · owed "saved ✓")
 	note?: boolean; // 💗 A27 · the note window opens with this tap: her line waits until it's saved or closed
 };
 
@@ -65,7 +72,9 @@ export const MAX_TRIES = BACKOFF_MS.length;
 const KEY = 'petal-thumbs';
 const SETTLE_MS = 1200; // a landed mark lingers this long (its fade), then leaves
 const SENT_MS = 20_000; // "sent" stays until the answer replaces it (a failure needs ~15 s of tries)
-export const SAVED = 'saved ✓'; // 💗 A27 · the landing's word, the same every time: her line goes to hush
+export const THANKS = 'Thanks for your feedback 💗'; // 💗 A28 · a thumb's tap, once its row lands
+export const SAVED = 'saved ✓'; // 💗 A28 · the note window's save, once that update lands
+export const WORD_MS = 1800; // 💗 A28 · both little words are short, whatever their length
 const THANKS_MAX = 120; // her lines are ≤ 70 characters; anything longer from the rig isn't hers
 
 /** her line as the rig handed it back, or null (none ready, or not hers) */
@@ -86,12 +95,97 @@ const graphemes = (s: string): number => {
  *  while hovered or touched) */
 export const thanksMs = (line: string): number => Math.min(10_000, 4000 + 70 * graphemes(line));
 
+// ── 💗 A28 · the two little words ────────────────────────
+// a click is owed its word when it's made (a feedback's first tap → THANKS, the note's save → SAVED) and the word
+// is said when a request carrying that click lands: its own, or a newer one it collapsed into
+type Word = 'thanks' | 'saved';
+const owed = new Map<string, { word: Word; gen: number }[]>(); // per reply, in click order, until said
+const queued = new Map<string, { words: Word[]; timer: ReturnType<typeof setTimeout> }>(); // the rest of a sequence
+const showing = new Map<string, 'sent' | 'failed' | Word>(); // what the reply's toast said last
+
+/** a click is owed its word · never the same word twice in a row (the older click keeps its turn) */
+function owe(id: string, word: Word, gen: number) {
+	const list = owed.get(id) ?? [];
+	if (list[list.length - 1]?.word !== word) list.push({ word, gen });
+	owed.set(id, list);
+}
+
+/** the words owed by every click a landing carried (all of them up to its gen), in click order */
+function takeDue(id: string, gen: number): Word[] {
+	const list = owed.get(id) ?? [];
+	const rest = list.filter((o) => o.gen > gen);
+	if (rest.length) owed.set(id, rest);
+	else owed.delete(id);
+	return list.filter((o) => o.gen <= gen).map((o) => o.word);
+}
+
+const saidAt = new Map<string, number>(); // when the word glowing on the reply's toast was said
+const SWAP_EARLY_MS = 60; // the next word takes the toast just before sonner's own timer would end the last one
+
+/** landed words, said one after another, each keeping its ~1.8 s (almost always there is just one) */
+function speak(id: string, landed: Word[]) {
+	if (!landed.length) return; // nothing new: a word glowing (or waiting its turn) keeps its time
+	const was = queued.get(id);
+	if (was) clearTimeout(was.timer);
+	queued.delete(id);
+	const all = [...(was?.words ?? []), ...landed];
+	const words = all.filter((w, i) => w !== all[i - 1]);
+	const glowing = showing.get(id);
+	const left =
+		glowing === 'thanks' || glowing === 'saved'
+			? WORD_MS - SWAP_EARLY_MS - (Date.now() - (saidAt.get(id) ?? 0))
+			: 0;
+	if (left > 0) return later(id, words, left); // the word glowing now finishes first
+	say(id, words[0]);
+	if (words.length > 1) later(id, words.slice(1), WORD_MS - SWAP_EARLY_MS);
+}
+
+function later(id: string, words: Word[], ms: number) {
+	queued.set(id, {
+		words,
+		timer: setTimeout(() => {
+			queued.delete(id);
+			speak(id, words);
+		}, ms)
+	});
+}
+
+/** a new send (or its failure) takes the toast: words still waiting their turn are said at the next landing */
+function holdWords(id: string) {
+	const was = queued.get(id);
+	if (!was) return;
+	clearTimeout(was.timer);
+	queued.delete(id);
+	owed.set(id, [...was.words.map((word) => ({ word, gen: 0 })), ...(owed.get(id) ?? [])]);
+}
+
+/** a landing owed no word (a quiet flip, a background retry of one): a "sent" or a failure it leaves behind goes */
+function landQuietly(id: string) {
+	const was = showing.get(id);
+	if (was !== 'sent' && was !== 'failed') return; // a word still glowing finishes its ~1.8 s
+	showing.delete(id);
+	toast.dismiss(`petal-thumb-${id}`);
+}
+
+function forgetWords(id: string) {
+	const was = queued.get(id);
+	if (was) clearTimeout(was.timer);
+	queued.delete(id);
+	owed.delete(id);
+	showing.delete(id);
+	saidAt.delete(id);
+}
+
 // 💗 one toast per reply: an update keeps the old toast's duration and action unless given new ones, so every
 // state names its own
-function say(id: string, what: 'sent' | 'saved' | 'failed') {
+function say(id: string, what: 'sent' | 'failed' | Word) {
 	const base = { id: `petal-thumb-${id}`, description: undefined, action: undefined };
+	if (what === 'sent' || what === 'failed') holdWords(id);
+	showing.set(id, what);
+	if (what === 'thanks' || what === 'saved') saidAt.set(id, Date.now());
 	if (what === 'sent') toast.message('sent', { ...base, duration: SENT_MS });
-	else if (what === 'saved') toast.success(SAVED, { ...base, duration: PETAL_TOAST_MS.default });
+	else if (what === 'thanks') toast.success(THANKS, { ...base, duration: WORD_MS });
+	else if (what === 'saved') toast.success(SAVED, { ...base, duration: WORD_MS });
 	else
 		toast.error("couldn't save your feedback · tap to retry", {
 			...base,
@@ -120,7 +214,7 @@ let pumpTimer: ReturnType<typeof setTimeout> | null = null;
 type Feedback = { asked: boolean; line?: string | null; note: boolean };
 const feedbacks = new Map<string, Feedback>();
 
-/** where her line goes: the whisper (hush's reflex), else a toast of its own beside "saved ✓" */
+/** where her line goes: the whisper (hush's reflex), else a toast of its own beside the little word */
 function sayThanks(id: string, line: string) {
 	let shown = false;
 	try {
@@ -137,7 +231,7 @@ function deliver(id: string) {
 	const fb = feedbacks.get(id);
 	if (!fb || fb.line === undefined || fb.note) return; // not landed yet, or the note window still open
 	feedbacks.delete(id);
-	if (fb.line) sayThanks(id, fb.line); // none ready: "saved ✓" already said it landed
+	if (fb.line) sayThanks(id, fb.line); // none ready: the little word already said it landed
 }
 
 /** 💗 A27 · the note window, from ResponseMessage: open holds her line, closed (saved or not) lets it go */
@@ -227,6 +321,7 @@ function restore() {
 			flying: false,
 			announced: false
 		});
+		owe(x.m, 'thanks', 1); // 💗 A28 · what survives a reload is a verdict (a note's words never do)
 		marks[x.m] = { rating: ratingOf(annotation), state: 'saving' };
 	}
 	if (Object.keys(marks).length) thumbMarks.update((all) => ({ ...marks, ...all }));
@@ -253,10 +348,14 @@ export function thumbVerdict(v: Verdict) {
 	};
 	queue.set(v.message_id, entry);
 	const fb = feedbacks.get(v.message_id);
-	if (v.thumb && !fb) feedbacks.set(v.message_id, { asked: false, note: !!v.note });
+	const begins = !!v.thumb && !fb; // a thumb's tap with no feedback open on this reply begins one
+	if (begins) feedbacks.set(v.message_id, { asked: false, note: !!v.note });
 	else if (v.thumb && fb && v.note) fb.note = true;
+	// 💗 A28 · a feedback's first tap is owed THANKS, the note's save SAVED; a flip inside an open feedback nothing
+	if (begins) owe(v.message_id, 'thanks', entry.gen);
+	else if (!v.thumb) owe(v.message_id, 'saved', entry.gen);
 	setMark(v.message_id, { rating: ratingOf(v.annotation), state: 'saving' });
-	say(v.message_id, 'sent');
+	if (owed.has(v.message_id)) say(v.message_id, 'sent'); // a quiet flip says nothing (its failure still would)
 	persist();
 	pump();
 }
@@ -332,6 +431,7 @@ async function send(entry: Entry) {
 			fb.line = thanksLine(out.thanks); // even if a newer verdict replaced this one: the line was taken
 			deliver(entry.message_id);
 		}
+		const words = takeDue(entry.message_id, gen); // 💗 A28 · the clicks this landing carried, each said once
 		if (current === entry && entry.gen === gen) {
 			queue.delete(entry.message_id);
 			setMark(entry.message_id, {
@@ -342,9 +442,12 @@ async function send(entry: Entry) {
 			});
 			persist();
 			settleLater(entry.message_id);
-			say(entry.message_id, 'saved'); // the rig answered: the row is in the database
+			// the rig answered: the row is in the database
+			if (words.length) speak(entry.message_id, words);
+			else landQuietly(entry.message_id);
 			void tagsAfter(entry, out.annotation ?? entry.annotation);
 		} else {
+			speak(entry.message_id, words); // its own clicks landed; the newer verdict will say its own
 			persist(); // a newer verdict waited: it goes now, onto the same row
 			pump();
 		}
@@ -358,6 +461,7 @@ async function send(entry: Entry) {
 		// the reply or its chat is gone: nothing left to save, nothing to say
 		queue.delete(entry.message_id);
 		feedbacks.delete(entry.message_id);
+		forgetWords(entry.message_id);
 		setMark(entry.message_id, null);
 		toast.dismiss(`petal-thumb-${entry.message_id}`);
 		persist();
