@@ -14,20 +14,30 @@ says whether the turn may be a pick, and serves it.
   differ: A30 makes them differ in `vllm_xargs.petal_steer` with one line (its `steer=`)
 - **the second reply never acts.** its tool calls stay unrun (no memory, note, subagent or question twice);
   the page offers no pick when either reply reached for a tool
-- each reply carries its pick record `petal_pick: {pair, slot, seed, pull}` (pull = the `petal_steer` it
-  was sent with, or null), on the message and in the 👁 record; downstream filters can read it in
-  `__metadata__` (`slot` 0 is the first reply)
-- the chips she's shown under a reply (what Petal got, 9.4) come with the frame: the second reply shows the
-  same ones under its own id, so the two look alike until she reads them
+- each reply carries its pick record `petal_pick: {pair, slot, seed, pull, frame_sha}` (pull = the
+  `petal_steer` it was sent with, or null), on the message and in the 👁 record; downstream filters can read
+  it in `__metadata__` (`slot` 0 is the first reply)
+- **equal frames (A29b).** the frame is the first reply's *final* request, the bytes about to leave for vLLM
+  (every inlet, enricher, state, file, variable and the rendered system prompt, its clock included): the
+  second reply sends a deep copy of exactly that, with only its seed (and, for A30, its pull) its own.
+  `frame_sha` is each request's sha256 minus those two; the page offers the pick only when both match
+- everything the first reply was shown while its frame was built is shown under the second one too, keyed to
+  its own id: every chip and citation it received (any filter's, retrieval's), the 9.4 chips that ride in
+  `metadata['petal_chips']`, its files, embeds and statuses. neither reply looks more attuned than the
+  other before she reads them (a visible frame biases her pick)
 - **refused** (the second placeholder is dropped before it exists; the page goes on with one reply): temp
   chats, internal and subagent turns, 🧪 tries, no live page, a continue or a guided regeneration, agents,
-  direct connections, code interpreter or image generation on, anything but two fresh ids for one model
+  direct connections, models served by anything but an OpenAI-style connection, code interpreter or image
+  generation on, anything but two fresh ids for one model
 """
 
 import asyncio
 import copy
+import hashlib
+import json
 import logging
 import random
+import weakref
 from typing import Any
 
 from open_webui.utils.chat_id import is_saved_chat_id
@@ -37,6 +47,23 @@ log = logging.getLogger(__name__)
 # what the second reply's tool call says instead of running
 HELD = '🍒 a pick sibling never acts: this tool call was not run, so this reply stays a plain sibling'
 OWN = ('message_id', 'task_id', 'petal_pick', 'chat_context')  # what each sibling keeps of its own
+# plain data in the metadata each sibling holds its own copy of (its rounds never reach the other's)
+PLAIN = (
+    'variables',
+    'files',
+    'features',
+    'params',
+    'chat_variables',
+    'user_message',
+    'petal_eyes_parts',
+    'initial_output',
+    'petal_footnote',
+    'petal_state',
+    'petal_chips',
+)
+SHOWN = ('statusHistory', 'sources', 'files', 'embeds')  # what a reply is shown, as the chat keeps it
+SERVE_WAIT_S = 120  # the second reply waits this long for the first one's request (it takes milliseconds)
+FRAMES: 'weakref.WeakValueDictionary[str, Frame]' = weakref.WeakValueDictionary()  # live frames, by first id
 _KEEP = object()
 
 
@@ -99,6 +126,8 @@ def _turn_refusal(
         return 'agents never pick'
     if (model_item or {}).get('direct'):
         return 'direct connections never pick'
+    if (model_item or {}).get('pipe') or (model_item or {}).get('owned_by') in ('ollama', 'arena'):
+        return 'only an OpenAI-style connection serves a pick'
     features = form_data.get('features') or {}
     if isinstance(features, dict) and (features.get('code_interpreter') or features.get('image_generation')):
         return 'code interpreter and image generation would act twice'
@@ -127,86 +156,231 @@ def _quiet(future: asyncio.Future) -> None:
         future.exception()  # read once, so a frame nobody waited on never warns
 
 
+def _copied(value: Any) -> Any:
+    try:
+        return copy.deepcopy(value)
+    except Exception:  # not plain data after all: shared as it is
+        return value
+
+
+def _own_copy(metadata: dict) -> dict:
+    meta = {**metadata}
+    for key in PLAIN:
+        if key in meta:
+            meta[key] = _copied(meta[key])
+    return meta
+
+
 class Frame:
-    """the request the first reply's task builds once, handed to the second's."""
+    """what the first reply's task builds once, handed to the second's: its metadata and body after every
+    inlet (`offer`), then its final request at the send (`sent`)."""
 
     def __init__(self, pair: list):
         self.pair = list(pair)
-        self._ready: asyncio.Future = asyncio.get_running_loop().create_future()
-        self._ready.add_done_callback(_quiet)
+        loop = asyncio.get_running_loop()
+        self._ready: asyncio.Future = loop.create_future()
+        self._served: asyncio.Future = loop.create_future()
+        for future in (self._ready, self._served):
+            future.add_done_callback(_quiet)
+        FRAMES[self.pair[0]] = self
 
     @property
     def served(self) -> bool:
-        return self._ready.done()
+        return self._served.done()
 
-    def offer(self, form_data: dict, metadata: dict, events: list | None) -> None:
-        """the frame as built, before the first reply is dressed for its send."""
+    async def offer(self, form_data: dict, metadata: dict, events: list | None) -> None:
+        """the frame as built: every inlet has run (filters, enrichers, states, files, her state lines), and
+        what the first reply was shown meanwhile is in the chat."""
         if self._ready.done():
             return
         try:
-            body = {k: v for k, v in form_data.items() if k != 'metadata'}
-            # the metadata as it stands now (its eyes parts, chips and preloaded output too): the first reply's
-            # own rounds never leak in
-            meta = {
-                **metadata,
-                'petal_eyes_parts': list(metadata.get('petal_eyes_parts') or []),
-                'petal_chips': copy.deepcopy(metadata.get('petal_chips') or []),
-                **(
-                    {'initial_output': copy.deepcopy(metadata['initial_output'])}
-                    if metadata.get('initial_output')
-                    else {}
-                ),
-            }
-            self._ready.set_result((copy.deepcopy(body), meta, copy.deepcopy(list(events or []))))
+            body = copy.deepcopy({k: v for k, v in form_data.items() if k != 'metadata'})
+            meta = _own_copy(metadata)
+            shown = with_chips(await shown_on(metadata), metadata.get('petal_chips'))
+            if not self._ready.done():
+                self._ready.set_result((body, meta, copy.deepcopy(list(events or [])), shown))
         except Exception as e:  # the first reply never pays for its sibling: only the second one ends
             log.warning(f'🍒 petal pick: the frame could not be copied ({e!r})')
             self.fail(e)
 
+    def sent(self, payload: dict) -> None:
+        """the first reply's final request, the bytes about to leave: the frame the second one sends."""
+        if not self._served.done():
+            self._served.set_result(copy.deepcopy(payload))
+
     def fail(self, error: BaseException) -> None:
-        """the first reply ended before its frame was built: the second ends with it."""
-        if not self._ready.done():
-            self._ready.set_exception(error)
+        """the first reply ended before its frame was built or sent: the second goes on alone."""
+        for future in (self._ready, self._served):
+            if not future.done():
+                future.set_exception(error)
 
     async def take(self, mine: dict) -> tuple:
-        """the second reply's copy of the frame: the first one's request, its own ids (and the chips she was
-        shown under the first: what Petal got is the same for both, so both show it)."""
-        body, metadata, events = await asyncio.shield(self._ready)
-        own = {k: mine[k] for k in OWN if k in mine}
-        meta = {**metadata, **own, 'petal_eyes_parts': list(metadata['petal_eyes_parts'])}
-        meta.pop('petal_chips', None)
+        """the second reply's copy of the frame: the first one's request, its own ids, and what the first one
+        was shown (what Petal got is the same for both, so both show it)."""
+        body, metadata, events, shown = await asyncio.shield(self._ready)
+        meta = {**_own_copy(metadata), **{k: mine[k] for k in OWN if k in mine}}
+        if meta.get('petal_chips') and mine.get('message_id'):  # the chips it's shown, named for it
+            meta['petal_chips'] = _rekeyed(meta['petal_chips'], self.pair[0], mine['message_id'])
         form = {**copy.deepcopy(body), 'metadata': meta}
-        await echo_chips(metadata.get('petal_chips'), self.pair, meta)
+        await echo_shown(shown, self.pair, meta)
         return form, meta, copy.deepcopy(events)
 
+    async def copy_for(self, own: dict) -> dict:
+        """the first reply's final request for the second, its seed and its pull its own."""
+        try:
+            first = await asyncio.wait_for(asyncio.shield(self._served), SERVE_WAIT_S)
+        except Exception as e:  # the first one never sent (failed, stopped): this one goes as it built itself
+            log.warning(f'🍒 petal pick: the second reply sends its own request ({e!r})')
+            return own
+        sent = copy.deepcopy(first)
+        if 'seed' in own:
+            sent['seed'] = own['seed']
+        else:
+            sent.pop('seed', None)
+        pull = _pull(own)
+        xargs = dict(sent['vllm_xargs']) if isinstance(sent.get('vllm_xargs'), dict) else {}
+        if pull is _KEEP:
+            xargs.pop('petal_steer', None)
+        else:
+            xargs['petal_steer'] = copy.deepcopy(pull)
+        if xargs:
+            sent['vllm_xargs'] = xargs
+        else:
+            sent.pop('vllm_xargs', None)
+        return sent
 
-def _rekey(sid: Any, first: str, mine: str) -> Any:
-    return sid[: -len(first)] + mine if isinstance(sid, str) and first and sid.endswith(first) else sid
+
+def _pull(payload: dict) -> Any:
+    xargs = payload.get('vllm_xargs')
+    return xargs['petal_steer'] if isinstance(xargs, dict) and 'petal_steer' in xargs else _KEEP
 
 
-async def echo_chips(chips: list | None, pair: list, metadata: dict) -> int:
-    """the 9.4 chips under the first reply (petal_state: the exact lines Petal got) under the second one too,
-    keyed to its own id. nothing runs again: the same chips, shown twice, so neither reply looks different
-    from the other before she reads them. returns how many were shown."""
+def frame_sha(payload: dict) -> str:
+    """a request's sha256 minus what a sibling owns (its seed, its pull): one frame, one sha."""
+    body = {k: v for k, v in payload.items() if k != 'seed'}
+    xargs = body.get('vllm_xargs')
+    if isinstance(xargs, dict):
+        xargs = {k: v for k, v in xargs.items() if k != 'petal_steer'}
+        if xargs:
+            body['vllm_xargs'] = xargs
+        else:
+            body.pop('vllm_xargs', None)
+    blob = json.dumps(body, sort_keys=True, ensure_ascii=False, separators=(',', ':'), default=str)
+    return hashlib.sha256(blob.encode('utf-8')).hexdigest()
+
+
+async def serve(metadata: dict | None, payload: dict) -> dict:
+    """🍒 A29b · right before the bytes leave for the model (routers/openai.py): the first reply's request
+    becomes the frame, the second sends a deep copy of it with its own seed and pull, and each reply's pick
+    record learns what was really sent (seed, pull, `frame_sha`). anything else passes untouched."""
+    pick = metadata.get('petal_pick') if isinstance(metadata, dict) else None
+    if not isinstance(pick, dict) or pick.get('slot') not in (0, 1) or not isinstance(payload, dict):
+        return payload
+    if pick.get('frame_sha'):  # a later round of the same reply (its tools ran): the frame was its first request
+        return payload
+    try:
+        frame = FRAMES.get(str((pick.get('pair') or [''])[0]))
+        if frame is not None and pick.get('slot') == 0:
+            frame.sent(payload)
+        elif frame is not None:
+            payload = await frame.copy_for(payload)
+    except Exception as e:  # her message is never lost to the pick: it goes as built
+        log.warning(f'🍒 petal pick: served as built ({e!r})')
+    try:  # in place: the router holds a merged copy of the metadata, the pick record itself is shared
+        seed, pull = payload.get('seed'), _pull(payload)
+        pick.update(
+            {
+                'seed': seed if isinstance(seed, int) and not isinstance(seed, bool) else None,
+                'pull': None if pull is _KEEP else copy.deepcopy(pull),
+                'frame_sha': frame_sha(payload),
+            }
+        )
+    except Exception as e:
+        log.warning(f'🍒 petal pick: the frame went unstamped ({e!r})')
+    return payload
+
+
+async def shown_on(metadata: dict) -> dict:
+    """what a reply has been shown so far, as the chat keeps it: statuses, chips (any filter's, the 9.4 ones,
+    retrieval's), files and embeds."""
+    try:
+        chat_id, message_id = metadata.get('chat_id'), metadata.get('message_id')
+        if not is_saved_chat_id(chat_id) or not message_id:
+            return {}
+        from open_webui.models.chats import Chats
+
+        message = await Chats.get_message_by_id_and_message_id(chat_id, message_id) or {}
+        return {key: copy.deepcopy(message[key]) for key in SHOWN if message.get(key)}
+    except Exception as e:  # what she's shown never costs her the reply
+        log.warning(f'🍒 petal pick: what the first reply was shown could not be read ({e!r})')
+        return {}
+
+
+def _chip_key(source: Any) -> Any:
+    if not isinstance(source, dict):
+        return json.dumps(source, sort_keys=True, default=str)
+    sid = (source.get('source') or {}).get('id') if isinstance(source.get('source'), dict) else None
+    return sid or json.dumps(source, sort_keys=True, default=str)
+
+
+def with_chips(shown: dict | None, chips: list | None) -> dict:
+    """what the chat kept, plus the 9.4 chips in `metadata['petal_chips']` it may not have kept (each chip once,
+    by its id, in the order she was shown them)."""
+    shown = dict(shown or {})
+    sources = list(shown.get('sources') or [])
+    seen = {_chip_key(s) for s in sources}
+    for chip in chips or []:
+        if isinstance(chip, dict) and _chip_key(chip) not in seen:
+            seen.add(_chip_key(chip))
+            sources.append(copy.deepcopy(chip))
+    if sources:
+        shown['sources'] = sources
+    return shown
+
+
+def _rekeyed(value: Any, first: str, mine: str) -> Any:
+    """a copy with every id that names the first reply (`…-<first id>`) naming the second instead."""
+    if isinstance(value, dict):
+        return {
+            k: (
+                v[: -len(first)] + mine
+                if k in ('id', 'source', 'message_id') and isinstance(v, str) and v.endswith(first)
+                else _rekeyed(v, first, mine)
+            )
+            for k, v in value.items()
+        }
+    if isinstance(value, list):
+        return [_rekeyed(v, first, mine) for v in value]
+    return copy.deepcopy(value)
+
+
+async def echo_shown(shown: dict | None, pair: list, metadata: dict) -> int:
+    """what the first reply was shown while its frame was built, shown under the second one too, keyed to its
+    own id: nothing runs again, so neither reply looks different from the other before she reads them.
+    returns how many things were shown."""
     try:
         first, mine = (pair or [None])[0], metadata.get('message_id')
-        if not chips or not first or not mine or first == mine:
+        if not shown or not first or not mine or first == mine:
             return 0
         from open_webui.socket.main import get_event_emitter
 
         emit = await get_event_emitter(metadata)
         if not emit:
             return 0
-        for chip in chips:
-            data = copy.deepcopy(chip)
-            if isinstance(data.get('source'), dict):
-                data['source']['id'] = _rekey(data['source'].get('id'), first, mine)
-            for item in data.get('metadata') or []:
-                if isinstance(item, dict):
-                    item['source'] = _rekey(item.get('source'), first, mine)
-            await emit({'type': 'source', 'data': data})
-        return len(chips)
+        n = 0
+        for status in shown.get('statusHistory') or []:
+            await emit({'type': 'status', 'data': _rekeyed(status, first, mine)})
+            n += 1
+        for source in shown.get('sources') or []:
+            await emit({'type': 'source', 'data': _rekeyed(source, first, mine)})
+            n += 1
+        for key in ('files', 'embeds'):
+            if shown.get(key):
+                await emit({'type': key, 'data': {key: _rekeyed(shown[key], first, mine)}})
+                n += len(shown[key])
+        return n
     except Exception as e:  # a chip never costs her the reply
-        log.warning(f'🍒 petal pick: the chips stayed with the first reply ({e!r})')
+        log.warning(f'🍒 petal pick: what the first reply was shown stayed with it ({e!r})')
         return 0
 
 

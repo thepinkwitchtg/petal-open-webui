@@ -74,7 +74,13 @@ type Msg = {
 	arena?: boolean;
 	annotation?: Record<string, unknown> | null;
 	feedbackId?: string | null;
-	petal_pick?: { pair?: unknown; slot?: unknown; seed?: unknown; pull?: unknown } | null;
+	petal_pick?: {
+		pair?: unknown;
+		slot?: unknown;
+		seed?: unknown;
+		pull?: unknown;
+		frame_sha?: unknown; // A29b · the request it was sent, minus its seed and pull (sha256)
+	} | null;
 };
 type History = { currentId: string | null; messages: Record<string, Msg> };
 
@@ -177,6 +183,28 @@ export const wasPicked = (m: Msg | undefined) => m?.annotation?.petal_pick === t
 
 export type OpenPick = { a: string; b: string; ready: boolean };
 
+/** A29b · both replies were served one frame: the same request but for their seed and pull. known only once
+ * both are done (each learns its `frame_sha` at the send, the page with its last event) */
+export const sameFrame = (a: Msg | undefined, b: Msg | undefined) => {
+	const [x, y] = [a?.petal_pick?.frame_sha, b?.petal_pick?.frame_sha];
+	return typeof x === 'string' && x !== '' && x === y;
+};
+
+/** why a pair that was asked for isn't offered (null while it still is, or could be) */
+export function dissolvedWhy(history: History, id: string): string | null {
+	const pair = pairOf(history, id);
+	if (!pair) return null;
+	const [a, b] = pair.map((x) => history.messages[x]);
+	if (a.error || b.error) return 'a reply failed';
+	if (reachedForTool(a) || reachedForTool(b)) return 'a reply reached for a tool';
+	if (unfinished(a) || unfinished(b)) return 'a reply did not finish (stopped, cut short or empty)';
+	if (a.done === true && b.done === true && !sameFrame(a, b))
+		return a.petal_pick?.frame_sha && b.petal_pick?.frame_sha
+			? 'the two replies were not served the same frame'
+			: 'the two replies carry no frame to compare';
+	return null;
+}
+
 /** the pick still waiting on this turn, if any: shown while it's the turn she's on and nothing has followed */
 export function openPick(history: History, id: string): OpenPick | null {
 	const pair = pairOf(history, id);
@@ -185,7 +213,7 @@ export function openPick(history: History, id: string): OpenPick | null {
 	if (history.currentId !== a.id && history.currentId !== b.id) return null;
 	if (wasPicked(a) || wasPicked(b)) return null;
 	if ((a.childrenIds?.length ?? 0) > 0 || (b.childrenIds?.length ?? 0) > 0) return null; // she went on
-	if (a.error || b.error || reachedForTool(a) || reachedForTool(b) || unfinished(a) || unfinished(b)) return null;
+	if (dissolvedWhy(history, id)) return null; // failed · reached for a tool · unfinished · two frames
 	return { a: a.id, b: b.id, ready: a.done === true && b.done === true };
 }
 
@@ -264,6 +292,11 @@ let last: (PickDecision & { at: string }) | null = null;
 export function noteDecision(decision: PickDecision) {
 	last = { ...decision, at: new Date().toLocaleTimeString() };
 	if (decision.pick) console.log('🍒 a pick this turn:', decision.why);
+}
+/** a pair asked for and then not offered: `petalPick.last` says why (no rows are ever written for it) */
+export function noteDissolved(why: string) {
+	last = { pick: false, why: `the pair dissolved: ${why}`, at: new Date().toLocaleTimeString() };
+	console.log('🍒 no pick after all:', why);
 }
 if (typeof window !== 'undefined')
 	(window as unknown as Record<string, unknown>).petalPick = {

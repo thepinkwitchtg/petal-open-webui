@@ -7,7 +7,7 @@
 	import type { Writable } from 'svelte/store';
 
 	import { updateChatById } from '$lib/apis/chats';
-	import { mobile, models } from '$lib/stores';
+	import { mobile, models, settings } from '$lib/stores';
 	import { openPick, pickGlow, pickVerdicts, type OpenPick } from '$lib/utils/petal-pick';
 	import { thumbVerdict } from '$lib/utils/petal-thumbs';
 
@@ -92,7 +92,12 @@
 	onDestroy(() => io?.disconnect());
 </script>
 
-<div class="petal-pick" class:pp-phone={$mobile} data-petal-pick={pair.a}>
+<div
+	class="petal-pick"
+	class:pp-phone={$mobile}
+	class:pp-wide={$settings?.widescreenMode ?? false}
+	data-petal-pick={pair.a}
+>
 	<div class="pp-head">
 		<span aria-hidden="true">🍒</span>
 		<span>
@@ -177,15 +182,19 @@
 </div>
 
 <style>
+	/* 🍒 Abyssal Pink (the openwebui + petal-gen refs): every colour is a petal token, each with a quiet
+	   fallback for the other themes. nothing here animates: at rest the pick costs the 3080 nothing */
 	.petal-pick {
 		width: 100%;
 	}
 	.pp-head {
 		display: flex;
 		align-items: center;
-		gap: 0.4rem;
-		margin: 0 0 0.5rem;
+		justify-content: center;
+		gap: 0.45rem;
+		margin: 0.15rem 0 0.75rem;
 		font-size: 0.8rem;
+		letter-spacing: 0.01em;
 		color: var(--mist, #9a8f98);
 	}
 	.pp-dots {
@@ -204,29 +213,56 @@
 	.pp-dot-on {
 		background: oklch(0.711 0.214 var(--p-h-accent, 352) / 0.75);
 	}
-	/* desktop: side by side, each reply its own column; both cards as tall as the longer one, so the two
-	   "this one" sit on one line whatever their lengths */
+	/* desktop: the chat area split into two real columns. each is as wide as the chat reads (its own max
+	   width), or half the chat when the window can't hold two; both as tall as the longer reply, so the two
+	   "this one" sit on one line; a quiet gutter between them */
 	.pp-cols {
+		--pp-col: 58rem; /* the chat column's own max width */
+		--pp-gutter: 2.25rem;
+		position: relative;
 		display: grid;
-		grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
-		gap: 0.75rem;
+		grid-template-columns: repeat(2, minmax(0, var(--pp-col)));
+		justify-content: center;
+		column-gap: var(--pp-gutter);
 		align-items: stretch;
+	}
+	.pp-wide .pp-cols {
+		--pp-col: 1fr; /* widescreen: the whole chat, split evenly */
+	}
+	/* the gutter: one still hairline down its middle, fading at both ends (petal-gen's splitter, at rest) */
+	.pp-cols::before {
+		content: '';
+		position: absolute;
+		top: 1.5rem;
+		bottom: 1.5rem;
+		left: 50%;
+		width: 1px;
+		transform: translateX(-50%);
+		background: linear-gradient(
+			to bottom,
+			transparent,
+			var(--edge, oklch(0.6 0 0 / 0.22)) 20%,
+			var(--edge, oklch(0.6 0 0 / 0.22)) 80%,
+			transparent
+		);
+		pointer-events: none;
 	}
 	.pp-col {
 		display: flex;
 		flex-direction: column;
 		min-width: 0;
-		padding: 0.75rem 0.9rem 0.6rem;
-		border-radius: 1rem;
-		border: 1px solid oklch(0.711 0.214 var(--p-h-accent, 352) / 0.18);
-		background: oklch(0.711 0.214 var(--p-h-accent, 352) / 0.03);
+		padding: 1rem 1.35rem 0.9rem;
+		border-radius: var(--radius, 14px);
+		border: 1px solid var(--edge-soft, oklch(0.6 0 0 / 0.16));
+		background: linear-gradient(180deg, var(--obsidian-lit, transparent) 0%, transparent 6rem);
+		box-shadow: inset 0 1px 0 var(--glass-sheen, transparent);
 	}
 	.pp-foot {
 		display: flex;
 		align-items: center;
 		gap: 0.5rem;
 		margin-top: auto;
-		padding-top: 0.5rem;
+		padding-top: 0.75rem;
 	}
 	.pp-of {
 		margin-left: auto;
@@ -236,19 +272,27 @@
 	}
 	/* phone: one at a time, swipe between them (the browser's own scroll, nothing animated by us); the
 	   other card's edge peeks in, so she knows there's a second one without reading a word */
+	.pp-phone .pp-head {
+		justify-content: flex-start;
+	}
 	.pp-phone .pp-cols {
 		display: flex;
+		justify-content: flex-start; /* a centred row that overflows clips its start: the first card from its edge */
 		gap: 0.6rem;
 		overflow-x: auto;
 		scroll-snap-type: x mandatory;
 		overscroll-behavior-x: contain;
 		scrollbar-width: none;
 	}
+	.pp-phone .pp-cols::before {
+		display: none;
+	}
 	.pp-phone .pp-cols::-webkit-scrollbar {
 		display: none;
 	}
 	.pp-phone .pp-col {
 		flex: 0 0 calc(100% - 2.25rem);
+		padding: 0.75rem 0.9rem 0.6rem;
 		scroll-snap-align: center;
 		scroll-snap-stop: always;
 	}
@@ -256,16 +300,19 @@
 		display: inline-flex;
 		align-items: center;
 		gap: 0.35rem;
-		padding: 0.35rem 0.85rem;
+		padding: 0.38rem 0.9rem;
 		border-radius: 999px;
 		border: 1px solid oklch(0.711 0.214 var(--p-h-accent, 352) / 0.45);
 		background: oklch(0.711 0.214 var(--p-h-accent, 352) / 0.1);
-		color: inherit;
+		color: var(--pearl, inherit);
 		font-size: 0.85rem;
 		line-height: 1.2;
 	}
 	.pp-this:hover {
-		background: oklch(0.711 0.214 var(--p-h-accent, 352) / 0.18);
+		border-color: transparent;
+		background:
+			linear-gradient(var(--obsidian, #141018), var(--obsidian, #141018)) padding-box,
+			var(--grad-hairline, oklch(0.711 0.214 var(--p-h-accent, 352) / 0.6)) border-box;
 	}
 	.pp-this:focus-visible,
 	.pp-dot:focus-visible {
