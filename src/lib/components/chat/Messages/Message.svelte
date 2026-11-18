@@ -53,7 +53,8 @@
 	export let topPadding = false;
 	export let onInsertToNote: ((content: string) => void) | null = null;
 
-	// 🍒 A29 · a pick still waiting on this turn shows both replies (never in previews or shared views)
+	// 🍒 A29 · a pick still waiting on this turn shows both replies (never in previews or shared views),
+	// across the whole chat area: two real columns (A29b)
 	$: pick = compactPreview || readOnly ? null : openPick(history, messageId);
 	let glowFallback: ReturnType<typeof setTimeout> | null = null;
 	$: if ($pickGlow === messageId) {
@@ -78,7 +79,7 @@
 
 <div
 	role="listitem"
-	class="flex flex-col justify-between px-3.5 mb-3 w-full {($settings?.widescreenMode ?? null)
+	class="flex flex-col justify-between px-3.5 mb-3 w-full {($settings?.widescreenMode ?? null) || pick
 		? 'max-w-full'
 		: 'max-w-[58rem]'} mx-auto rounded-lg group message-listitem"
 	class:message-virtualized={!isWebKit && !isCurrentTurn}

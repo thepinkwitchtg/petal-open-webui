@@ -1776,8 +1776,8 @@ async def chat_completion(
                         await petal_state.apply(request, form_data, user, metadata, model)
                     except Exception as e:
                         log.warning(f'🌸 petal state skipped: {e!r}')  # her state never breaks a message
-                    if frame is not None:
-                        frame.offer(form_data, metadata, events)  # 🍒 the frame, before this reply is dressed
+                    if frame is not None:  # 🍒 the frame after every inlet, and what she was shown meanwhile
+                        await frame.offer(form_data, metadata, events)
                 if frame is not None:
                     form_data = petal_pick.dress(form_data, metadata)  # 🍒 the one place two siblings differ
                 response = await chat_completion_handler(request, form_data, user)

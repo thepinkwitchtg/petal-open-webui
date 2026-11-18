@@ -46,6 +46,7 @@ from open_webui.utils.json_codec import JSONCodec
 from open_webui.utils.misc import convert_logit_bias_input_to_json, get_provider_function, merge_tool_call_batches
 from open_webui.utils.model_ids import strip_provider_model_prefix
 from open_webui.utils import petal_eyes  # 👁 slice A10
+from open_webui.utils import petal_pick  # 🍒 A29b · one frame, sent twice
 from open_webui.utils.payload import (
     apply_model_params_to_body_openai,
     apply_system_prompt_to_body,
@@ -1573,6 +1574,10 @@ async def generate_chat_completion(
     is_streaming_request = bool(payload.get('stream', False))
     if not is_streaming_request:
         payload.pop('stream_options', None)
+
+    # 🍒 A29b · a pick's second reply sends the first one's exact request (its seed and pull its own),
+    # and each reply's pick record learns what was sent (seed, pull, frame_sha)
+    payload = await petal_pick.serve(metadata, payload)
 
     # 🌸👁 slice A10: serialized once, these exact bytes are sent, and her eyes keep them
     # (req_sha = sha256(bytes), the same hash petal-wellspring keeps at the source)
