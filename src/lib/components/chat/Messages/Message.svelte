@@ -9,14 +9,16 @@
 	import { copyToClipboard, isInternalMessage } from '$lib/utils';
 
 	import MultiResponseMessages from './MultiResponseMessages.svelte';
+	import PetalPick from './PetalPick.svelte'; // 🍒 A29 · two replies, one tap
+	import { openPick, pickGlow } from '$lib/utils/petal-pick';
 	import ResponseMessage from './ResponseMessage.svelte';
 	import UserMessage from './UserMessage.svelte';
 
 	export let chatId;
-	export let selectedModels = [];
+	export let selectedModels: string[] = [];
 	export let idx = 0;
 
-	export let history;
+	export let history: any; // typed (A29): the pick reads and binds it
 	export let messageId;
 
 	export let user;
@@ -52,6 +54,17 @@
 	export let onInsertToNote: ((content: string) => void) | null = null;
 	export let onOpenArtifacts: ((code?: string) => void) | null = null;
 
+	// 🍒 A29 · a pick still waiting on this turn shows both replies (never in previews or shared views)
+	$: pick = compactPreview || readOnly ? null : openPick(history, messageId);
+	let glowFallback: ReturnType<typeof setTimeout> | null = null;
+	$: if ($pickGlow === messageId) {
+		clearTimeout(glowFallback ?? undefined);
+		glowFallback = setTimeout(() => $pickGlow === messageId && pickGlow.set(null), 4000);
+	}
+	const glowEnded = (e: AnimationEvent) => {
+		if ($pickGlow === messageId && e.animationName.includes('petal-picked')) pickGlow.set(null);
+	};
+
 	// Shown at the top of the reply to it.
 	$: shownInReply =
 		isInternalMessage(history.messages[messageId]) &&
@@ -84,6 +97,8 @@
 		: 'max-w-[58rem]'} mx-auto rounded-lg group message-listitem"
 	class:hidden={shownInReply}
 	class:message-virtualized={!isWebKit && !isFirefox && !wasCurrentTurn}
+	class:petal-picked-glow={$pickGlow === messageId}
+	on:animationend={glowEnded}
 >
 	{#if history.messages[messageId]}
 		{#if history.messages[messageId].role === 'user'}
@@ -109,6 +124,31 @@
 				{compactPreview}
 				{editCodeBlock}
 				{topPadding}
+			/>
+		{:else if pick}
+			<PetalPick
+				{chatId}
+				bind:history
+				pair={pick}
+				{selectedModels}
+				{setInputText}
+				{updateChat}
+				{editMessage}
+				{saveMessage}
+				{rateMessage}
+				{actionMessage}
+				{deleteMessage}
+				{submitMessage}
+				{continueResponse}
+				{regenerateResponse}
+				{addMessages}
+				{onToolCallResolved}
+				{forkHandler}
+				{allowDelete}
+				{allowToolApproval}
+				{editCodeBlock}
+				{topPadding}
+				{onInsertToNote}
 			/>
 		{:else if compactPreview || (history.messages[history.messages[messageId].parentId]?.models?.length ?? 1) === 1}
 			<ResponseMessage
@@ -189,5 +229,39 @@
 	.message-virtualized {
 		content-visibility: auto;
 		contain-intrinsic-size: auto 150px;
+	}
+
+	/* 🍒 A29 · the chosen reply glows once, quietly: one opacity fade on a still ring (compositor only),
+	   paused while the page is hidden, gone when it ends */
+	.petal-picked-glow {
+		position: relative;
+	}
+	.petal-picked-glow::after {
+		content: '';
+		position: absolute;
+		inset: 0;
+		border-radius: 1rem;
+		box-shadow:
+			0 0 0 1px oklch(0.711 0.214 var(--p-h-accent, 352) / 0.45),
+			0 0 24px oklch(0.711 0.214 var(--p-h-accent, 352) / 0.3);
+		opacity: 0;
+		pointer-events: none;
+		animation: petal-picked 1.6s ease-out 1;
+	}
+	:global(html[data-petal-hidden]) .petal-picked-glow::after {
+		animation-play-state: paused;
+	}
+	@keyframes petal-picked {
+		22% {
+			opacity: 1;
+		}
+		100% {
+			opacity: 0;
+		}
+	}
+	@media (prefers-reduced-motion: reduce) {
+		.petal-picked-glow::after {
+			animation-duration: 1ms;
+		}
 	}
 </style>

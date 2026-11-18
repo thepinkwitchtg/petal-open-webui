@@ -62,7 +62,8 @@
 	} from '$lib/stores';
 	import { adoptMode, modeToSend } from '$lib/utils/petal-mode'; // 🌀 the mode chip (A15)
 	import { thumbsNudge } from '$lib/utils/petal-thumbs'; // 👍🏻 instant thumbs (A23): waiting verdicts go first
-	import { playReply } from '$lib/utils/petal-voice'; // 🔈 auto-playback in speaker mode (A23)
+	import { playReply, speakingNow } from '$lib/utils/petal-voice'; // 🔈 auto-playback in speaker mode (A23)
+	import { decidePick, noteDecision, openPick, pairOf, rulesOf, takeAsk } from '$lib/utils/petal-pick'; // 🍒 A29
 	import { refreshChatList, refreshFolderChatLists, setChatTitle } from '$lib/stores/chatList';
 	import { updateFolderById } from '$lib/apis/folders';
 	import {
@@ -2087,7 +2088,9 @@
 						message.done = true;
 					} else handleOpenAIError(data.error, message);
 					if (!event.shared && !responseCompleted) {
-						if (event.message_id === history.currentId) {
+						const pickPair = pairOf(history, message.id); // 🍒 A29 · the turn ends once both are done
+						if (pickPair) await pickReplyDone(message, pickPair, event.chat_id);
+						else if (event.message_id === history.currentId) {
 							await processNextInQueue(event.chat_id);
 						}
 					}
@@ -3974,6 +3977,105 @@
 		await draftPrompt(message.content);
 	};
 
+	// what a finished reply does for her: the copy and the voice she asked for (a picked one, once she picks)
+	const afterReply = async (message: any) => {
+		const visibleContent = getOutputText(message?.output) || removeAllDetails(message?.content ?? '');
+
+		if ($settings.responseAutoCopy) {
+			copyToClipboard(visibleContent);
+		}
+
+		if ($settings.responseAutoPlayback && !$voiceCall && !bridge?.connected) {
+			await tick();
+			const speaker = document.getElementById(`speak-button-${message.id}`);
+			// speaker mode (A23): the row's Read Aloud steps aside for the speaker by her name
+			if (speaker) speaker.click();
+			else if (($settings?.voiceControl ?? 'bubble') === 'speaker') playReply(message.id);
+		}
+		return visibleContent;
+	};
+
+	// 🍒 A29 · her pick (PetalPick): the chosen reply does what a finished reply does, once
+	const onPicked = (e: Event) => {
+		const { chatId: id, id: messageId } = (e as CustomEvent).detail ?? {};
+		if (!id || id !== $chatId || !history.messages[messageId]) return;
+		void afterReply(history.messages[messageId]);
+	};
+	onMount(() => {
+		window.addEventListener('petal:picked', onPicked);
+		return () => window.removeEventListener('petal:picked', onPicked);
+	});
+
+	// 🍒 A29 · does this send ask her to pick between two replies? (her rhythm in Settings → Petal, or her ask)
+	const pickThisTurn = (userMessage: any) => {
+		const asked = takeAsk();
+		const decision = decidePick(rulesOf($settings), {
+			asked,
+			temp:
+				$temporaryChat ||
+				isTemporaryChatId($chatId) ||
+				String($chatId ?? '').startsWith('local:'),
+			voice: speakingNow(),
+			call: $voiceCall || !!bridge?.connected,
+			models: (atSelectedModel ? [atSelectedModel.id] : selectedModels).filter(Boolean).length,
+			acting:
+				selectedToolIds.length > 0 ||
+				webSearchActive ||
+				codeInterpreterEnabled ||
+				imageGenerationEnabled ||
+				!!$selectedMachineId ||
+				(userMessage?.files ?? []).some((file: any) => file?.type === 'filesystem'),
+			mode: modeToSend($chatId || null),
+			branch: createMessagesList(history, userMessage?.parentId ?? null)
+		});
+		noteDecision(decision);
+		return decision.pick;
+	};
+
+	// 🍒 A29 · a reply of a pick is done: the turn's effects run once, when both are, and the voice (or the copy)
+	// waits for her pick, so the reply she didn't choose is never read aloud
+	const pickEnded = new Set<string>(); // the pairs whose turn has ended here (an error and its done event: once)
+	const pickReplyDone = async (message: any, pickPair: [string, string], chatId: string) => {
+		history.messages[message.id] = message;
+		const [a, b] = pickPair.map((id) => history.messages[id]);
+		if (a?.done === false || b?.done === false || pickEnded.has(pickPair[0])) return void bridge?.update();
+		pickEnded.add(pickPair[0]);
+		await tick();
+		if (shouldAutoScrollResponse()) scrollToBottom();
+		if (!openPick(history, pickPair[0])) {
+			// nothing to pick (a reply reached for a tool, or failed): a plain turn, the one that came through shown
+			const shown = a?.error && b && !b.error ? b : a;
+			if (shown && shown.id !== history.currentId && history.currentId === a?.id) {
+				history.currentId = shown.id;
+				history = history;
+				updateChatById(localStorage.token, chatId, { history: { currentId: shown.id, messages: {} } }).catch(
+					(e) => console.warn('🍒 the reply that came through was not saved as current yet', e)
+				);
+			}
+			if (shown && !shown.error) void afterReply(shown);
+		}
+		const current = history.currentId ?? pickPair[0];
+		chatCompletedHandler(chatId, message.model, current, createMessagesList(history, current));
+		await processNextInQueue(chatId);
+		bridge?.update();
+	};
+
+	// 🍒 the server said no pick this turn: its second placeholder never existed there, so it leaves here too
+	const dropTwin = (twinId: string | undefined, why: string) => {
+		if (!twinId) return;
+		const twin = history.messages[twinId];
+		if (!twin) return;
+		const firstId: string | undefined = twin.petal_pick?.pair?.[0];
+		const first = firstId ? history.messages[firstId] : null;
+		if (first) delete first.petal_pick;
+		const parent = twin.parentId ? history.messages[twin.parentId] : null;
+		if (parent) parent.childrenIds = parent.childrenIds.filter((id: string) => id !== twinId);
+		delete history.messages[twinId];
+		if (history.currentId === twinId) history.currentId = first?.id ?? twin.parentId;
+		history = history;
+		console.log('🍒 no pick this turn:', why);
+	};
+
 	const chatCompletedHandler = async (_chatId, modelId, responseMessageId, messages) => {
 		// Backend handles outlet filters and persistence inline.
 		// Just refresh the sidebar chat list.
@@ -4229,6 +4331,7 @@
 			error,
 			usage
 		} = data;
+		if (data?.petal_pick?.pair) message.petal_pick = data.petal_pick; // 🍒 A29 · its seed and pull, at the end
 
 		if (error) {
 			if (shared) message.error = error;
@@ -4302,25 +4405,16 @@
 			message.done = true;
 			message.meta = { ...message.meta, response_ended_at: Date.now() / 1000 };
 			if (shared) return;
+			// 🍒 A29 · a pick's reply (done, or failed): the turn ends once, when both are done
+			const pickPair = pairOf(history, message.id);
+			if (pickPair) return void (await pickReplyDone(message, pickPair, chatId));
 			if (message.error) {
 				bridge?.update();
 				await processNextInQueue(chatId);
 				return;
 			}
-			const visibleContent =
-				getOutputText(message?.output) || removeAllDetails(message?.content ?? '');
 
-			if ($settings.responseAutoCopy) {
-				copyToClipboard(visibleContent);
-			}
-
-			if ($settings.responseAutoPlayback && !$voiceCall && !bridge?.connected) {
-				await tick();
-				const speaker = document.getElementById(`speak-button-${message.id}`);
-				// speaker mode (A23): the row's Read Aloud steps aside for the speaker by her name
-				if (speaker) speaker.click();
-				else if (($settings?.voiceControl ?? 'bubble') === 'speaker') playReply(message.id);
-			}
+			const visibleContent = await afterReply(message);
 
 			// Emit chat event for TTS (only when call overlay is active)
 			dispatchCallOverlayAudio(message, true);
@@ -4450,9 +4544,13 @@
 			if (!existingUserMessage && history === currentHistory) await unsendMessage(userMessageId);
 			return { status: 'rejected' as const };
 		}
+		// 🍒 A29 · a fresh send of hers may ask her to pick between two replies (never a bridge's, never one
+		// queued behind a running reply: the backend answers those later, one reply each; her ask waits for the next)
+		const pick = !bridgeRequest && !queued && pickThisTurn(userMessage);
 
 		return await sendMessage(history, userMessageId, {
-			modelId: bridgeRequest?.modelId ?? null
+			modelId: bridgeRequest?.modelId ?? null,
+			pick
 		});
 	};
 
@@ -5036,13 +5134,15 @@
 			modelId = null,
 			modelIdx = null,
 			regenerationPrompt = null,
-			regenerationMessageId = null
+			regenerationMessageId = null,
+			pick = false
 		}: {
 			messages?: any[] | null;
 			modelId?: string | null;
 			modelIdx?: number | null;
 			regenerationPrompt?: string | null;
 			regenerationMessageId?: string | null;
+			pick?: boolean;
 		} = {}
 	) => {
 		const parent = _history.messages[parentId];
@@ -5122,6 +5222,23 @@
 				});
 			}
 		}
+		// 🍒 A29 · a pick: a second reply from the same model, a sibling under her message. the server builds the
+		// turn once and sends it twice; the first reply stays active until she picks
+		if (pick && !queued && !modelId && messageIdsList.length === 1 && history.messages[parentId]) {
+			const first = history.messages[messageIdsList[0].message_id];
+			const twinId = uuidv4();
+			const pair = [first.id, twinId];
+			first.petal_pick = { pair, slot: 0 };
+			history.messages[twinId] = {
+				...first,
+				id: twinId,
+				childrenIds: [],
+				petal_pick: { pair, slot: 1 }
+			};
+			history.messages[parentId].childrenIds = [...history.messages[parentId].childrenIds, twinId];
+			messageIdsList.push({ ...messageIdsList[0], message_id: twinId });
+			history.currentId = first.id;
+		}
 		history = history;
 
 		await tick();
@@ -5177,7 +5294,8 @@
 						// Send message_ids even for single-column regenerations to preserve modelIdx on reload.
 						messageIdsList: messageIdsList.length > 0 ? messageIdsList : undefined,
 						regenerationPrompt,
-						regenerationMessageId
+						regenerationMessageId,
+						pick: messageIdsList.length === 2 && !!history.messages[messageIdsList[1].message_id]?.petal_pick
 					}
 				);
 				submittedTaskIds =
@@ -5258,12 +5376,14 @@
 			messageIdsList,
 			regenerationPrompt,
 			regenerationMessageId,
-			continueResponse = false
+			continueResponse = false,
+			pick = false
 		}: {
 			messageIdsList?: Array<{ model_id: string; message_id: string }>;
 			regenerationPrompt?: string | null;
 			regenerationMessageId?: string | null;
 			continueResponse?: boolean;
+			pick?: boolean;
 		} = {}
 	) => {
 		const responseMessage = _history.messages[responseMessageId];
@@ -5449,6 +5569,7 @@
 				folder_id:
 					$selectedFolder?.id ?? ($temporaryChat && draftFolderId ? draftFolderId : undefined),
 				...(petalMode ? { petal_mode: petalMode } : {}),
+				...(pick ? { petal_pick: true } : {}), // 🍒 A29 · two replies, one frame
 
 				id: responseMessageId,
 				...(messageIdsList ? { message_ids: messageIdsList } : {}),
@@ -5505,6 +5626,9 @@
 			return null;
 		});
 
+		// 🍒 A29 · the send never became a turn on the server: its second placeholder leaves with it
+		if (pick && (!res || res.error)) dropTwin(messageIdsList?.[1]?.message_id, 'the send failed');
+
 		if (filesystemAttachment && (!res || res.error))
 			throw new Error('File request failed. Retry from the message or queue.');
 		const placeholderIds = (messageIdsList ?? [{ message_id: responseMessageId }]).map(
@@ -5537,6 +5661,8 @@
 			if (res.error) {
 				await handleOpenAIError(res.error, responseMessage);
 			} else {
+				if (pick && res.petal_pick?.refused)
+					dropTwin(messageIdsList?.[1]?.message_id, String(res.petal_pick.refused));
 				// An early completion event may have already finished these replies.
 				if (
 					(messageIdsList ?? [{ message_id: responseMessageId }]).some(
@@ -5615,7 +5741,8 @@
 			);
 		}
 		history.messages[responseMessage.id] = responseMessage;
-		if (!responseFailed) toast.error(errorMessage);
+		// 🍒 A29 · a pick's second reply fails quietly in its place: the first one's failure is the one said aloud
+		if (!responseFailed && responseMessage?.petal_pick?.slot !== 1) toast.error(errorMessage);
 	};
 
 	const stopResponse = async (processQueue = true, messageId = history.currentId) => {

@@ -218,6 +218,7 @@
 	export let topPadding = false;
 	export let onInsertToNote: ((content: string) => void) | null = null;
 	export let onOpenArtifacts: ((code?: string) => void) | null = null;
+	export let pickOpen = false; // 🍒 A29 · shown inside an open pick: no thumbs, no regenerate, no continue
 
 	let citationsElement: HTMLDivElement;
 
@@ -637,9 +638,13 @@
 
 	const feedbackHandler = (rating: number | null = null, details: object | null = null) => {
 		const before = thumbPending ?? message?.annotation ?? {};
+		// 🍒 a later thumb that changes a picked reply's verdict is hers, no longer the pick's
+		const unpick =
+			rating !== null && (before as Record<string, unknown>)?.petal_pick === true && rating !== before?.rating;
 		const annotation = {
 			...before,
 			...(rating !== null ? { rating: rating } : {}),
+			...(unpick ? { petal_pick: false } : {}),
 			...(rating !== null && rating !== before?.rating ? { reason: null, details: null } : {}),
 			...(details ? details : {})
 		};
@@ -1647,7 +1652,7 @@
 								{/if}
 
 								{#if (!readOnly && (!message.user_id || message.user_id === $user?.id)) || (writeAccess && message.user_id === $user?.id)}
-									{#if !readOnly && !isTemporaryChatId(chatId) && ($config?.features.enable_message_rating ?? true) && ($user?.role === 'admin' || ($user?.permissions?.chat?.rate_response ?? true))}
+									{#if !pickOpen && !readOnly && !isTemporaryChatId(chatId) && ($config?.features.enable_message_rating ?? true) && ($user?.role === 'admin' || ($user?.permissions?.chat?.rate_response ?? true))}
 										<Tooltip
 											content={(thumbRating ?? '').toString() === '1' && thumbMark?.state === 'failed'
 												? $i18n.t('Not saved yet · tap to try again')
@@ -1773,7 +1778,7 @@
 										</Tooltip>
 									{/if}
 
-									{#if canBranch && isLastMessage && ($user?.role === 'admin' || ($user?.permissions?.chat?.continue_response ?? true))}
+									{#if !pickOpen && canBranch && isLastMessage && ($user?.role === 'admin' || ($user?.permissions?.chat?.continue_response ?? true))}
 										<Tooltip content={$i18n.t('Continue Response')} placement="bottom">
 											<button
 												aria-label={$i18n.t('Continue Response')}
@@ -1807,7 +1812,7 @@
 								{/if}
 
 								{#if (!readOnly && (!message.user_id || message.user_id === $user?.id)) || writeAccess}
-									{#if $user?.role === 'admin' || ($user?.permissions?.chat?.regenerate_response ?? true)}
+									{#if !pickOpen && ($user?.role === 'admin' || ($user?.permissions?.chat?.regenerate_response ?? true))}
 										{#if $settings?.regenerateMenu ?? true}
 											<button
 												type="button"

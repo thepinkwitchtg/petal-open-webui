@@ -26,6 +26,7 @@
 	import Usage from './Settings/Usage.svelte';
 	import ArchivedChats from './Settings/ArchivedChats.svelte';
 	import Personalization from './Settings/Personalization.svelte';
+	import Petal from './Settings/Petal.svelte'; // 🌸 A29 · her rhythm for picks
 	import Search from '../icons/Search.svelte';
 	import ChevronRight from '../icons/ChevronRight.svelte';
 	import DatabaseSettings from '../icons/DatabaseSettings.svelte';
@@ -146,6 +147,7 @@
 		tools: $i18n.t('Services'),
 		personalization: $i18n.t('Preferences'),
 		audio: $i18n.t('Preferences'),
+		petal: $i18n.t('Preferences'),
 		data_controls: $i18n.t('Data'),
 		usage: $i18n.t('Data'),
 		archived_chats: $i18n.t('Data'),
@@ -225,6 +227,12 @@
 			titleKey: 'settings.personal.audio.title',
 			title: $i18n.t('settings.personal.audio.title'),
 			searchPrefixes: ['settings.personal.audio.']
+		},
+		{
+			id: 'petal', // 🌸 A29 · picks (her rhythm)
+			titleKey: '🌸 Petal',
+			title: '🌸 Petal',
+			searchPrefixes: ['petal.']
 		},
 		{
 			id: 'data_controls',
@@ -660,6 +668,19 @@
 								<SoundHigh className="size-3.5" strokeWidth="2" />
 								<span>{$i18n.t('settings.personal.audio.title')}</span>
 							</button>
+						{:else if tabId === 'petal'}
+							<button
+								role="tab"
+								aria-controls="tab-petal"
+								aria-selected={selectedTab === 'petal'}
+								class={tabButtonClass(selectedTab === 'petal')}
+								on:click={() => {
+									selectTab('petal');
+								}}
+							>
+								<span class="size-3.5 leading-none text-[0.8rem]" aria-hidden="true">🌸</span>
+								<span>Petal</span>
+							</button>
 						{:else if tabId === 'data_controls'}
 							<button
 								role="tab"
@@ -834,6 +855,8 @@
 						toast.success($i18n.t('Settings saved successfully!'));
 					}}
 				/>
+			{:else if selectedTab === 'petal'}
+				<Petal {saveSettings} />
 			{:else if selectedTab === 'data_controls'}
 				<DataControls {saveSettings} />
 			{:else if selectedTab === 'usage'}

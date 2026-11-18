@@ -160,6 +160,7 @@ from open_webui.routers import petal_thumbs  # 👍🏻 one verdict per reply, i
 from open_webui.utils import petal_temp_chats  # 🧪 contract 0's times-only counter
 from open_webui.utils import petal_gentle_stop  # 🌙 contract 8 · the outlet waits while Petal is tucked in
 from open_webui.utils import petal_state  # 🌸👁 what Petal sees of Lily's state (climaxes, thumbs, the trail)
+from open_webui.utils import petal_pick  # 🍒 A29 · two replies, one frame: the pair generator
 from open_webui.utils.petal_skin_cache import PetalSkinRevalidate  # 🌸 the skin always asks before reuse
 from open_webui.routers import (
     apps,
@@ -1343,6 +1344,7 @@ async def chat_completion(
         chat_variables = normalize_chat_variables(chat_variables)
 
         automation_id = form_data.pop('automation_id', None)
+        petal_pick_asked = form_data.pop('petal_pick', None) is True  # 🍒 A29 · the page asks for a pick
         from open_webui.utils.tool_permissions import resolve_tool_approval_mode
 
         tool_approval_mode = await resolve_tool_approval_mode(
@@ -1430,6 +1432,22 @@ async def chat_completion(
             ):
                 raise HTTPException(status_code=404, detail='Temporary chat expired or unavailable')
             petal_temp_chats.note_opened(metadata['chat_id'])  # 🧪 the time it was opened, nothing else
+
+        # 🍒 A29 · two replies, one frame (utils/petal_pick.py): refused, the second placeholder never exists
+        pick_pair, pick_refused = None, None
+        if petal_pick_asked:
+            pick_refused = petal_pick.refusal(
+                request,
+                message_ids=message_ids,
+                metadata=metadata,
+                form_data=form_data,
+                model_item=model,  # the server's own model (0.13.4 no longer sends the page's model_item)
+                agent_model=agent_model,
+            )
+            if pick_refused:
+                message_ids = message_ids[:1]
+            else:
+                pick_pair = [entry['message_id'] for entry in message_ids]
 
         initial_title_generation = None
         if is_new_chat and tasks and TASKS.TITLE_GENERATION in tasks and model.get('owned_by') != 'router':
@@ -1674,6 +1692,8 @@ async def chat_completion(
                         metadata['user_message_id'] = message.get('parentId')
                     else:
                         turn = await Chats.insert_chat_turn(chat_id, user, user_message, message_ids)
+                        if pick_pair:  # 🍒 the first reply stays active (the last placeholder became current)
+                            turn['currentId'] = await petal_pick.keep_first(chat_id, pick_pair)
                         event_emitter = await get_event_emitter(
                             {**metadata, 'message_id': turn['currentId']}, update_db=False
                         )
@@ -1765,7 +1785,7 @@ async def chat_completion(
                 if agent_model:
                     message['modelName'] = agent_model['name']
 
-    async def process_chat(request, form_data, user, metadata, model, tasks=None):
+    async def process_chat(request, form_data, user, metadata, model, tasks=None, frame=None):
         error_detail = None
         try:
             try:
@@ -1805,31 +1825,47 @@ async def chat_completion(
                 # 🌙 contract 8: while the launcher tucks Petal in, nothing new goes to her vLLM —
                 # before the payload (retrieval may ask her for queries) and right before the send
                 await petal_gentle_stop.wait_for_petal(request, model, metadata)
-                form_data, metadata, events, paused = await process_chat_payload(
-                    request, form_data, user, metadata, model
-                )
-                if paused:
-                    return {'status': True, 'chat_id': metadata.get('chat_id'), 'paused': True}
-                # Titled after routing, on the model the router picked.
-                if is_new_chat and tasks and TASKS.TITLE_GENERATION in tasks and model.get('owned_by') == 'router':
-                    title_tasks = {TASKS.TITLE_GENERATION: tasks.pop(TASKS.TITLE_GENERATION)}
-                    title_ctx = await build_chat_response_context(
-                        request, form_data, user, model, metadata, title_tasks, []
+                if frame is not None and (metadata.get('petal_pick') or {}).get('slot') == 1:
+                    # 🍒 A29 · the second reply is served the frame the first one built: filters, enrichers,
+                    # states and the system prompt ran once, so both share the exact served stamp
+                    form_data, metadata, events = await frame.take(metadata)
+                else:
+                    form_data, metadata, events, paused = await process_chat_payload(
+                        request, form_data, user, metadata, model
                     )
+                    if paused:
+                        if frame is not None:
+                            frame.fail(RuntimeError('the first reply paused before its frame was built'))
+                        return {'status': True, 'chat_id': metadata.get('chat_id'), 'paused': True}
+                    # Titled after routing, on the model the router picked.
+                    if (
+                        is_new_chat
+                        and tasks
+                        and TASKS.TITLE_GENERATION in tasks
+                        and model.get('owned_by') == 'router'
+                    ):
+                        title_tasks = {TASKS.TITLE_GENERATION: tasks.pop(TASKS.TITLE_GENERATION)}
+                        title_ctx = await build_chat_response_context(
+                            request, form_data, user, model, metadata, title_tasks, []
+                        )
 
-                    async def run_router_title_generation():
-                        try:
-                            await background_tasks_handler(title_ctx)
-                        except Exception:
-                            log.exception('Error generating router chat title')
+                        async def run_router_title_generation():
+                            try:
+                                await background_tasks_handler(title_ctx)
+                            except Exception:
+                                log.exception('Error generating router chat title')
 
-                    asyncio.create_task(run_router_title_generation())
+                        asyncio.create_task(run_router_title_generation())
 
-                await petal_gentle_stop.wait_for_petal(request, model, metadata)  # a stop may begin mid-retrieval
-                try:  # 🌸👁 slice A8: her state, assembled last so it's exactly what Petal reads
-                    await petal_state.apply(request, form_data, user, metadata, model)
-                except Exception as e:
-                    log.warning(f'🌸 petal state skipped: {e!r}')  # her state never breaks a message
+                    await petal_gentle_stop.wait_for_petal(request, model, metadata)  # a stop may begin mid-retrieval
+                    try:  # 🌸👁 slice A8: her state, assembled last so it's exactly what Petal reads
+                        await petal_state.apply(request, form_data, user, metadata, model)
+                    except Exception as e:
+                        log.warning(f'🌸 petal state skipped: {e!r}')  # her state never breaks a message
+                    if frame is not None:
+                        frame.offer(form_data, metadata, events)  # 🍒 the frame, before this reply is dressed
+                if frame is not None:
+                    form_data = petal_pick.dress(form_data, metadata)  # 🍒 the one place two siblings differ
                 response = await chat_completion_handler(request, form_data, user)
 
                 if isinstance(response, Response) and response.status_code >= 400:
@@ -1906,6 +1942,8 @@ async def chat_completion(
                         except Exception:
                             log.exception('Failed to publish chat failed event')
         finally:
+            if frame is not None:  # 🍒 a first reply that ended before its frame was built ends the wait
+                frame.fail(RuntimeError('the first reply of the pick ended before its frame was built'))
             # Clean up MCP clients.  Each client is isolated so one
             # failure doesn't skip the rest.
             #
@@ -1968,6 +2006,7 @@ async def chat_completion(
         subagent_results = []
         is_internal = getattr(request.state, 'internal', False) is True
         chat_id = metadata['chat_id']
+        frame = petal_pick.Frame(pick_pair) if pick_pair else None  # 🍒 A29 · built by the first reply, served to both
 
         for idx, assistant_message in enumerate(message_ids):
             target_model_id = assistant_message['model_id']
@@ -1985,10 +2024,18 @@ async def chat_completion(
                 'chat_context': copy.deepcopy(metadata['chat_context']),
                 'message_id': assistant_message_id,
                 'task_id': assistant_message['meta']['task_id'],
+                # 🍒 A29 · which reply of the pick this is (its seed and pull join at the send)
+                **({'petal_pick': {'pair': list(pick_pair), 'slot': idx}} if frame is not None else {}),
             }
 
             # New replies were saved with their task; a continuation is saved before its task runs.
             await continue_assistant_message(assistant_message_id, assistant_message['meta']['task_id'])
+            if frame is not None and is_saved_chat_id(chat_id):
+                # 🍒 A29 · each reply of a pick carries its record from the start (0.13.5 saves the task with the
+                # placeholder; the record joins it here)
+                await Chats.upsert_message_to_chat_by_id_and_message_id(
+                    chat_id, assistant_message_id, {'petal_pick': per_model_metadata['petal_pick']}, touch=False
+                )
 
             # Per-model form_data: own model
             model_form_data = {
@@ -2010,10 +2057,13 @@ async def chat_completion(
                 resolved_model,
                 tasks
                 if idx == 0
+                else None  # 🍒 a pick's second reply runs no task of its own (titles, tags, follow-ups: once)
+                if frame is not None
                 else {
                     k: v for k, v in (tasks or {}).items() if k not in (TASKS.TITLE_GENERATION, TASKS.TAGS_GENERATION)
                 }
                 or None,
+                frame=frame,
             )
             if is_internal:
                 subagent_results.append(await process)
@@ -2053,6 +2103,8 @@ async def chat_completion(
             'status': True,
             'task_ids': list(chat_tasks),
             'chat_id': chat_id,
+            # 🍒 A29 · the page drops its second placeholder and goes on with one reply
+            **({'petal_pick': {'refused': pick_refused}} if pick_refused else {}),
         }
     else:
         # Legacy/direct: single model, synchronous
