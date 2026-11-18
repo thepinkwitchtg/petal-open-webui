@@ -2,15 +2,16 @@
 	import { toast } from 'svelte-sonner';
 
 	import { tick, getContext, onMount, createEventDispatcher } from 'svelte';
+	import type { Writable } from 'svelte/store';
 	const dispatch = createEventDispatcher();
-	const i18n = getContext('i18n');
+	const i18n: Writable<any> = getContext('i18n'); // typed (A30): the pull's chip speaks through it
 
 	import { settings } from '$lib/stores';
 	import { copyToClipboard, isInternalMessage } from '$lib/utils';
 
 	import MultiResponseMessages from './MultiResponseMessages.svelte';
 	import PetalPick from './PetalPick.svelte'; // 🍒 A29 · two replies, one tap
-	import { openPick, pickGlow } from '$lib/utils/petal-pick';
+	import { openPick, pickGlow, revealOf } from '$lib/utils/petal-pick';
 	import ResponseMessage from './ResponseMessage.svelte';
 	import UserMessage from './UserMessage.svelte';
 
@@ -57,6 +58,9 @@
 	// 🍒 A29 · a pick still waiting on this turn shows both replies (never in previews or shared views),
 	// across the whole chat area: two real columns (A29b)
 	$: pick = compactPreview || readOnly ? null : openPick(history, messageId);
+	// 🍒 A30 · an arm, after her 💗 (never before: revealOf is null while the pair is open), each side's pull in one
+	// quiet line under the reply · never in previews or shared views (as the pick)
+	$: reveal = compactPreview || readOnly ? null : revealOf(history, messageId);
 	let glowFallback: ReturnType<typeof setTimeout> | null = null;
 	$: if ($pickGlow === messageId) {
 		clearTimeout(glowFallback ?? undefined);
@@ -185,6 +189,20 @@
 				{onOpenArtifacts}
 				{writeAccess}
 			/>
+			{#if reveal}
+				<!-- under the reply's own words: past its avatar where the chat is wide enough to show one -->
+				<div class="petal-pull-reveal pl-1 @lg:pl-10" data-pick-reveal={messageId}>
+					<span aria-hidden="true">🍒</span>
+					<span class:pr-chosen={reveal.chosen === 'mine'} data-pull-side="mine"
+						>{reveal.chosen === 'mine' ? '💗 ' : ''}{reveal.mine}</span
+					>
+					<span class="pr-dot" aria-hidden="true">·</span>
+					<span class="pr-dim">{$i18n.t('its sibling')}</span>
+					<span class:pr-chosen={reveal.chosen === 'other'} data-pull-side="other"
+						>{reveal.chosen === 'other' ? '💗 ' : ''}{reveal.other}</span
+					>
+				</div>
+			{/if}
 		{:else}
 			{#key messageId}
 				<MultiResponseMessages
@@ -232,6 +250,23 @@
 		contain-intrinsic-size: auto 150px;
 	}
 
+	/* 🍒 A30 · an arm's pulls, after her pick: one still line in the chat's quiet tones */
+	.petal-pull-reveal {
+		display: flex;
+		flex-wrap: wrap;
+		align-items: baseline;
+		gap: 0.35rem;
+		margin: -0.15rem 0 0.25rem;
+		font-size: 0.72rem;
+		line-height: 1.3;
+		color: var(--mist, #9a8f98);
+	}
+	.petal-pull-reveal .pr-dim {
+		opacity: 0.75;
+	}
+	.petal-pull-reveal .pr-chosen {
+		color: var(--pearl, inherit);
+	}
 	/* 🍒 A29 · the chosen reply glows once, quietly: one opacity fade on a still ring (compositor only),
 	   paused while the page is hidden, gone when it ends */
 	.petal-picked-glow {

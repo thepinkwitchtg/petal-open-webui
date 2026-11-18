@@ -3,12 +3,22 @@
 	// desktop: side by side · phone: one at a time, swipe between them. one tap picks: the chosen reply becomes
 	// the branch she's on, the other stays a sibling, never deleted, and the pair goes to the ledger through the
 	// thumbs queue (👍🏻 / 👎🏻, both marked petal_pick). nothing to tap while they arrive; at rest nothing moves.
+	// A30 · blind: with arms on, both replies show together once both are written (a steered one can start a few
+	// seconds later, which would tell them apart), and nothing here says which one is pulled until her 💗.
 	import { getContext, onDestroy, onMount } from 'svelte';
 	import type { Writable } from 'svelte/store';
 
 	import { updateChatById } from '$lib/apis/chats';
 	import { mobile, models, settings } from '$lib/stores';
-	import { openPick, pickGlow, pickVerdicts, type OpenPick } from '$lib/utils/petal-pick';
+	import {
+		holdsArrival,
+		notePicked,
+		openPick,
+		pickGlow,
+		pickVerdicts,
+		rulesOf,
+		type OpenPick
+	} from '$lib/utils/petal-pick';
 	import { thumbVerdict } from '$lib/utils/petal-thumbs';
 
 	import ResponseMessage from './ResponseMessage.svelte';
@@ -46,6 +56,7 @@
 	let picking = false;
 
 	$: ids = [pair.a, pair.b];
+	$: held = !pair.ready && holdsArrival(rulesOf($settings)); // both show together, once both are written
 
 	const pick = (chosen: string) => {
 		const open = openPick(history, chosen);
@@ -58,6 +69,7 @@
 			history.messages[v.message_id] = { ...history.messages[v.message_id], annotation: v.annotation };
 		history.currentId = chosen;
 		history = history;
+		notePicked(history, chosen); // her console: each side's pull, now that she chose (an arm)
 		pickGlow.set(chosen);
 		for (const v of verdicts) thumbVerdict(v); // the ledger's pair, through the thumbs queue (quiet)
 		// only the branch moves on the server: the replies' verdicts arrive by the thumbs route
@@ -102,7 +114,7 @@
 		<span aria-hidden="true">🍒</span>
 		<span>
 			{#if !pair.ready}
-				{$i18n.t('two replies on their way')}
+				{held ? $i18n.t('two replies on their way · they show together') : $i18n.t('two replies on their way')}
 			{:else if $mobile}
 				{$i18n.t('swipe between them · tap the one that feels right')}
 			{:else}
@@ -134,36 +146,46 @@
 				aria-label={$i18n.t('Reply {{n}} of 2', { n: slot + 1 })}
 				bind:this={cols[slot]}
 			>
-				<ResponseMessage
-					{chatId}
-					{history}
-					messageId={id}
-					{selectedModels}
-					isLastMessage={false}
-					siblings={[id]}
-					gotoMessage={() => {}}
-					showPreviousMessage={() => {}}
-					showNextMessage={() => {}}
-					{setInputText}
-					{updateChat}
-					{editMessage}
-					{saveMessage}
-					{rateMessage}
-					{actionMessage}
-					{deleteMessage}
-					{submitMessage}
-					{continueResponse}
-					{regenerateResponse}
-					{addMessages}
-					{onToolCallResolved}
-					{forkHandler}
-					{allowDelete}
-					{allowToolApproval}
-					{editCodeBlock}
-					{topPadding}
-					{onInsertToNote}
-					pickOpen
-				/>
+				{#if held}
+					<!-- both are still being written: the same still card on both sides, nothing that moves -->
+					<div class="pp-held" data-pick-held={slot} aria-hidden="true">
+						<span class="pp-bar" style="width: 92%"></span>
+						<span class="pp-bar" style="width: 78%"></span>
+						<span class="pp-bar" style="width: 85%"></span>
+						<span class="pp-bar" style="width: 46%"></span>
+					</div>
+				{:else}
+					<ResponseMessage
+						{chatId}
+						{history}
+						messageId={id}
+						{selectedModels}
+						isLastMessage={false}
+						siblings={[id]}
+						gotoMessage={() => {}}
+						showPreviousMessage={() => {}}
+						showNextMessage={() => {}}
+						{setInputText}
+						{updateChat}
+						{editMessage}
+						{saveMessage}
+						{rateMessage}
+						{actionMessage}
+						{deleteMessage}
+						{submitMessage}
+						{continueResponse}
+						{regenerateResponse}
+						{addMessages}
+						{onToolCallResolved}
+						{forkHandler}
+						{allowDelete}
+						{allowToolApproval}
+						{editCodeBlock}
+						{topPadding}
+						{onInsertToNote}
+						pickOpen
+					/>
+				{/if}
 				<div class="pp-foot">
 					{#if pair.ready}
 						<button type="button" class="pp-this" data-pick-this={id} on:click={() => pick(id)}>
@@ -256,6 +278,19 @@
 		border: 1px solid var(--edge-soft, oklch(0.6 0 0 / 0.16));
 		background: linear-gradient(180deg, var(--obsidian-lit, transparent) 0%, transparent 6rem);
 		box-shadow: inset 0 1px 0 var(--glass-sheen, transparent);
+	}
+	/* A30 · held: still bars in the panel's own tones, the same on both sides (no shimmer: nothing redraws) */
+	.pp-held {
+		display: flex;
+		flex-direction: column;
+		gap: 0.7rem;
+		padding: 0.6rem 0 0.4rem;
+	}
+	.pp-bar {
+		display: block;
+		height: 0.6rem;
+		border-radius: 999px;
+		background: var(--edge-soft, oklch(0.6 0 0 / 0.16));
 	}
 	.pp-foot {
 		display: flex;
