@@ -24,6 +24,8 @@
 //    (no "sent", no word; a failure still speaks). a landing that also carries an older click (one that never
 //    landed on its own: offline, retrying) says the older word first, the newer one ~1.8 s later. both stay
 //    ~1.8 s whatever their length; her own line keeps living in hush, once per feedback (A27)
+//  · 🍒 A29 · a pick's two verdicts (utils/petal-pick.ts) ride the same queue, quietly: no "sent", no word,
+//    no feedback begun (so no thank-you, no hush), no tag step. a failure still speaks after its tries
 //  · a page reload keeps what's still waiting, in localStorage: ids and verdicts only (the rating, the reason
 //    key, the 1–10). never words: not her note, not the tags, not the reply
 //  · what the tap doesn't need rides after it: OWUI's tag step, on her first thumb of a reply, run on the rig
@@ -57,6 +59,7 @@ export type Verdict = {
 	thumb?: boolean; // 💗 A27 · a thumb's tap: it begins a feedback (unless one is still open on this reply).
 	// without it, the verdict is the note window's save (💗 A28 · owed "saved ✓")
 	note?: boolean; // 💗 A27 · the note window opens with this tap: her line waits until it's saved or closed
+	pick?: boolean; // 🍒 A29 · a pick's verdict (👍🏻 the chosen reply, 👎🏻 its sibling): quiet, no thank-you
 };
 
 type Entry = Verdict & {
@@ -348,12 +351,13 @@ export function thumbVerdict(v: Verdict) {
 	};
 	queue.set(v.message_id, entry);
 	const fb = feedbacks.get(v.message_id);
-	const begins = !!v.thumb && !fb; // a thumb's tap with no feedback open on this reply begins one
+	const begins = !!v.thumb && !fb && !v.pick; // a thumb's tap with no feedback open on this reply begins one
 	if (begins) feedbacks.set(v.message_id, { asked: false, note: !!v.note });
 	else if (v.thumb && fb && v.note) fb.note = true;
 	// 💗 A28 · a feedback's first tap is owed THANKS, the note's save SAVED; a flip inside an open feedback nothing
+	// 🍒 A29 · a pick is owed nothing: it lands without a word
 	if (begins) owe(v.message_id, 'thanks', entry.gen);
-	else if (!v.thumb) owe(v.message_id, 'saved', entry.gen);
+	else if (!v.thumb && !v.pick) owe(v.message_id, 'saved', entry.gen);
 	setMark(v.message_id, { rating: ratingOf(v.annotation), state: 'saving' });
 	if (owed.has(v.message_id)) say(v.message_id, 'sent'); // a quiet flip says nothing (its failure still would)
 	persist();

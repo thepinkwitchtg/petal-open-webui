@@ -507,13 +507,20 @@ async def _chips(metadata: dict, names: dict, docs: dict) -> None:
             if not (name and doc):
                 continue
             sid = f"petal-{key}-{metadata['message_id']}"
-            await emit({'type': 'source', 'data': {
+            data = {
                 'source': {'name': name, 'id': sid},
                 'document': [doc],
                 'metadata': [{'source': sid, 'name': name}],
-            }})
+            }
+            await emit({'type': 'source', 'data': data})
+            _shown(metadata, data)
     except Exception as e:
         log.warning(f'🌸 petal state: chips skipped ({e!r})')
+
+
+def _shown(metadata: dict, data: dict) -> None:
+    """🍒 A29 · a chip she was shown rides in the frame: a pick's second reply shows the same ones (utils/petal_pick)"""
+    metadata.setdefault('petal_chips', []).append(copy.deepcopy(data))
 
 
 async def _debug_chip(metadata: dict, added: dict) -> None:
@@ -529,10 +536,12 @@ async def _debug_chip(metadata: dict, added: dict) -> None:
             where = 'the message you just sent' if n['answer_from_end'] == 0 else f"{n['answer_from_end']} turn(s) back"
             doc += f'\n\n── before {where} ──\n{n["text"]}'
         sid = f"petal-state-{metadata['message_id']}"
-        await emit({'type': 'source', 'data': {
+        data = {
             'source': {'name': '🌸 what Petal saw', 'id': sid},
             'document': [doc],
             'metadata': [{'source': sid, 'name': '🌸 what Petal saw'}],
-        }})
+        }
+        await emit({'type': 'source', 'data': data})
+        _shown(metadata, data)
     except Exception as e:
         log.warning(f'🌸 petal state: debug chip skipped ({e!r})')

@@ -80,6 +80,7 @@ from open_webui.socket.main import (
     get_event_emitter,
 )
 from open_webui.tasks import append_response_stream, clear_response_stream, save_response_stream
+from open_webui.utils import petal_pick  # 🍒 A29 · a pick's second reply never acts
 from open_webui.utils.access_control import has_permission
 from open_webui.utils.access_control.files import get_owner_accessible_folder_files
 from open_webui.utils.access_control.folders import has_folder_access
@@ -5820,6 +5821,8 @@ async def streaming_chat_response_handler(response, ctx):
                     request.state, 'max_tool_call_iterations', CHAT_RESPONSE_MAX_TOOL_CALL_ITERATIONS
                 )
                 final_answer_requested = form_data.get('tool_choice') == 'none'
+                pick_holds = petal_pick.holds_tools(metadata)  # 🍒 A29 · a pick's second reply never acts
+                final_answer_requested = final_answer_requested or pick_holds
                 stop_reason = None
                 citation_source_ids = {}
                 get_source_context(
@@ -5872,7 +5875,9 @@ async def streaming_chat_response_handler(response, ctx):
                     if max_tool_call_iterations is not None and tool_call_iterations >= max_tool_call_iterations:
                         round_error = 'Tool-call iteration limit reached.'
                     if final_answer_requested:
-                        round_error = round_error or 'Tool calls are disabled for this response.'
+                        round_error = round_error or (
+                            petal_pick.HELD if pick_holds else 'Tool calls are disabled for this response.'
+                        )
                     if not round_error:
                         tool_call_iterations += 1
 
@@ -6129,7 +6134,10 @@ async def streaming_chat_response_handler(response, ctx):
 
                     await emit_output()
                     if final_answer_requested:
-                        await emit_message_error(round_error or 'The provider requested tools after tool use stopped.')
+                        if not pick_holds:  # 🍒 A29 · a held sibling ends quietly: its unrun call shows in its output
+                            await emit_message_error(
+                                round_error or 'The provider requested tools after tool use stopped.'
+                            )
                         break
 
                     try:
@@ -6542,6 +6550,8 @@ async def streaming_chat_response_handler(response, ctx):
                     'output': current_output,
                     'title': title,
                     **({'usage': usage} if usage else {}),
+                    # 🍒 A29 · a pick's reply tells the page its full record (seed, pull) for the pick's verdict
+                    **({'petal_pick': metadata['petal_pick']} if metadata.get('petal_pick') else {}),
                 }
 
                 if save_to_chat:
@@ -6570,6 +6580,8 @@ async def streaming_chat_response_handler(response, ctx):
                             **_petal_footnote(metadata),
                             # Petal · the mode chip's pick for this pair (A15), so L can weigh modes apart
                             **({'petal_mode': metadata['petal_mode']} if metadata.get('petal_mode') else {}),
+                            # Petal · which reply of a pick this is, its seed and its pull (A29), for L
+                            **({'petal_pick': metadata['petal_pick']} if metadata.get('petal_pick') else {}),
                             **({'usage': usage} if usage else {}),
                         },
                     )
