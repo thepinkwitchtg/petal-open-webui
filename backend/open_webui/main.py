@@ -155,6 +155,7 @@ from open_webui.routers import petal_eyes  # 👁 what Petal received, for Lily'
 from open_webui.routers import petal_diary  # 📔 her diary (notes + ✧ orbits, 🌊 climaxes, trips, 🔥 vows)
 from open_webui.routers import petal_observe  # 🔋 live device readings, passed on to petal-live (127.0.0.1)
 from open_webui.routers import petal_thumbs  # 👍🏻 one verdict per reply, in one small request (A23)
+from open_webui.routers import petal_shelf  # 💗 what her shelf offers as a pull (A30 · arms)
 from open_webui.utils import petal_temp_chats  # 🧪 contract 0's times-only counter
 from open_webui.utils import petal_gentle_stop  # 🌙 contract 8 · the outlet waits while Petal is tucked in
 from open_webui.utils import petal_state  # 🌸👁 what Petal sees of Lily's state (climaxes, thumbs, the trail)
@@ -863,6 +864,7 @@ app.include_router(petal_eyes.router, prefix='/api/v1/petal', tags=['petal'])
 app.include_router(petal_diary.router, prefix='/api/v1/petal', tags=['petal'])
 app.include_router(petal_observe.router, prefix='/api/v1/petal', tags=['petal'])
 app.include_router(petal_thumbs.router, prefix='/api/v1/petal', tags=['petal'])
+app.include_router(petal_shelf.router, prefix='/api/v1/petal', tags=['petal'])
 app.include_router(notes.router, prefix='/api/v1/notes', tags=['notes'])
 app.include_router(search.router, prefix='/api/v1/search', tags=['search'])
 
@@ -1338,6 +1340,7 @@ async def chat_completion(
 
         automation_id = form_data.pop('automation_id', None)
         petal_pick_asked = form_data.pop('petal_pick', None) is True  # 🍒 A29 · the page asks for a pick
+        petal_arms_asked = form_data.pop('petal_arms', None)  # 🍒 A30 · her arms (Settings → 🌸 Petal), never sent on
         from open_webui.utils.tool_permissions import resolve_tool_approval_mode
 
         tool_approval_mode = await resolve_tool_approval_mode(
@@ -1418,7 +1421,7 @@ async def chat_completion(
             petal_temp_chats.note_opened(metadata['chat_id'])  # 🧪 the time it was opened, nothing else
 
         # 🍒 A29 · two replies, one frame (utils/petal_pick.py): refused, the second placeholder never exists
-        pick_pair, pick_refused = None, None
+        pick_pair, pick_refused, pick_arm, arm_said = None, None, None, None
         if petal_pick_asked:
             pick_refused = petal_pick.refusal(
                 request,
@@ -1432,6 +1435,9 @@ async def chat_completion(
                 message_ids = message_ids[:1]
             else:
                 pick_pair = [entry['message_id'] for entry in message_ids]
+                # 🍒 A30 · 1 in her N picks is an arm: one reply unsteered (chat's baseline, 0), its sibling under her
+                # pull, the side and the strength drawn here, blind on the page until her 💗
+                pick_arm, arm_said = await petal_pick.draw_arm(petal_arms_asked, pick_pair, user=user)
 
         initial_title_generation = None
         if is_new_chat and tasks and TASKS.TITLE_GENERATION in tasks:
@@ -1778,8 +1784,8 @@ async def chat_completion(
                         log.warning(f'🌸 petal state skipped: {e!r}')  # her state never breaks a message
                     if frame is not None:  # 🍒 the frame after every inlet, and what she was shown meanwhile
                         await frame.offer(form_data, metadata, events)
-                if frame is not None:
-                    form_data = petal_pick.dress(form_data, metadata)  # 🍒 the one place two siblings differ
+                if frame is not None:  # 🍒 the one place two siblings differ (A30: in the pull, for an arm)
+                    form_data = petal_pick.dress(form_data, metadata, steer=frame.steer_for(metadata))
                 response = await chat_completion_handler(request, form_data, user)
 
                 if isinstance(response, Response) and response.status_code >= 400:
@@ -1935,7 +1941,8 @@ async def chat_completion(
         subagent_results = []
         is_internal = getattr(request.state, 'internal', False) is True
         chat_id = metadata['chat_id']
-        frame = petal_pick.Frame(pick_pair) if pick_pair else None  # 🍒 A29 · built by the first reply, served to both
+        # 🍒 A29 · built by the first reply, served to both (A30: an arm's pull goes to one of them)
+        frame = petal_pick.Frame(pick_pair, arm=pick_arm) if pick_pair else None
 
         for idx, entry in enumerate(message_ids):
             target_model_id = entry['model_id']
@@ -1953,7 +1960,11 @@ async def chat_completion(
                 'message_id': assistant_message_id,
                 'task_id': str(uuid4()),
                 # 🍒 A29 · which reply of the pick this is (its seed and pull join at the send)
-                **({'petal_pick': {'pair': list(pick_pair), 'slot': idx}} if frame is not None else {}),
+                **(
+                    {'petal_pick': {'pair': list(pick_pair), 'slot': idx, **frame.record_for(idx)}}
+                    if frame is not None
+                    else {}
+                ),
             }
 
             if is_saved_chat_id(chat_id):
@@ -2037,6 +2048,8 @@ async def chat_completion(
             'chat_id': chat_id,
             # 🍒 A29 · the page drops its second placeholder and goes on with one reply
             **({'petal_pick': {'refused': pick_refused}} if pick_refused else {}),
+            # 🍒 A30 · an arm the shelf couldn't give: a plain pick, and her console says why (a drawn arm says nothing)
+            **({'petal_pick': {'arm': arm_said}} if arm_said and not pick_refused else {}),
         }
     else:
         # Legacy/direct: single model, synchronous

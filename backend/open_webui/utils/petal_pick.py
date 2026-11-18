@@ -14,13 +14,22 @@ says whether the turn may be a pick, and serves it.
   differ: A30 makes them differ in `vllm_xargs.petal_steer` with one line (its `steer=`)
 - **the second reply never acts.** its tool calls stay unrun (no memory, note, subagent or question twice);
   the page offers no pick when either reply reached for a tool
-- each reply carries its pick record `petal_pick: {pair, slot, seed, pull, frame_sha}` (pull = the
+- each reply carries its pick record `petal_pick: {pair, slot, seed, pull, frame_sha[, arm]}` (pull = the
   `petal_steer` it was sent with, or null), on the message and in the 👁 record; downstream filters can read
   it in `__metadata__` (`slot` 0 is the first reply)
 - **equal frames (A29b).** the frame is the first reply's *final* request, the bytes about to leave for vLLM
   (every inlet, enricher, state, file, variable and the rendered system prompt, its clock included): the
   second reply sends a deep copy of exactly that, with only its seed (and, for A30, its pull) its own.
   `frame_sha` is each request's sha256 minus those two; the page offers the pick only when both match
+- **arms (A30).** 1 in her N picks (Settings → 🌸 Petal, 1 in 3 by default) is an arm: both siblings come from the
+  one frame, one goes unsteered (chat's baseline, 0), the other under her pull at a strength drawn from her set
+  (0.10 · 0.20 · 0.30 by default), the side drawn too. the pull's name is read on her shelf at the send
+  (utils/petal_shelf.py, the 💗 filter's door): a ready blend → `{"blend": slug, "strength": s}`, a ♡'d string →
+  `{"strings": {id: s}, "strength": 1}` inside its card's range, tagged with the steered reply's id (vLLM notes
+  the pin at `<notes>/seen/<tag>.pin.json`). anything else → no arm, a plain pick, and the page's console says
+  why. `frame_sha` stays equal (the pull is not part of the frame). each record carries
+  `arm: {name, kind, id, strength, steered[, tag, asked]}` (strength 0 on the unsteered side), blind on the page
+  until her 💗
 - everything the first reply was shown while its frame was built is shown under the second one too, keyed to
   its own id: every chip and citation it received (any filter's, retrieval's), the 9.4 chips that ride in
   `metadata['petal_chips']`, its files, embeds and statuses. neither reply looks more attuned than the
@@ -40,6 +49,7 @@ import random
 import weakref
 from typing import Any
 
+from open_webui.utils import petal_shelf
 from open_webui.utils.chat_id import is_saved_chat_id
 
 log = logging.getLogger(__name__)
@@ -63,6 +73,9 @@ PLAIN = (
 )
 SHOWN = ('statusHistory', 'sources', 'files', 'embeds')  # what a reply is shown, as the chat keeps it
 SERVE_WAIT_S = 120  # the second reply waits this long for the first one's request (it takes milliseconds)
+ARM_STRENGTHS = (0.1, 0.2, 0.3)  # A30 · her arms' strengths when she sets none
+# vLLM's short way to ask for a pull: merged into any `petal_steer`, so an arm clears them on both sides
+SHORT_PULL = ('petal_blend', 'petal_strength', 'petal_layer', 'petal_tag')
 FRAMES: 'weakref.WeakValueDictionary[str, Frame]' = weakref.WeakValueDictionary()  # live frames, by first id
 _KEEP = object()
 
@@ -173,10 +186,11 @@ def _own_copy(metadata: dict) -> dict:
 
 class Frame:
     """what the first reply's task builds once, handed to the second's: its metadata and body after every
-    inlet (`offer`), then its final request at the send (`sent`)."""
+    inlet (`offer`), then its final request at the send (`sent`). an arm (A30) says which sibling is pulled."""
 
-    def __init__(self, pair: list):
+    def __init__(self, pair: list, arm: dict | None = None):
         self.pair = list(pair)
+        self.arm = arm if isinstance(arm, dict) and arm.get('side') in (0, 1) and arm.get('steer') else None
         loop = asyncio.get_running_loop()
         self._ready: asyncio.Future = loop.create_future()
         self._served: asyncio.Future = loop.create_future()
@@ -187,6 +201,35 @@ class Frame:
     @property
     def served(self) -> bool:
         return self._served.done()
+
+    def record_for(self, slot: int) -> dict:
+        """what a sibling's pick record says of the arm: its pull's name, kind and id, its own strength (0 on the
+        unsteered side), whether it's the steered one, and (that one) its tag · {} for a plain pick."""
+        if not self.arm:
+            return {}
+        what, steered = self.arm.get('what') or {}, slot == self.arm['side']
+        rec = {
+            'name': what.get('name'),
+            'kind': what.get('kind'),
+            'id': what.get('id'),
+            'strength': what.get('strength') if steered else 0,
+            'steered': steered,
+        }
+        if steered:
+            rec['tag'] = self.pair[slot]
+            if 'asked' in what:
+                rec['asked'] = what['asked']
+        return {'arm': rec}
+
+    def steer_for(self, metadata: dict | None) -> Any:
+        """a sibling's pull at the send: as its frame built it (a plain pick), the arm's (its steered side, tagged
+        with its own id), or none at all (its other side: chat's baseline, 0)."""
+        pick = metadata.get('petal_pick') if isinstance(metadata, dict) else None
+        if not self.arm or not isinstance(pick, dict) or pick.get('slot') not in (0, 1):
+            return _KEEP
+        if pick['slot'] != self.arm['side']:
+            return None
+        return {**copy.deepcopy(self.arm['steer']), 'tag': self.pair[pick['slot']]}
 
     async def offer(self, form_data: dict, metadata: dict, events: list | None) -> None:
         """the frame as built: every inlet has run (filters, enrichers, states, files, her state lines), and
@@ -248,6 +291,46 @@ class Frame:
         else:
             sent.pop('vllm_xargs', None)
         return sent
+
+
+def arm_rules(raw: Any) -> dict | None:
+    """her arms as the page sends them (`petal_arms`: {every, pull, strengths}) · None: no arms this turn."""
+    if not isinstance(raw, dict):
+        return None
+    pull, every = raw.get('pull'), raw.get('every')
+    if not isinstance(pull, str) or not pull.strip() or len(pull) > 200:
+        return None
+    if not isinstance(every, int) or isinstance(every, bool) or not 1 <= every <= 100:
+        return None
+    strengths: list[float] = []
+    for value in raw.get('strengths') if isinstance(raw.get('strengths'), list) else []:
+        if isinstance(value, (int, float)) and not isinstance(value, bool) and 0 < value <= 1:
+            if round(float(value), 4) not in strengths:
+                strengths.append(round(float(value), 4))
+    return {'every': every, 'pull': pull.strip(), 'strengths': strengths[:8] or list(ARM_STRENGTHS)}
+
+
+async def draw_arm(raw: Any, pair: list | None, *, user: Any = None, rng: Any = None) -> tuple[dict | None, str | None]:
+    """🍒 A30 · is this pick an arm? 1 in her N: the side and the strength drawn, her pull read on the shelf.
+    → (arm, why): arm = {side, steer, what} · why = an arm the roll asked for that couldn't be served (her console
+    says it; the pick goes on plain) · (None, None): not an arm this time, and nothing says so (blind)."""
+    rules = arm_rules(raw)
+    if not rules or not pair:
+        return None, None
+    rng = rng or random
+    try:
+        if rng.random() * rules['every'] >= 1:
+            return None, None
+        if user is not None and getattr(user, 'role', None) != 'admin':
+            return None, "no arm: the shelf is its keeper's (an admin's)"
+        side, strength = rng.randrange(2), rng.choice(rules['strengths'])
+        steer, what, why = await asyncio.to_thread(petal_shelf.door, rules['pull'], strength)
+    except Exception as e:  # an arm never costs her the pick: it goes on plain
+        log.warning(f'🍒 petal pick: no arm ({e!r})')
+        return None, 'no arm: the shelf could not be read'
+    if steer is None:
+        return None, f'no arm: {why}'
+    return {'side': side, 'steer': steer, 'what': what}, None
 
 
 def _pull(payload: dict) -> Any:
@@ -386,8 +469,9 @@ async def echo_shown(shown: dict | None, pair: list, metadata: dict) -> int:
 
 def dress(form_data: dict, metadata: dict, steer: Any = _KEEP) -> dict:
     """🍒 the one place two siblings differ, right before the send. the first goes as built; the second samples
-    on its own seed. A30: pass `steer` (a `petal_steer` value, or None for unsteered) to make the two differ in
-    the pull, nothing else. the reply's pick record learns its seed and its pull here."""
+    on its own seed. `steer` (A30, from `Frame.steer_for`): a `petal_steer` value, or None for unsteered, makes
+    the two differ in the pull, nothing else (a plain pick keeps the pull its frame built). the reply's pick
+    record learns its seed and its pull here."""
     pick = metadata.get('petal_pick') if isinstance(metadata, dict) else None
     if not isinstance(pick, dict):
         return form_data
@@ -405,6 +489,8 @@ def _dress(form_data: dict, metadata: dict, pick: dict, steer: Any) -> dict:
         form_data['seed'] = seed + 1 if hers else random.randrange(1, 2**31 - 1)
     if steer is not _KEEP:  # A30 · the one line: dress(form_data, metadata, steer=…)
         xargs = dict(form_data.get('vllm_xargs') or {}) if isinstance(form_data.get('vllm_xargs'), dict) else {}
+        for key in SHORT_PULL:  # the pull is this one, whole: nothing else rides beside it (or for the other side)
+            xargs.pop(key, None)
         if steer is None:
             xargs.pop('petal_steer', None)
         else:

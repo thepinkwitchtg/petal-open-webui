@@ -1454,6 +1454,7 @@
 										<PetalEyes
 											{chatId}
 											messageId={message.id}
+											blind={pickOpen}
 											saved={message.content ?? ''}
 											marks={[
 												...(mark?.orbit ? [`✧ an orbit on this reply · ${mark.orbit.outcome ?? 'open'}`] : []),
@@ -1466,7 +1467,8 @@
 									{/if}
 								{/if}
 
-								{#if Object.keys(message.usage ?? {}).some((key) => key !== 'incomplete') && $visibleControls['chat.usage']}
+								<!-- 🍒 A30 · inside an open pick the usage stays folded: cached tokens would tell the pulled reply apart -->
+								{#if !pickOpen && Object.keys(message.usage ?? {}).some((key) => key !== 'incomplete') && $visibleControls['chat.usage']}
 									{@const usage = JSON.stringify(message.usage, null, 2)
 										.replace(/"([^(")"]+)":/g, '$1:')
 										.slice(1, -1)

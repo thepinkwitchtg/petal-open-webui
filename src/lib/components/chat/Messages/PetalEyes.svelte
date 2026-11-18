@@ -44,11 +44,13 @@
 		type Seg
 	} from '$lib/utils/petal-eyes';
 	import { loadModes, modes } from '$lib/utils/petal-mode'; // 🌀 the mode a reply was dressed in (A15)
+	import { BLIND, blinded } from '$lib/utils/petal-pick'; // 🍒 A30 · an open pick keeps its pull hidden
 
 	export let chatId: string;
 	export let messageId: string;
 	export let saved = ''; // what OWUI saved (and shows) for this reply
 	export let marks: string[] = []; // ✧ the trip markers hold for this reply
+	export let blind = false; // 🍒 A30 · a reply inside an open pick: its pull (and its timing) wait for her 💗
 
 	const dispatch = createEventDispatcher();
 	const close = () => dispatch('close');
@@ -99,9 +101,9 @@
 	$: rec = rounds[ri] ?? null;
 	$: parts = rec?.parts ?? [];
 	$: sources = sourcesOf(parts);
-	$: view = rec ? build(rec) : null;
+	$: view = rec ? build(rec, blind) : null;
 
-	function build(r: EyesRecord) {
+	function build(r: EyesRecord, hide = false) {
 		const found = new Set<number>();
 		const src = sourcesOf(r.parts);
 		const sys = systemOf(r.payload).map((s) => ({ ...s, segs: tint(s.text, r.parts, src, found) }));
@@ -130,7 +132,7 @@
 			history,
 			labels,
 			...placesOf(r.payload, r.parts), // A13 · places + the order Petal reads them in
-			params: paramsOf(r.payload),
+			params: paramsOf(hide ? blinded(r.payload) : r.payload),
 			found,
 			chars,
 			sysChars: sys.reduce((n, s) => n + s.text.length, 0)
@@ -142,7 +144,7 @@
 	$: missing = view ? parts.filter((p, i) => !view.found.has(i) && p.text && partKind(p.source) === 'text') : [];
 	const NOT_TEXT: Record<string, string> = { steering: 'steering · not text', soft: 'soft tokens · not text' };
 	const extras = (p: Record<string, unknown>) =>
-		Object.entries(p).filter(([k]) => k !== 'source' && k !== 'text');
+		Object.entries(blind ? blinded(p) : p).filter(([k]) => k !== 'source' && k !== 'text');
 	const asJson = (v: unknown) => (typeof v === 'string' ? v : JSON.stringify(v, null, 1));
 	const plural = (n: number, one: string) => `${n.toLocaleString()} ${one}${n === 1 ? '' : 's'}`;
 
@@ -375,7 +377,7 @@
 		meta.caller,
 		meta.model,
 		meta.status !== undefined ? `status ${meta.status}` : '',
-		meta.ms !== undefined ? `${(meta.ms / 1000).toFixed(1)} s` : '',
+		meta.ms !== undefined && !blind ? `${(meta.ms / 1000).toFixed(1)} s` : '',
 		meta.finish ? `finish: ${meta.finish}` : '',
 		meta.streamed === undefined ? '' : meta.streamed ? 'streamed' : 'not streamed',
 		meta.cut ? 'cut' : ''
@@ -607,7 +609,9 @@
 				<details class="pe-sec" bind:open={opened.params}>
 					<summary
 						><span class="pe-caret"></span>params{#if pulls.length}{' '}+ the Heartstrings pull{/if}
-						<span class="pe-dim">· {view.params.length}</span></summary
+						<span class="pe-dim">· {view.params.length}</span>{#if blind}<span class="pe-dim" data-eyes-blind
+								>{' '}· {BLIND}</span
+							>{/if}</summary
 					>
 					<div class="pe-params">
 						{#each view.params as [k, v] (k)}
@@ -687,7 +691,7 @@
 							>{showRecord ? 'fold the record' : 'the whole record'}</button
 						>
 						{#if showRecord}
-							<pre class="pe-text pe-dim">{cut(JSON.stringify(well.record, null, 1), 200000)}</pre>
+							<pre class="pe-text pe-dim">{cut(JSON.stringify(blind ? blinded(well.record) : well.record, null, 1), 200000)}</pre>
 						{/if}
 					{/if}
 				</details>

@@ -12,11 +12,25 @@
 //  · never in temporary chats, internal or subagent turns, 🧪 tries (the server refuses those), while her voice
 //    speaks, in a call, with more than one model, or when the turn could act (tools, a terminal, search, code,
 //    images). never two picks in a row unless she asked
+//  · arms (A30): 1 in her N picks differ only in pull, one reply unsteered (chat's baseline, 0), its sibling under
+//    the pull she chose from her shelf, at a strength drawn from her set. the server draws it all (the side, the
+//    strength) and reads the name on her shelf; this page sends her rules and stays blind: nothing on it says
+//    which reply is pulled until her 💗 (the eyes hide the pull, the usage hides, both replies can wait to show
+//    together), then a quiet chip shows each side's pull
 import { get, writable } from 'svelte/store';
 
 import { getOutputText } from '$lib/components/chat/Messages/structuredOutput';
 import { createMessagesList, removeAllDetails } from '$lib/utils';
 import type { Verdict } from '$lib/utils/petal-thumbs';
+
+export type ArmRules = {
+	every: number; // 1 in N of her picks is an arm
+	pull: string; // the pull, as her shelf names it (a ready blend or a ♡'d string) · empty: no arms
+	strengths: number[]; // an arm's strength is drawn from these
+	hold: boolean; // both replies show together, once both are written (a steered one can start later)
+};
+
+export const ARM_DEFAULTS: ArmRules = { every: 3, pull: '', strengths: [0.1, 0.2, 0.3], hold: true };
 
 export type PickRules = {
 	on: boolean; // her rhythm picks for her · off by default
@@ -26,6 +40,7 @@ export type PickRules = {
 	longOnly: boolean; // only when the expected reply is long
 	longChars: number; // "long": the median of her last replies, in characters
 	modes: Record<string, boolean>; // per forge mode (its key): false keeps picks out of it
+	arms: ArmRules; // A30
 };
 
 export const PICK_DEFAULTS: PickRules = {
@@ -35,11 +50,36 @@ export const PICK_DEFAULTS: PickRules = {
 	share: 20,
 	longOnly: false,
 	longChars: 600,
-	modes: {}
+	modes: {},
+	arms: ARM_DEFAULTS
 };
 
 const clamp = (n: unknown, lo: number, hi: number, d: number) =>
 	typeof n === 'number' && Number.isFinite(n) ? Math.min(hi, Math.max(lo, Math.round(n))) : d;
+
+/** her strengths, from her list or her words ("0.1 · 0.2, 0.3"): each inside (0, 1], once, at most 8, in order ·
+ * none left → 0.10 · 0.20 · 0.30 */
+export function strengthsOf(raw: unknown): number[] {
+	const items = Array.isArray(raw) ? raw : typeof raw === 'string' ? raw.split(/[\s,;·|\/]+/) : [];
+	const out: number[] = [];
+	for (const item of items) {
+		const n = typeof item === 'number' ? item : typeof item === 'string' && item.trim() ? Number(item) : NaN;
+		if (!Number.isFinite(n) || n <= 0 || n > 1) continue;
+		const v = Math.round(n * 1000) / 1000;
+		if (!out.includes(v)) out.push(v);
+	}
+	return out.length ? out.sort((a, b) => a - b).slice(0, 8) : [...ARM_DEFAULTS.strengths];
+}
+
+function armRulesOf(raw: unknown): ArmRules {
+	const a = raw && typeof raw === 'object' ? (raw as Record<string, unknown>) : {};
+	return {
+		every: clamp(a.every, 1, 20, ARM_DEFAULTS.every),
+		pull: typeof a.pull === 'string' ? a.pull.trim().slice(0, 200) : '',
+		strengths: strengthsOf(a.strengths),
+		hold: a.hold !== false
+	};
+}
 
 /** her rules as saved in her settings (`petalPick`), every value kept inside its range */
 export function rulesOf(settings: unknown): PickRules {
@@ -56,9 +96,21 @@ export function rulesOf(settings: unknown): PickRules {
 		share: clamp(s.share, 1, 100, PICK_DEFAULTS.share),
 		longOnly: s.longOnly === true,
 		longChars: clamp(s.longChars, 50, 20000, PICK_DEFAULTS.longChars),
-		modes
+		modes,
+		arms: armRulesOf(s.arms)
 	};
 }
+
+/** A30 · arms are on once she chose a pull from her shelf */
+export const armsOn = (rules: PickRules) => rules.arms.pull !== '';
+/** what a pick's send carries for the server to draw from (`petal_arms`) · null: no arms */
+export const armsAsk = (rules: PickRules) =>
+	armsOn(rules)
+		? { every: rules.arms.every, pull: rules.arms.pull, strengths: [...rules.arms.strengths] }
+		: null;
+/** both replies wait to show until both are written: a steered reply can start a few seconds after its sibling
+ * (vLLM can't reuse its cache for it), which would tell them apart before her pick */
+export const holdsArrival = (rules: PickRules) => armsOn(rules) && rules.arms.hold;
 
 type Msg = {
 	id: string;
@@ -80,6 +132,7 @@ type Msg = {
 		seed?: unknown;
 		pull?: unknown;
 		frame_sha?: unknown; // A29b · the request it was sent, minus its seed and pull (sha256)
+		arm?: unknown; // A30 · {name, kind, id, strength, steered[, tag, asked]} on both replies of an arm
 	} | null;
 };
 type History = { currentId: string | null; messages: Record<string, Msg> };
@@ -255,7 +308,8 @@ export function pickVerdicts(
 				rating: id === chosen ? 1 : -1,
 				petal_pick: true, // less preferred, not bad: a pair (DPO), never a lone negative
 				pick_of: sibling,
-				pull: (m.petal_pick?.pull as unknown) ?? null
+				pull: (m.petal_pick?.pull as unknown) ?? null,
+				...(m.petal_pick?.arm ? { arm: m.petal_pick.arm } : {}) // A30 · an arm: its pull, this side's strength
 			},
 			model_id,
 			sibling_model_ids,
@@ -273,6 +327,65 @@ export function pickVerdicts(
 	});
 }
 
+// ── an arm, revealed after her 💗 (A30) ──────────────────────────────────────────────────────────────────
+export type ArmRecord = {
+	name?: string;
+	kind?: 'blend' | 'string';
+	id?: string;
+	strength?: number;
+	steered?: boolean;
+	tag?: string;
+	asked?: number;
+};
+const armOf = (m: Msg | undefined): ArmRecord | null => {
+	const arm = m?.petal_pick?.arm;
+	return arm && typeof arm === 'object' ? (arm as ArmRecord) : null;
+};
+const dial = (n: unknown) => (typeof n === 'number' && Number.isFinite(n) ? n.toFixed(2) : '?');
+
+/** a reply's pull, as the chip says it: unsteered (chat's baseline, 0), or her pull's name and its strength */
+export const pullLabel = (arm: ArmRecord | null) =>
+	arm?.steered ? `${arm.name || arm.id || 'a pull'} · ${dial(arm.strength)}` : 'unsteered';
+
+export type Reveal = {
+	mine: string;
+	other: string;
+	chosen: 'mine' | 'other' | null;
+	steered: 'mine' | 'other' | null;
+};
+
+/** each side's pull, for the quiet chip under an arm: only once she picked (blind before), never for a plain pick */
+export function revealOf(history: History, id: string): Reveal | null {
+	const pair = pairOf(history, id);
+	if (!pair) return null;
+	const me = history.messages[id];
+	const other = history.messages[pair[0] === id ? pair[1] : pair[0]];
+	if (!wasPicked(me) && !wasPicked(other)) return null; // blind until her 💗
+	const [mine, theirs] = [armOf(me), armOf(other)];
+	if (!mine && !theirs) return null; // a plain pick: nothing to tell apart
+	const chose = (m: Msg) => m.annotation?.petal_pick === true && m.annotation?.rating === 1;
+	return {
+		mine: pullLabel(mine),
+		other: pullLabel(theirs),
+		chosen: chose(me) ? 'mine' : chose(other) ? 'other' : null,
+		steered: mine?.steered ? 'mine' : theirs?.steered ? 'other' : null
+	};
+}
+
+/** what the eyes show while the pick is open: every pull hidden (the request's, the wellspring's), nothing else */
+export const BLIND = '🙈 hidden until your 💗';
+const PULL_KEYS = new Set(['petal_steer', 'petal_pin', 'petal_blend', 'petal_strength', 'petal_tag', 'steer']);
+export function blinded<T>(value: T): T {
+	if (Array.isArray(value)) return value.map((v) => blinded(v)) as T;
+	if (value && typeof value === 'object') {
+		const out: Record<string, unknown> = {};
+		for (const [k, v] of Object.entries(value as Record<string, unknown>))
+			out[k] = PULL_KEYS.has(k) ? BLIND : blinded(v);
+		return out as T;
+	}
+	return value;
+}
+
 // ── her ask for the next send, and the glow ──────────────────────────────────────────────────────────────
 /** she asked for a pick on her next send (the shortcut, or a long press on the mode chip) */
 export const pickAsked = writable(false);
@@ -288,10 +401,27 @@ export function takeAsk(): boolean {
 export const pickGlow = writable<string | null>(null);
 
 // her console: `petalPick.last` (the last send's decision and why) · `petalPick.ask()` (a pick next send)
-let last: (PickDecision & { at: string }) | null = null;
+type Last = PickDecision & { at: string; arm?: string; pulls?: { chosen: string; other: string } };
+let last: Last | null = null;
 export function noteDecision(decision: PickDecision) {
 	last = { ...decision, at: new Date().toLocaleTimeString() };
 	if (decision.pick) console.log('🍒 a pick this turn:', decision.why);
+}
+/** A30 · an arm the server drew and her shelf couldn't give: the pick goes on plain, and her console says why */
+export function noteArm(why: string) {
+	last = { ...(last ?? { pick: true, why: 'a pick' }), arm: why, at: new Date().toLocaleTimeString() };
+	console.log('🍒 an arm, refused:', why);
+}
+/** A30 · her pick, and (an arm) each side's pull, now that she chose */
+export function notePicked(history: History, chosen: string) {
+	const r = revealOf(history, chosen);
+	last = {
+		pick: true,
+		why: 'she picked',
+		at: new Date().toLocaleTimeString(),
+		...(r ? { pulls: { chosen: r.mine, other: r.other } } : {})
+	};
+	if (r) console.log(`🍒 she picked ${r.mine} over ${r.other}`);
 }
 /** a pair asked for and then not offered: `petalPick.last` says why (no rows are ever written for it) */
 export function noteDissolved(why: string) {

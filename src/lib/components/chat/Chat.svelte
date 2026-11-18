@@ -62,15 +62,17 @@
 	import { thumbsNudge } from '$lib/utils/petal-thumbs'; // 👍🏻 instant thumbs (A23): waiting verdicts go first
 	import { playReply, speakingNow } from '$lib/utils/petal-voice'; // 🔈 auto-playback in speaker mode (A23)
 	import {
+		armsAsk,
 		decidePick,
 		dissolvedWhy,
+		noteArm,
 		noteDecision,
 		noteDissolved,
 		openPick,
 		pairOf,
 		rulesOf,
 		takeAsk
-	} from '$lib/utils/petal-pick'; // 🍒 A29 · A29b
+	} from '$lib/utils/petal-pick'; // 🍒 A29 · A29b · A30
 	import { refreshChatList, refreshFolderChatLists } from '$lib/stores/chatList';
 
 	import { WEBUI_API_BASE_URL } from '$lib/constants';
@@ -4632,6 +4634,7 @@
 	) => {
 		const responseMessage = _history.messages[responseMessageId];
 		const userMessage = _history.messages[responseMessage.parentId];
+		const pickArms = pick ? armsAsk(rulesOf($settings)) : null; // 🍒 A30 · 1 in her N picks: an arm
 		const filesystemAttachment = userMessage?.files?.find(
 			(file: any) => file.type === 'filesystem'
 		);
@@ -4845,6 +4848,7 @@
 				folder_id: $selectedFolder?.id ?? undefined,
 				...(petalMode ? { petal_mode: petalMode } : {}),
 				...(pick ? { petal_pick: true } : {}), // 🍒 A29 · two replies, one frame
+				...(pickArms ? { petal_arms: pickArms } : {}), // 🍒 A30 · her arms: the server draws, the page stays blind
 
 				id: responseMessageId,
 				...(messageIdsList ? { message_ids: messageIdsList } : {}),
@@ -4906,6 +4910,7 @@
 			} else {
 				if (pick && res.petal_pick?.refused)
 					dropTwin(messageIdsList?.[1]?.message_id, String(res.petal_pick.refused));
+				else if (pick && res.petal_pick?.arm) noteArm(String(res.petal_pick.arm)); // 🍒 A30 · a plain pick, said
 				// An early completion event may have already finished these replies.
 				if (
 					(messageIdsList ?? [{ message_id: responseMessageId }]).some(
