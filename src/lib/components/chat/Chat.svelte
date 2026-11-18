@@ -63,7 +63,16 @@
 	import { adoptMode, modeToSend } from '$lib/utils/petal-mode'; // 🌀 the mode chip (A15)
 	import { thumbsNudge } from '$lib/utils/petal-thumbs'; // 👍🏻 instant thumbs (A23): waiting verdicts go first
 	import { playReply, speakingNow } from '$lib/utils/petal-voice'; // 🔈 auto-playback in speaker mode (A23)
-	import { decidePick, noteDecision, openPick, pairOf, rulesOf, takeAsk } from '$lib/utils/petal-pick'; // 🍒 A29
+	import {
+		decidePick,
+		dissolvedWhy,
+		noteDecision,
+		noteDissolved,
+		openPick,
+		pairOf,
+		rulesOf,
+		takeAsk
+	} from '$lib/utils/petal-pick'; // 🍒 A29 · A29b
 	import { refreshChatList, refreshFolderChatLists, setChatTitle } from '$lib/stores/chatList';
 	import { updateFolderById } from '$lib/apis/folders';
 	import {
@@ -3853,7 +3862,9 @@
 		await tick();
 		if (shouldAutoScrollResponse()) scrollToBottom();
 		if (!openPick(history, pickPair[0])) {
-			// nothing to pick (a reply reached for a tool, or failed): a plain turn, the one that came through shown
+			// nothing to pick (a reply failed, reached for a tool, didn't finish, or the two frames differ): a
+			// plain turn, the one that came through shown, and her console says why
+			noteDissolved(dissolvedWhy(history, pickPair[0]) ?? 'the pair closed');
 			const shown = a?.error && b && !b.error ? b : a;
 			if (shown && shown.id !== history.currentId && history.currentId === a?.id) {
 				history.currentId = shown.id;
