@@ -139,6 +139,7 @@
 	import TaskList from './Messages/ResponseMessage/TaskList.svelte';
 	import PetalStatusChip from './MessageInput/PetalStatusChip.svelte'; // 🌙 trip markers
 	import PetalModeChip from './MessageInput/PetalModeChip.svelte'; // 🌀 the forge's modes, by send
+	import PetalPickArm from './MessageInput/PetalPickArm.svelte'; // 🍒 her ask for a pick (A29)
 	import PetalVoiceBubble from './MessageInput/PetalVoiceBubble.svelte'; // 🎙️ her voice, always at hand (slice A19)
 	import { getChatContext } from '$lib/components/chat/context';
 
@@ -3083,6 +3084,8 @@
 										<!-- 🌀 petal (A15): the mode chip, by send · nothing here unless the forge declares modes -->
 										<PetalModeChip chatId={chatId || null} />
 									{/if}
+									<!-- 🍒 petal (A29): her ask for a pick on the next send · nothing here unless she asked -->
+									<PetalPickArm />
 
 									{#if isActive && (history.messages[history.currentId]?.user_id ?? $_user?.id) === $_user?.id && prompt === '' && files.length === 0}
 										<div class=" flex items-center">

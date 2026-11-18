@@ -59,6 +59,7 @@ export enum Shortcut {
 	ADD_PROMPT = 'addPrompt',
 	TALK_TO_MODEL = 'talkToModel',
 	CYCLE_MODE = 'cycleMode', // petal · the mode chip beside send
+	ASK_PICK = 'askPick', // petal · a pick on her next send (A29)
 
 	//Message
 	GENERATE_MESSAGE_PAIR = 'generateMessagePair',
@@ -106,6 +107,7 @@ export const CONFIGURABLE_SHORTCUTS = [
 	Shortcut.FOCUS_INPUT,
 	Shortcut.CLEAR_INPUT_SELECTIONS,
 	Shortcut.CYCLE_MODE,
+	Shortcut.ASK_PICK,
 	Shortcut.GENERATE_MESSAGE_PAIR,
 	Shortcut.REGENERATE_RESPONSE,
 	Shortcut.ALLOW_TOOL_CALL,
@@ -150,6 +152,7 @@ export const DEFAULT_KEYBINDINGS: KeybindingsMap = {
 	[Shortcut.FOCUS_INPUT]: 'Shift+Escape',
 	[Shortcut.CLEAR_INPUT_SELECTIONS]: 'Escape',
 	[Shortcut.CYCLE_MODE]: 'Cmd+Space', // Ctrl+Space away from a Mac (Cmd names Ctrl there)
+	[Shortcut.ASK_PICK]: 'Cmd+Alt+P', // Ctrl+Alt+P away from a Mac: P for pick
 	[Shortcut.GENERATE_MESSAGE_PAIR]: 'Cmd+Shift+Enter',
 	[Shortcut.REGENERATE_RESPONSE]: 'Cmd+R',
 	[Shortcut.ALLOW_TOOL_CALL]: 'Cmd+Alt+Enter',
@@ -454,6 +457,14 @@ export const shortcuts: ShortcutRegistry = {
 		configurable: true,
 		tooltip:
 			'Steps the mode chip beside send to the next mode. Only active when modes are declared.'
+	},
+	[Shortcut.ASK_PICK]: {
+		name: (t) => t('Ask for a pick on my next send'),
+		keys: ['mod', 'alt', 'P'],
+		category: 'Input',
+		configurable: true,
+		tooltip:
+			'Your next message is sent twice and both replies are shown side by side; one tap picks the one that feels right. Press again to take it back.'
 	},
 	[Shortcut.ACCEPT_AUTOCOMPLETE]: {
 		name: (t) => t('settings.personal.shortcuts.acceptAutocomplete.label'),

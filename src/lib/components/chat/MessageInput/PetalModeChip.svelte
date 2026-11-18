@@ -15,6 +15,7 @@
 	import { formatChord, keybindings, matchKeybinding, Shortcut } from '$lib/shortcuts';
 	import { settings } from '$lib/stores';
 	import { loadModes, modeOf, modes, modeTick, stepMode } from '$lib/utils/petal-mode';
+	import { askPick } from '$lib/utils/petal-pick';
 
 	export let chatId: string | null = null;
 
@@ -24,11 +25,25 @@
 	$: current = $modeTick >= 0 ? modeOf($modes, chatId) : null; // the tick: another chip (or the hotkey) stepped it
 	$: hint = formatChord($keybindings[Shortcut.CYCLE_MODE] ?? '');
 	$: label = current ? [current.emoji, current.name].filter(Boolean).join(' ') : '';
-	$: title = current ? `${label} · tap${hint ? ` or ${hint}` : ''} for the next mode` : '';
+	$: title = current ? `${label} · tap${hint ? ` or ${hint}` : ''} for the next mode · hold for a pick` : '';
 
 	const step = () => {
+		if (held) return void (held = false); // that press was a long one: it asked for a pick instead
 		if (stepMode(chatId)) turned += 1;
 	};
+
+	// 🍒 A29 · a long press asks for a pick on her next send (the phone's way to the shortcut)
+	let pressTimer: ReturnType<typeof setTimeout> | null = null;
+	let held = false;
+	const press = () => {
+		held = false;
+		clearTimeout(pressTimer ?? undefined);
+		pressTimer = setTimeout(() => {
+			held = true;
+			askPick();
+		}, 500);
+	};
+	const release = () => clearTimeout(pressTimer ?? undefined);
 
 	// the hotkey answers inside this input's own box (its composer, the way dictation's does), or
 	// anywhere when nothing holds the focus and this is the only chip on the page · a field elsewhere
@@ -64,7 +79,18 @@
 
 <span bind:this={root} class="pmc-root">
 	{#if current}
-		<button type="button" class="pmc" {title} aria-label={title} on:click={step}>
+		<button
+			type="button"
+			class="pmc"
+			{title}
+			aria-label={title}
+			on:click={step}
+			on:pointerdown={press}
+			on:pointerup={release}
+			on:pointerleave={release}
+			on:pointercancel={release}
+			on:contextmenu|preventDefault
+		>
 			{#key turned}
 				<span class="pmc-face" class:pmc-turn={turned > 0} class:with-emoji={!!current.emoji}>
 					{#if current.emoji}<span class="pmc-emoji" aria-hidden="true">{current.emoji}</span>{/if}
@@ -94,6 +120,11 @@
 		font-size: 0.8rem;
 		line-height: 1;
 		white-space: nowrap;
+		/* 🍒 a long press asks for a pick: no text selection or callout on a phone while she holds */
+		-webkit-touch-callout: none;
+		-webkit-user-select: none;
+		user-select: none;
+		touch-action: manipulation;
 		transition:
 			border-color 140ms,
 			background-color 140ms;
