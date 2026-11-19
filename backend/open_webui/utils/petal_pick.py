@@ -352,15 +352,26 @@ def frame_sha(payload: dict) -> str:
     return hashlib.sha256(blob.encode('utf-8')).hexdigest()
 
 
+def wire_steer(payload: dict) -> dict:
+    """vLLM's OpenAI server types `vllm_xargs` values as str | int | float | list: an object is refused (422,
+    `petal_steer` "Input should be a valid string"). petal-strings reads `petal_steer` as a JSON string (the shape
+    petal_pull.py in Anamnesis II/III sends), so a steer held as an object is serialised here, at the last moment.
+    the pick record keeps the object. (Orchestrator hotfix, nov 18: arms failed on every steered sibling.)"""
+    xargs = payload.get('vllm_xargs') if isinstance(payload, dict) else None
+    if isinstance(xargs, dict) and isinstance(xargs.get('petal_steer'), (dict, list)):
+        payload['vllm_xargs'] = {**xargs, 'petal_steer': json.dumps(xargs['petal_steer'], ensure_ascii=False)}
+    return payload
+
+
 async def serve(metadata: dict | None, payload: dict) -> dict:
     """🍒 A29b · right before the bytes leave for the model (routers/openai.py): the first reply's request
     becomes the frame, the second sends a deep copy of it with its own seed and pull, and each reply's pick
     record learns what was really sent (seed, pull, `frame_sha`). anything else passes untouched."""
     pick = metadata.get('petal_pick') if isinstance(metadata, dict) else None
     if not isinstance(pick, dict) or pick.get('slot') not in (0, 1) or not isinstance(payload, dict):
-        return payload
+        return wire_steer(payload)
     if pick.get('frame_sha'):  # a later round of the same reply (its tools ran): the frame was its first request
-        return payload
+        return wire_steer(payload)
     try:
         frame = FRAMES.get(str((pick.get('pair') or [''])[0]))
         if frame is not None and pick.get('slot') == 0:
@@ -380,7 +391,7 @@ async def serve(metadata: dict | None, payload: dict) -> dict:
         )
     except Exception as e:
         log.warning(f'🍒 petal pick: the frame went unstamped ({e!r})')
-    return payload
+    return wire_steer(payload)
 
 
 async def shown_on(metadata: dict) -> dict:
