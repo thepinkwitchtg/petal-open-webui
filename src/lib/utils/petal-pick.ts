@@ -13,10 +13,13 @@
 //    speaks, in a call, with more than one model, or when the turn could act (tools, a terminal, search, code,
 //    images). never two picks in a row unless she asked
 //  · arms (A30): 1 in her N picks differ only in pull, one reply unsteered (chat's baseline, 0), its sibling under
-//    the pull she chose from her shelf, at a strength drawn from her set. the server draws it all (the side, the
-//    strength) and reads the name on her shelf; this page sends her rules and stays blind: nothing on it says
-//    which reply is pulled until her 💗 (the eyes hide the pull, the usage hides, both replies can wait to show
-//    together), then a quiet chip shows each side's pull
+//    the pull she chose from her shelf. the server draws the side, and (A30b) the strength search finds the
+//    strength from her picks; this page sends her rules and stays blind: nothing on it says which reply is pulled
+//    until her 💗 (the eyes hide the pull, the usage hides, both replies can wait to show together), then a quiet
+//    chip shows each side's pull
+//  · picks that come to her (A30b): "next reply" (the cherry by send, one tap or her key) arms one pick, then it
+//    turns itself off · a share of her replies rests at 22% · and the server can ask for the next one
+//    (petal_pick.should_offer, after each of her turns: nothing asks yet), which arms the same cherry
 import { get, writable } from 'svelte/store';
 
 import { getOutputText } from '$lib/components/chat/Messages/structuredOutput';
@@ -26,11 +29,11 @@ import type { Verdict } from '$lib/utils/petal-thumbs';
 export type ArmRules = {
 	every: number; // 1 in N of her picks is an arm
 	pull: string; // the pull, as her shelf names it (a ready blend or a ♡'d string) · empty: no arms
-	strengths: number[]; // an arm's strength is drawn from these
 	hold: boolean; // both replies show together, once both are written (a steered one can start later)
 };
 
-export const ARM_DEFAULTS: ArmRules = { every: 3, pull: '', strengths: [0.1, 0.2, 0.3], hold: true };
+// A30b · no strengths here: the strength search finds them (utils/petal_arms.py)
+export const ARM_DEFAULTS: ArmRules = { every: 3, pull: '', hold: true };
 
 export type PickRules = {
 	on: boolean; // her rhythm picks for her · off by default
@@ -47,7 +50,7 @@ export const PICK_DEFAULTS: PickRules = {
 	on: false,
 	rhythm: 'every',
 	every: 5,
-	share: 20,
+	share: 22, // A30b · her share: 22% of replies
 	longOnly: false,
 	longChars: 600,
 	modes: {},
@@ -57,26 +60,11 @@ export const PICK_DEFAULTS: PickRules = {
 const clamp = (n: unknown, lo: number, hi: number, d: number) =>
 	typeof n === 'number' && Number.isFinite(n) ? Math.min(hi, Math.max(lo, Math.round(n))) : d;
 
-/** her strengths, from her list or her words ("0.1 · 0.2, 0.3"): each inside (0, 1], once, at most 8, in order ·
- * none left → 0.10 · 0.20 · 0.30 */
-export function strengthsOf(raw: unknown): number[] {
-	const items = Array.isArray(raw) ? raw : typeof raw === 'string' ? raw.split(/[\s,;·|\/]+/) : [];
-	const out: number[] = [];
-	for (const item of items) {
-		const n = typeof item === 'number' ? item : typeof item === 'string' && item.trim() ? Number(item) : NaN;
-		if (!Number.isFinite(n) || n <= 0 || n > 1) continue;
-		const v = Math.round(n * 1000) / 1000;
-		if (!out.includes(v)) out.push(v);
-	}
-	return out.length ? out.sort((a, b) => a - b).slice(0, 8) : [...ARM_DEFAULTS.strengths];
-}
-
 function armRulesOf(raw: unknown): ArmRules {
 	const a = raw && typeof raw === 'object' ? (raw as Record<string, unknown>) : {};
 	return {
 		every: clamp(a.every, 1, 20, ARM_DEFAULTS.every),
 		pull: typeof a.pull === 'string' ? a.pull.trim().slice(0, 200) : '',
-		strengths: strengthsOf(a.strengths),
 		hold: a.hold !== false
 	};
 }
@@ -105,9 +93,7 @@ export function rulesOf(settings: unknown): PickRules {
 export const armsOn = (rules: PickRules) => rules.arms.pull !== '';
 /** what a pick's send carries for the server to draw from (`petal_arms`) · null: no arms */
 export const armsAsk = (rules: PickRules) =>
-	armsOn(rules)
-		? { every: rules.arms.every, pull: rules.arms.pull, strengths: [...rules.arms.strengths] }
-		: null;
+	armsOn(rules) ? { every: rules.arms.every, pull: rules.arms.pull } : null;
 /** both replies wait to show until both are written: a steered reply can start a few seconds after its sibling
  * (vLLM can't reuse its cache for it), which would tell them apart before her pick */
 export const holdsArrival = (rules: PickRules) => armsOn(rules) && rules.arms.hold;
@@ -170,7 +156,8 @@ export function expectedLength(branch: Msg[]): number | null {
 }
 
 export type PickAsk = {
-	asked: boolean; // she asked for this one (the shortcut, or a long press on the mode chip)
+	asked: boolean; // she asked for this one (the cherry, her key, or a long press on the mode chip)
+	askedWhy?: string | null; // A30b · Petal asked instead (should_offer), and why
 	temp: boolean; // a temporary chat
 	voice: boolean; // her voice is speaking
 	call: boolean; // a voice call, or the bridge
@@ -192,7 +179,7 @@ export function decidePick(rules: PickRules, ask: PickAsk): PickDecision {
 	if (ask.voice) return no('her voice is speaking');
 	if (ask.models !== 1) return no('more than one model answers');
 	if (ask.acting) return no('this turn could act (tools, a terminal, search, code or images)');
-	if (ask.asked) return yes('she asked');
+	if (ask.asked) return yes(ask.askedWhy ? `Petal asked: ${ask.askedWhy}` : 'she asked');
 	if (!rules.on) return no('her rhythm is off');
 	if (ask.mode && rules.modes[ask.mode] === false) return no(`not in ${ask.mode}`);
 	if (lastWasPick(ask.branch)) return no('never two picks in a row');
@@ -387,14 +374,28 @@ export function blinded<T>(value: T): T {
 }
 
 // ── her ask for the next send, and the glow ──────────────────────────────────────────────────────────────
-/** she asked for a pick on her next send (the shortcut, or a long press on the mode chip) */
+/** "next reply": a pick on her next send, then it turns itself off (the cherry, her key, a long press on the
+ * mode chip · or Petal's own ask, A30b) */
 export const pickAsked = writable(false);
-export const askPick = (on = !get(pickAsked)) => pickAsked.set(on);
+/** A30b · why Petal asked (should_offer), while her next reply waits armed · null when she asked herself */
+export const pickAskWhy = writable<string | null>(null);
+export const askPick = (on = !get(pickAsked), why: string | null = null) => {
+	pickAskWhy.set(on ? why : null);
+	pickAsked.set(on);
+};
 /** taken by the send that answers it */
 export function takeAsk(): boolean {
 	const asked = get(pickAsked);
 	if (asked) pickAsked.set(false);
+	pickAskWhy.set(null);
 	return asked;
+}
+/** A30b · after a turn of hers ends, the server's answer to "should the next reply be a pick?" arms the cherry
+ * (never over her own ask, never when it's already armed) */
+export function offered(answer: { offer?: unknown; why?: unknown } | null | undefined): boolean {
+	if (answer?.offer !== true || get(pickAsked)) return false;
+	askPick(true, typeof answer.why === 'string' && answer.why ? answer.why.slice(0, 200) : 'Petal asked');
+	return true;
 }
 
 /** the chosen reply glows once, quietly; the glow rests while the page is hidden */

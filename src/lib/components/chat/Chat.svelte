@@ -70,11 +70,14 @@
 		noteArm,
 		noteDecision,
 		noteDissolved,
+		offered,
 		openPick,
 		pairOf,
+		pickAskWhy,
 		rulesOf,
 		takeAsk
-	} from '$lib/utils/petal-pick'; // 🍒 A29 · A29b · A30
+	} from '$lib/utils/petal-pick'; // 🍒 A29 · A29b · A30 · A30b
+	import { getOffer } from '$lib/apis/petal-shelf'; // 🍒 A30b · picks that come to her
 	import { refreshChatList, refreshFolderChatLists, setChatTitle } from '$lib/stores/chatList';
 	import { updateFolderById } from '$lib/apis/folders';
 	import {
@@ -3829,9 +3832,11 @@
 
 	// 🍒 A29 · does this send ask her to pick between two replies? (her rhythm in Settings → Petal, or her ask)
 	const pickThisTurn = (userMessage: any) => {
+		const askedWhy = $pickAskWhy; // A30b · Petal's ask, when it was hers
 		const asked = takeAsk();
 		const decision = decidePick(rulesOf($settings), {
 			asked,
+			askedWhy,
 			temp:
 				$temporaryChat ||
 				isTemporaryChatId($chatId) ||
@@ -3905,6 +3910,9 @@
 		if ($chatId == _chatId && !$temporaryChat) {
 			await refreshChatList(localStorage.token);
 		}
+		// 🍒 A30b · should her next reply be a pick? (petal_pick.should_offer: nothing asks yet) · a yes arms the cherry
+		if (_chatId && !$temporaryChat && !isTemporaryChatId(_chatId) && $user?.role === 'admin')
+			void getOffer(localStorage.token, _chatId, responseMessageId).then(offered);
 	};
 
 	const chatActionHandler = async (_chatId, actionId, modelId, responseMessageId, event = null) => {
