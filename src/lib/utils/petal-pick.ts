@@ -15,25 +15,28 @@
 //  · arms (A30): 1 in her N picks differ only in pull, one reply unsteered (chat's baseline, 0), its sibling under
 //    the pull she chose from her shelf. the server draws the side, and (A30b) the strength search finds the
 //    strength from her picks; this page sends her rules and stays blind: nothing on it says which reply is pulled
-//    until her 💗 (the eyes hide the pull, the usage hides, both replies can wait to show together), then a quiet
-//    chip shows each side's pull
+//    until her 💗 (the eyes hide the pull, the usage hides, both replies type together · A30d), then a quiet chip
+//    shows each side's pull
 //  · picks that come to her (A30b): "next reply" (the cherry by send, one tap or her key) arms one pick, then it
 //    turns itself off · a share of her replies rests at 22% · and the server can ask for the next one
 //    (petal_pick.should_offer, after each of her turns: nothing asks yet), which arms the same cherry
+//  · twin streaming (A30d): both replies type at once, at one shared pace (utils/petal-twin.ts), blind until her 💗.
+//    how they arrive is her choice: twin (default) · together (the A30 hold) · live; a plain pick arrives the same way
 import { get, writable } from 'svelte/store';
 
 import { getOutputText } from '$lib/components/chat/Messages/structuredOutput';
 import { createMessagesList, removeAllDetails } from '$lib/utils';
 import type { Verdict } from '$lib/utils/petal-thumbs';
+import { ARRIVAL_DEFAULT, arrivalOf, twinStats, type Arrival } from '$lib/utils/petal-twin';
 
 export type ArmRules = {
 	every: number; // 1 in N of her picks is an arm
 	pull: string; // the pull, as her shelf names it (a ready blend or a ♡'d string) · empty: no arms
-	hold: boolean; // both replies show together, once both are written (a steered one can start later)
+	arrive: Arrival; // A30d · how a pick's two replies arrive (every pick, arm or plain): twin · together · live
 };
 
-// A30b · no strengths here: the strength search finds them (utils/petal_arms.py)
-export const ARM_DEFAULTS: ArmRules = { every: 3, pull: '', hold: true };
+// A30b · no strengths here: the strength search finds them (utils/petal_arms.py) · A30d · the hold became `arrive`
+export const ARM_DEFAULTS: ArmRules = { every: 3, pull: '', arrive: ARRIVAL_DEFAULT };
 
 export type PickRules = {
 	on: boolean; // her rhythm picks for her · off by default
@@ -65,7 +68,7 @@ function armRulesOf(raw: unknown): ArmRules {
 	return {
 		every: clamp(a.every, 1, 20, ARM_DEFAULTS.every),
 		pull: typeof a.pull === 'string' ? a.pull.trim().slice(0, 200) : '',
-		hold: a.hold !== false
+		arrive: arrivalOf(a.arrive, a.hold) // an older page's hold: on → twin, off → live
 	};
 }
 
@@ -94,9 +97,10 @@ export const armsOn = (rules: PickRules) => rules.arms.pull !== '';
 /** what a pick's send carries for the server to draw from (`petal_arms`) · null: no arms */
 export const armsAsk = (rules: PickRules) =>
 	armsOn(rules) ? { every: rules.arms.every, pull: rules.arms.pull } : null;
-/** both replies wait to show until both are written: a steered reply can start a few seconds after its sibling
- * (vLLM can't reuse its cache for it), which would tell them apart before her pick */
-export const holdsArrival = (rules: PickRules) => armsOn(rules) && rules.arms.hold;
+/** A30d · how a pick's two replies arrive, for every pick (a plain one too, so arms stay invisible): twin, both
+ * typing at one shared pace · together, still cards until both are written (a steered reply can start a few
+ * seconds after its sibling: vLLM can't reuse its cache for it) · live, each as it arrives */
+export const arrivalFor = (rules: PickRules): Arrival => rules.arms.arrive;
 
 type Msg = {
 	id: string;
@@ -434,7 +438,10 @@ if (typeof window !== 'undefined')
 		get last() {
 			return last;
 		},
-		ask: (on = true) => askPick(on)
+		ask: (on = true) => askPick(on),
+		get twin() {
+			return { ...twinStats }; // A30d · numbers only: how they arrive, the shared count, steps, still typing
+		}
 	};
 
 if (typeof document !== 'undefined') {

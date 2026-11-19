@@ -238,7 +238,9 @@
 		? resolveLocalizedModelName(selectedModel, $i18n.language)
 		: message?.selectedModelId;
 	$: showSelectedModel = !!message?.selectedModelId && message?.strategy !== 'random';
-	$: responseTimestamp = message?.meta?.response_ended_at ?? message?.timestamp;
+	// 🍒 A30d · inside an open pick both replies show the moment they were asked (the same on both): when each one
+	// ended would tell them apart before her 💗
+	$: responseTimestamp = (pickOpen ? null : message?.meta?.response_ended_at) ?? message?.timestamp;
 
 	$: parentMessage = history.messages[message?.parentId];
 	$: statusEntries = message?.statusHistory ?? [...(message?.status ? [message?.status] : [])];

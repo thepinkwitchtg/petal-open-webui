@@ -3,15 +3,19 @@
 	// desktop: side by side · phone: one at a time, swipe between them. one tap picks: the chosen reply becomes
 	// the branch she's on, the other stays a sibling, never deleted, and the pair goes to the ledger through the
 	// thumbs queue (👍🏻 / 👎🏻, both marked petal_pick). nothing to tap while they arrive; at rest nothing moves.
-	// A30 · blind: with arms on, both replies show together once both are written (a steered one can start a few
-	// seconds later, which would tell them apart), and nothing here says which one is pulled until her 💗.
-	import { getContext, onDestroy, onMount } from 'svelte';
+	// A30 · blind: nothing here says which one is pulled until her 💗 (a steered one can start a few seconds later,
+	// which would tell them apart). A30d · twin streaming: both type at once, at one shared pace (utils/petal-twin.ts):
+	// each side keeps what arrives, the cards show only as much as both have received (nothing until both have
+	// begun), and once one is done the other types on at its own speed. steps batched on requestAnimationFrame, ~30
+	// a second at most, none once both are shown or while the page is hidden. "together" keeps the A30 hold (still
+	// cards until both are written), "live" shows each as it comes (timing can tell). plain picks arrive the same way
+	import { getContext, onDestroy, onMount, tick } from 'svelte';
 	import type { Writable } from 'svelte/store';
 
 	import { updateChatById } from '$lib/apis/chats';
 	import { mobile, models, settings } from '$lib/stores';
 	import {
-		holdsArrival,
+		arrivalFor,
 		notePicked,
 		openPick,
 		pickGlow,
@@ -20,6 +24,18 @@
 		type OpenPick
 	} from '$lib/utils/petal-pick';
 	import { thumbVerdict } from '$lib/utils/petal-thumbs';
+	import {
+		Pace,
+		paceFor,
+		reach,
+		reachedOf,
+		sideOf,
+		twinStats,
+		twinStep,
+		twinTarget,
+		twinView,
+		type Side
+	} from '$lib/utils/petal-twin';
 
 	import ResponseMessage from './ResponseMessage.svelte';
 
@@ -56,7 +72,97 @@
 	let picking = false;
 
 	$: ids = [pair.a, pair.b];
-	$: held = !pair.ready && holdsArrival(rulesOf($settings)); // both show together, once both are written
+	$: arrive = arrivalFor(rulesOf($settings)); // A30d · twin · together · live, for every pick
+	$: held = !pair.ready && arrive === 'together'; // A30 · both show together, once both are written
+
+	// ── A30d · twin: both type at once, at one shared pace ───────────────────────────────────────────────────
+	const STEP_MS = 32; // batched: ~30 steps a second at most, whatever the token rate
+	const paces = [new Pace(), new Pace()]; // each side's own speed (a backlog types at it, never in a burst)
+	let view = history; // what the cards show: the replies cut at the shared count while they type
+	let shown = -1; // the shared count, in units (-1: not started)
+	let raf = 0;
+	let last = 0;
+	const isHidden = () => typeof document !== 'undefined' && document.visibilityState === 'hidden';
+	let hidden = isHidden();
+
+	// where a card begins (shown again, or twin chosen mid-stream): both written → all of both at once · both still
+	// typing → where both are now (never one side ahead) · one done → where it was, or where both are, whichever is
+	// further (never from the beginning)
+	const startAt = ([a, b]: Side[], was = 0) =>
+		a.done && b.done
+			? Math.max(a.units, b.units)
+			: !a.done && !b.done
+				? Math.min(a.units, b.units)
+				: Math.max(was, Math.min(a.units, b.units));
+
+	$: sides = [sideOf(history.messages[pair.a]), sideOf(history.messages[pair.b])];
+	$: target = twinTarget(sides[0], sides[1]);
+	$: if (shown < 0) shown = startAt(sides, reachedOf(pair.a) ?? 0);
+	let chosen = ''; // her arrival when last seen: twin chosen mid-stream begins from where both are
+	$: if (arrive !== chosen) {
+		if (arrive === 'twin' && chosen) shown = Math.max(shown, startAt(sides));
+		chosen = arrive;
+	}
+	$: complete = sides[0].done && sides[1].done && shown >= Math.max(sides[0].units, sides[1].units);
+	$: typing = arrive === 'twin' && !complete;
+	$: {
+		// every change of the history: note each side's speed, and let the next step show it (batched)
+		const now = performance.now();
+		paces[0].see(sides[0].units, now);
+		paces[1].see(sides[1].units, now);
+		if (!typing) view = history;
+		else {
+			if (view === history) view = twinView(history, pair.a, pair.b, shown); // never a frame of more
+			wake();
+		}
+	}
+	$: Object.assign(twinStats, { arrive, typing, target, shown: Math.max(0, shown), hidden });
+	$: if (complete) reach(pair.a, null);
+
+	const wake = () => {
+		if (raf || hidden || typeof requestAnimationFrame === 'undefined') return;
+		raf = requestAnimationFrame(frame);
+	};
+
+	// the chat follows a growing card while she's at its bottom (its own setting), as it does while words arrive
+	const following = (): HTMLElement | null => {
+		if (!($settings?.scrollOnResponseGeneration ?? true)) return null;
+		const box = scroller?.closest('#messages-container') as HTMLElement | null;
+		return box && box.scrollHeight - box.scrollTop <= box.clientHeight + 50 ? box : null;
+	};
+
+	const frame = async (t: number) => {
+		raf = 0;
+		if (!typing || hidden) return;
+		if (last && t - last < STEP_MS) return void (raf = requestAnimationFrame(frame));
+		const dt = last ? t - last : STEP_MS;
+		last = t;
+		const [a, b] = sides;
+		const box = following();
+		shown = twinStep(shown, target, !a.done && !b.done, dt, paceFor(a, b, shown, paces[0], paces[1]));
+		reach(pair.a, shown);
+		view = twinView(history, pair.a, pair.b, shown);
+		twinStats.frames += 1;
+		if (shown < target) raf = requestAnimationFrame(frame);
+		if (box) {
+			await tick();
+			box.scrollTo({ top: box.scrollHeight });
+		}
+	};
+
+	// hidden: nothing runs · back: both show where they are now, nothing types to catch up
+	const onVisibility = () => {
+		hidden = isHidden();
+		if (hidden) {
+			if (raf) cancelAnimationFrame(raf);
+			[raf, last] = [0, 0];
+			return;
+		}
+		if (!typing) return;
+		shown = Math.max(shown, target);
+		view = twinView(history, pair.a, pair.b, shown);
+		wake();
+	};
 
 	const pick = (chosen: string) => {
 		const open = openPick(history, chosen);
@@ -100,8 +206,16 @@
 
 	const show = (slot: number) => cols[slot]?.scrollIntoView({ block: 'nearest', inline: 'center' });
 
-	onMount(watch);
-	onDestroy(() => io?.disconnect());
+	onMount(() => {
+		watch();
+		document.addEventListener('visibilitychange', onVisibility);
+	});
+	onDestroy(() => {
+		io?.disconnect();
+		if (typeof document !== 'undefined') document.removeEventListener('visibilitychange', onVisibility);
+		if (raf) cancelAnimationFrame(raf);
+		raf = 0;
+	});
 </script>
 
 <div
@@ -109,11 +223,15 @@
 	class:pp-phone={$mobile}
 	class:pp-wide={$settings?.widescreenMode ?? false}
 	data-petal-pick={pair.a}
+	data-pick-arrive={arrive}
+	data-pick-typing={typing ? '' : undefined}
 >
 	<div class="pp-head">
 		<span aria-hidden="true">🍒</span>
 		<span>
-			{#if !pair.ready}
+			{#if typing}
+				{$i18n.t('two replies, typing together')}
+			{:else if !pair.ready}
 				{held ? $i18n.t('two replies on their way · they show together') : $i18n.t('two replies on their way')}
 			{:else if $mobile}
 				{$i18n.t('swipe between them · tap the one that feels right')}
@@ -157,7 +275,7 @@
 				{:else}
 					<ResponseMessage
 						{chatId}
-						{history}
+						history={view}
 						messageId={id}
 						{selectedModels}
 						isLastMessage={false}
@@ -187,7 +305,7 @@
 					/>
 				{/if}
 				<div class="pp-foot">
-					{#if pair.ready}
+					{#if pair.ready && !typing}
 						<button type="button" class="pp-this" data-pick-this={id} on:click={() => pick(id)}>
 							<span aria-hidden="true">💗</span>
 							{$i18n.t('this one')}
