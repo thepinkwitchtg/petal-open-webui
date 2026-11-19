@@ -2,18 +2,19 @@
 	// 🌸 Petal (slice A29) · her rhythm for picks: some turns ask her to pick between two replies, so Petal
 	// grows from real use. off by default; saved in her settings (synced with every device she signs in on).
 	// A30 · arms: 1 in her N picks differ only in pull. the pull is chosen from her shelf, read at runtime (the
-	// fork names no blend and no string); the server draws the side and the strength from her set
+	// fork names no blend and no string); the server draws the side. A30b · the strength is found, not drawn:
+	// the search's interval, centre and phase show here. the selects are the app's own menu (PetalSelect)
 	import { getContext, onMount } from 'svelte';
 	import type { Writable } from 'svelte/store';
 
-	import { getPulls, type ShelfPulls } from '$lib/apis/petal-shelf';
+	import { getPulls, type ShelfPulls, type ShelfSearch } from '$lib/apis/petal-shelf';
 	import { settings, user } from '$lib/stores';
 	import { formatChord, keybindings, Shortcut } from '$lib/shortcuts';
 	import { loadModes, modes } from '$lib/utils/petal-mode';
-	import { PICK_DEFAULTS, rulesOf, strengthsOf, type PickRules } from '$lib/utils/petal-pick';
+	import { PICK_DEFAULTS, rulesOf, type PickRules } from '$lib/utils/petal-pick';
 	import Switch from '$lib/components/common/Switch.svelte';
-	import SettingsSelect from '$lib/components/common/SettingsSelect.svelte';
 
+	import PetalSelect from './PetalSelect.svelte';
 	import UserSettingRow from './UserSettingRow.svelte';
 	import UserSettingSection from './UserSettingSection.svelte';
 
@@ -28,7 +29,7 @@
 		rules = rulesOf({ petalPick: rules }); // kept inside its ranges before it leaves
 		saveSettings({ petalPick: rules });
 	};
-	// 🍒 A30 · arms: her shelf's pulls (names from the shelf, at runtime), her strengths as she writes them
+	// 🍒 A30 · arms: her shelf's pulls (names from the shelf, at runtime) · A30b: each one's strength search
 	let shelf: ShelfPulls | null = null;
 	let shelfErr = '';
 	const loadShelf = async () => {
@@ -44,14 +45,51 @@
 	$: ready = (shelf?.pulls ?? []).filter((p) => p.ready);
 	$: waiting = (shelf?.pulls ?? []).filter((p) => !p.ready);
 	$: offered = (shelf?.pulls ?? []).some((p) => p.ready && p.id === rules.arms.pull);
-	const shown = (xs: number[]) => xs.map((x) => x.toFixed(2)).join(' · ');
-	let strengthsText = shown(rules.arms.strengths);
-	const setStrengths = () => {
-		rules.arms = { ...rules.arms, strengths: strengthsOf(strengthsText) };
-		strengthsText = shown(rules.arms.strengths);
-		save();
-	};
-	$: loud = rules.arms.strengths.some((x) => x > 0.5);
+	$: chosenPull = (shelf?.pulls ?? []).find((p) => p.ready && p.id === rules.arms.pull) ?? null;
+	// the search for her pull, or where it will start: [0, cap], its centre halfway (cap: 0.5, or the card's end)
+	const capOf = (p: ShelfPulls['pulls'][number] | null) =>
+		p?.kind === 'string' && p.range ? Math.min(0.5, Math.max(...p.range.map((x) => Math.abs(x)))) : 0.5;
+	$: search = ((): (ShelfSearch & { fresh?: boolean }) | null => {
+		if (!chosenPull) return null;
+		const found = shelf?.search?.[`${chosenPull.kind}:${chosenPull.id}`];
+		if (found) return found;
+		const cap = capOf(chosenPull);
+		return { cap, lo: 0, hi: cap, centre: cap / 2, width: cap, phase: 'searching', steps: 0, reopens: 0, fresh: true };
+	})();
+	const n2 = (x: number) => x.toFixed(2);
+	const phaseWord = (p: ShelfSearch['phase']) =>
+		p === 'stable' ? $i18n.t('stable') : p === 'narrowing' ? $i18n.t('narrowing') : $i18n.t('searching');
+	// the pull's options, grouped: none · blends · ♡ strings · still waiting (seen, never chosen)
+	$: pullGroups = [
+		{
+			items: [
+				{ value: '', label: $i18n.t('none · no arms') },
+				...(rules.arms.pull && !offered
+					? [{ value: rules.arms.pull, label: `${rules.arms.pull} · ${$i18n.t('not on the shelf now')}` }]
+					: [])
+			]
+		},
+		{
+			label: $i18n.t('blends'),
+			items: ready.filter((p) => p.kind === 'blend').map((p) => ({ value: p.id, label: p.name }))
+		},
+		{
+			label: $i18n.t('♡ strings'),
+			items: ready.filter((p) => p.kind === 'string').map((p) => ({ value: p.id, label: p.name }))
+		},
+		{
+			label: $i18n.t('still waiting'),
+			items: waiting.map((p) => ({ value: p.id, label: p.name, disabled: true }))
+		}
+	].filter((g) => g.items.length);
+	$: rhythmGroups = [
+		{
+			items: [
+				{ value: 'every', label: $i18n.t('every Nth turn') },
+				{ value: 'share', label: $i18n.t('a share of turns') }
+			]
+		}
+	];
 	// numbers only: how many ready blends and ♡ strings her shelf holds (and vLLM's own word, when it says no)
 	const shelfSays = (pulls: ShelfPulls['pulls'], strung: boolean | null) => {
 		const blends = pulls.filter((p) => p.kind === 'blend').length;
@@ -97,16 +135,17 @@
 
 		<UserSettingRow label={$i18n.t('How often')} let:labelId>
 			<div class="flex items-center gap-1.5 text-xs text-gray-400 dark:text-gray-600">
-				<SettingsSelect
-					id={`${labelId}-control`}
-					aria-labelledby={labelId}
-					bind:value={rules.rhythm}
+				<PetalSelect
+					id="petal-pick-rhythm"
+					ariaLabelledby={labelId}
+					value={rules.rhythm}
+					groups={rhythmGroups}
 					disabled={!rules.on}
-					on:change={save}
-				>
-					<option value="every">{$i18n.t('every Nth turn')}</option>
-					<option value="share">{$i18n.t('a share of turns')}</option>
-				</SettingsSelect>
+					onChange={(v) => {
+						rules.rhythm = v === 'every' ? 'every' : 'share';
+						save();
+					}}
+				/>
 				{#if rules.rhythm === 'every'}
 					<input
 						type="number"
@@ -186,7 +225,7 @@
 		{/if}
 
 		<p class="text-[0.6875rem] text-gray-400 dark:text-gray-600">
-			{$i18n.t('Ask for a pick on your next send')}:
+			{$i18n.t('Next reply: the 🍒 by send, or')}
 			{chord || $i18n.t('Settings → Shortcuts')}{$i18n.t(', or a long press on the mode chip on your phone.')}
 			{$i18n.t(
 				'Never in temporary chats, internal or subagent turns, tests, while her voice speaks, or twice in a row unless you ask.'
@@ -203,38 +242,16 @@
 				let:labelId
 			>
 				<span slot="label">{$i18n.t('Pull')}</span>
-				<SettingsSelect
-					id={`${labelId}-control`}
-					aria-labelledby={labelId}
-					bind:value={rules.arms.pull}
-					on:change={save}
-				>
-					<option value="">{$i18n.t('none · no arms')}</option>
-					{#if rules.arms.pull && !offered}
-						<option value={rules.arms.pull}>{rules.arms.pull} · {$i18n.t('not on the shelf now')}</option>
-					{/if}
-					{#if ready.some((p) => p.kind === 'blend')}
-						<optgroup label={$i18n.t('blends')}>
-							{#each ready.filter((p) => p.kind === 'blend') as p (p.kind + p.id)}
-								<option value={p.id}>{p.name}</option>
-							{/each}
-						</optgroup>
-					{/if}
-					{#if ready.some((p) => p.kind === 'string')}
-						<optgroup label={$i18n.t('♡ strings')}>
-							{#each ready.filter((p) => p.kind === 'string') as p (p.kind + p.id)}
-								<option value={p.id}>{p.name}</option>
-							{/each}
-						</optgroup>
-					{/if}
-					{#if waiting.length}
-						<optgroup label={$i18n.t('still waiting')}>
-							{#each waiting as p (p.kind + p.id)}
-								<option value={p.id} disabled>{p.name}</option>
-							{/each}
-						</optgroup>
-					{/if}
-				</SettingsSelect>
+				<PetalSelect
+					id="petal-arm-pull"
+					ariaLabelledby={labelId}
+					value={rules.arms.pull}
+					groups={pullGroups}
+					onChange={(v) => {
+						rules.arms = { ...rules.arms, pull: v };
+						save();
+					}}
+				/>
 			</UserSettingRow>
 
 			<UserSettingRow label={$i18n.t('How many picks')} let:labelId>
@@ -256,21 +273,33 @@
 				</div>
 			</UserSettingRow>
 
-			<UserSettingRow
-				description={loud ? $i18n.t('Heartstrings warns above 0.50.') : ''}
-				let:labelId
-			>
-				<span slot="label">{$i18n.t('Strengths, one drawn per arm')}</span>
-				<input
-					id={`${labelId}-control`}
-					type="text"
-					class="h-7 w-40 rounded-lg border border-gray-100/50 bg-gray-50/40 px-2 text-right text-xs text-gray-700 outline-hidden transition-colors focus:border-blue-400 disabled:opacity-50 dark:border-white/[0.04] dark:bg-white/[0.03] dark:text-gray-300 dark:focus:border-blue-500"
-					bind:value={strengthsText}
-					disabled={!rules.arms.pull}
-					aria-label={$i18n.t('Strengths, one drawn per arm')}
-					on:change={setStrengths}
-				/>
-			</UserSettingRow>
+			{#if search}
+				<!-- A30b · the strength, found from her picks: where it is, how sure, how it moves -->
+				<UserSettingRow
+					description={$i18n.t(
+						'Found from your picks: each arm tries the centre; your 💗 on the pulled reply moves it up, on the unsteered one down. Never above 0.50.'
+					)}
+				>
+					<span slot="label">{$i18n.t('Strength')}</span>
+					<div
+						class="flex items-center gap-2 text-xs tabular-nums text-gray-500 dark:text-gray-400"
+						data-arm-search={search.phase}
+					>
+						<span>
+							{phaseWord(search.phase)} · {n2(search.lo)}–{n2(search.hi)} · {$i18n.t('centre')}
+							{n2(search.centre)} · {search.steps
+								? `${search.steps} ${search.steps === 1 ? $i18n.t('arm') : $i18n.t('arms')}`
+								: $i18n.t('no arms yet')}
+						</span>
+						<!-- still: the interval on [0, 0.5], its centre a dot -->
+						<svg class="petal-search-bar" viewBox="0 0 100 8" width="88" height="8" aria-hidden="true">
+							<line x1="0" y1="4" x2="100" y2="4" class="psb-track" />
+							<line x1={search.lo * 200} y1="4" x2={search.hi * 200} y2="4" class="psb-span" />
+							<circle cx={search.centre * 200} cy="4" r="2.4" class="psb-dot" />
+						</svg>
+					</div>
+				</UserSettingRow>
+			{/if}
 
 			<UserSettingRow
 				description={$i18n.t(
@@ -302,3 +331,20 @@
 		</UserSettingSection>
 	{/if}
 </div>
+
+<style>
+	/* A30b · the search's still bar: a hairline track, the interval in candy, its centre in pearl */
+	.petal-search-bar .psb-track {
+		stroke: var(--edge, rgb(156 163 175 / 0.35));
+		stroke-width: 1;
+	}
+	.petal-search-bar .psb-span {
+		stroke: var(--candy, rgb(236 72 153));
+		stroke-width: 3;
+		stroke-linecap: round;
+		opacity: 0.7;
+	}
+	.petal-search-bar .psb-dot {
+		fill: var(--pearl, currentColor);
+	}
+</style>

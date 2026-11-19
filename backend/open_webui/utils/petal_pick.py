@@ -22,8 +22,9 @@ says whether the turn may be a pick, and serves it.
   second reply sends a deep copy of exactly that, with only its seed (and, for A30, its pull) its own.
   `frame_sha` is each request's sha256 minus those two; the page offers the pick only when both match
 - **arms (A30).** 1 in her N picks (Settings → 🌸 Petal, 1 in 3 by default) is an arm: both siblings come from the
-  one frame, one goes unsteered (chat's baseline, 0), the other under her pull at a strength drawn from her set
-  (0.10 · 0.20 · 0.30 by default), the side drawn too. the pull's name is read on her shelf at the send
+  one frame, one goes unsteered (chat's baseline, 0), the other under her pull, the side drawn. its strength
+  (A30b) is no longer drawn from a set: the strength search finds it (utils/petal_arms.py: stochastic bisection on
+  her picks, steered vs unsteered, inside [0, 0.5] and the card's range). the pull's name is read on her shelf
   (utils/petal_shelf.py, the 💗 filter's door): a ready blend → `{"blend": slug, "strength": s}`, a ♡'d string →
   `{"strings": {id: s}, "strength": 1}` inside its card's range, tagged with the steered reply's id (vLLM notes
   the pin at `<notes>/seen/<tag>.pin.json`). anything else → no arm, a plain pick, and the page's console says
@@ -49,7 +50,7 @@ import random
 import weakref
 from typing import Any
 
-from open_webui.utils import petal_shelf
+from open_webui.utils import petal_arms, petal_shelf
 from open_webui.utils.chat_id import is_saved_chat_id
 
 log = logging.getLogger(__name__)
@@ -73,7 +74,6 @@ PLAIN = (
 )
 SHOWN = ('statusHistory', 'sources', 'files', 'embeds')  # what a reply is shown, as the chat keeps it
 SERVE_WAIT_S = 120  # the second reply waits this long for the first one's request (it takes milliseconds)
-ARM_STRENGTHS = (0.1, 0.2, 0.3)  # A30 · her arms' strengths when she sets none
 # vLLM's short way to ask for a pull: merged into any `petal_steer`, so an arm clears them on both sides
 SHORT_PULL = ('petal_blend', 'petal_strength', 'petal_layer', 'petal_tag')
 FRAMES: 'weakref.WeakValueDictionary[str, Frame]' = weakref.WeakValueDictionary()  # live frames, by first id
@@ -294,7 +294,8 @@ class Frame:
 
 
 def arm_rules(raw: Any) -> dict | None:
-    """her arms as the page sends them (`petal_arms`: {every, pull, strengths}) · None: no arms this turn."""
+    """her arms as the page sends them (`petal_arms`: {every, pull}) · None: no arms this turn. (A30's
+    `strengths` may still ride along from an older page: the search chooses now, so they are let go.)"""
     if not isinstance(raw, dict):
         return None
     pull, every = raw.get('pull'), raw.get('every')
@@ -302,18 +303,28 @@ def arm_rules(raw: Any) -> dict | None:
         return None
     if not isinstance(every, int) or isinstance(every, bool) or not 1 <= every <= 100:
         return None
-    strengths: list[float] = []
-    for value in raw.get('strengths') if isinstance(raw.get('strengths'), list) else []:
-        if isinstance(value, (int, float)) and not isinstance(value, bool) and 0 < value <= 1:
-            if round(float(value), 4) not in strengths:
-                strengths.append(round(float(value), 4))
-    return {'every': every, 'pull': pull.strip(), 'strengths': strengths[:8] or list(ARM_STRENGTHS)}
+    return {'every': every, 'pull': pull.strip()}
+
+
+def _choose(pull: str, pair: list, side: int, rng: Any) -> tuple[dict | None, dict | None, str | None]:
+    """the arm's pull at the strength the search tries: its cap read on the shelf (0.5, or where the card ends),
+    the try remembered until her pick (both ids)."""
+    top, top_what, why = petal_shelf.door(pull, petal_arms.CAP)
+    if top is None:
+        return None, None, why
+    cap, key = abs(float(top_what['strength'])), f"{top_what['kind']}:{top_what['id']}"
+    m = petal_arms.point(key, cap, rng)
+    steer, what, why = petal_shelf.door(pull, m)
+    if steer is not None:
+        petal_arms.tried(key, cap, m, pair, side)
+    return steer, what, why
 
 
 async def draw_arm(raw: Any, pair: list | None, *, user: Any = None, rng: Any = None) -> tuple[dict | None, str | None]:
-    """🍒 A30 · is this pick an arm? 1 in her N: the side and the strength drawn, her pull read on the shelf.
-    → (arm, why): arm = {side, steer, what} · why = an arm the roll asked for that couldn't be served (her console
-    says it; the pick goes on plain) · (None, None): not an arm this time, and nothing says so (blind)."""
+    """🍒 A30 · is this pick an arm? 1 in her N: the side drawn, her pull read on the shelf, its strength the
+    search's (A30b). → (arm, why): arm = {side, steer, what} · why = an arm the roll asked for that couldn't be
+    served (her console says it; the pick goes on plain) · (None, None): not an arm this time, nothing says so.
+    the seam the tuning fork (W) can replace later, to choose the strength per moment."""
     rules = arm_rules(raw)
     if not rules or not pair:
         return None, None
@@ -323,14 +334,35 @@ async def draw_arm(raw: Any, pair: list | None, *, user: Any = None, rng: Any = 
             return None, None
         if user is not None and getattr(user, 'role', None) != 'admin':
             return None, "no arm: the shelf is its keeper's (an admin's)"
-        side, strength = rng.randrange(2), rng.choice(rules['strengths'])
-        steer, what, why = await asyncio.to_thread(petal_shelf.door, rules['pull'], strength)
+        side = rng.randrange(2)
+        steer, what, why = await asyncio.to_thread(_choose, rules['pull'], list(pair), side, rng)
     except Exception as e:  # an arm never costs her the pick: it goes on plain
         log.warning(f'🍒 petal pick: no arm ({e!r})')
         return None, 'no arm: the shelf could not be read'
     if steer is None:
         return None, f'no arm: {why}'
     return {'side': side, 'steer': steer, 'what': what}, None
+
+
+# ── picks that come to her (A30b): the seam a future trigger asks through ────────────────────────────────────
+# a trigger is (context) → (bool, why) | None · the fusion check's surprise (its active learning) will be one:
+# the moment the system can't tell what she'd want is the moment a pick teaches most. none is built yet.
+OFFERS: list = []
+
+
+def should_offer(context: dict) -> tuple[bool, str]:
+    """🍒 A30b · should her next reply in this chat be a pick? asked after each of her turns ends (context:
+    user_id, chat_id, message_id: the reply just written); the page arms "next reply" when one says yes, and her
+    usual skips still hold (temporary chats, her voice, a call, tools). (False, why) while nothing asks."""
+    for trigger in list(OFFERS):
+        try:
+            got = trigger(context)
+        except Exception as e:  # a trigger never costs her the turn
+            log.warning(f'🍒 petal pick: an offer trigger failed ({e!r})')
+            continue
+        if isinstance(got, (tuple, list)) and got and got[0] is True:
+            return True, str(got[1] if len(got) > 1 and got[1] else 'a trigger asked')[:200]
+    return False, 'nothing asks for a pick yet'
 
 
 def _pull(payload: dict) -> Any:
@@ -356,7 +388,7 @@ def wire_steer(payload: dict) -> dict:
     """vLLM's OpenAI server types `vllm_xargs` values as str | int | float | list: an object is refused (422,
     `petal_steer` "Input should be a valid string"). petal-strings reads `petal_steer` as a JSON string (the shape
     petal_pull.py in Anamnesis II/III sends), so a steer held as an object is serialised here, at the last moment.
-    the pick record keeps the object. (Orchestrator hotfix, nov 18: arms failed on every steered sibling.)"""
+    the pick record keeps the object. (Orchestrator hotfix A30c, nov 19: arms failed on every steered sibling.)"""
     xargs = payload.get('vllm_xargs') if isinstance(payload, dict) else None
     if isinstance(xargs, dict) and isinstance(xargs.get('petal_steer'), (dict, list)):
         payload['vllm_xargs'] = {**xargs, 'petal_steer': json.dumps(xargs['petal_steer'], ensure_ascii=False)}
