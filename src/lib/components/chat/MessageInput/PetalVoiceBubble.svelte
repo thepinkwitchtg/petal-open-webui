@@ -19,18 +19,27 @@
 	// it or within 24 px it fades out by how close they are. and whenever the speaker button at the bottom of
 	// the reply it would play (or is playing) is on screen, it fades out: that button is right there. faded
 	// out, taps and selections pass through it (the hotkey still works).
+	// 👁 A31 · it follows her eyes: the reply most in view (petal-voice's one IntersectionObserver, never a
+	// scroll listener: nothing runs while she's idle), the one she swiped to or pointed at inside an open pick,
+	// and its tooltip names that reply by its first words. only while her voice plays does the chat's scroll
+	// reach it, for the words-near fade above (they move under it between the observer's steps).
 	import { getContext, onDestroy, onMount } from 'svelte';
-	import { get, type Writable } from 'svelte/store';
+	import type { Writable } from 'svelte/store';
 	import type { i18n as i18nType } from 'i18next';
 
 	import { formatChord, keybindings, matchKeybinding, Shortcut } from '$lib/shortcuts';
 	import { settings } from '$lib/stores';
 	import {
+		firstWords,
 		heardReplies,
 		mostInView,
+		speakersInView,
 		voiceReplies,
 		voiceTap,
-		voiceUI
+		voiceTarget,
+		voiceUI,
+		watchSoon,
+		type VoiceUI
 	} from '$lib/utils/petal-voice';
 
 	const i18n = getContext<Writable<i18nType>>('i18n');
@@ -41,46 +50,33 @@
 
 	let root: HTMLElement;
 	let btn: HTMLElement;
-	let target: string | null = null; // the reply most in view, done
 	let beside = false; // room on the bar's left: the bubble sits beside it, never over words
-	let speakerSeen = false; // the speaker button of the reply it would act on is on screen
-	let frame = 0;
 
 	/** the reply a tap would act on: the one she's speaking, the paused one (or an unheard one in view,
 	 *  as voiceTap decides), else the one most in view */
-	function subjectNow(): string | null {
-		const ui = get(voiceUI);
+	function subjectOf(ui: VoiceUI, target: string | null, heard: Set<string>): string | null {
 		if (ui.state === 'playing' || ui.state === 'loading') return ui.message_id;
 		if (ui.state === 'paused') {
-			const unheard = target && target !== ui.message_id && !get(heardReplies).has(target);
+			const unheard = target && target !== ui.message_id && !heard.has(target);
 			return unheard ? target : ui.message_id;
 		}
 		return target;
 	}
 
-	/** that reply's own speaker (OWUI's Read Aloud, at its bottom) shown on screen: at least half of it
-	 *  inside the chat's visible box. a button that only appears on hover (older replies) isn't there for
+	/** that reply's own speaker (OWUI's Read Aloud, at its bottom) shown on screen: at least half of it in the
+	 *  chat's visible box (her eyes say). a button that only appears on hover (older replies) isn't there for
 	 *  her eyes until then, so it doesn't count */
-	function speakerShown(id: string | null): boolean {
-		const sp = id ? document.getElementById(`speak-button-${id}`) : null;
-		if (!sp || sp.classList.contains('hover-reveal')) return false;
-		const r = sp.getBoundingClientRect();
-		if (!r.width || !r.height) return false;
-		const box = document.getElementById('messages-container')?.getBoundingClientRect();
-		const h = Math.min(r.bottom, box?.bottom ?? innerHeight) - Math.max(r.top, box?.top ?? 0);
-		const w = Math.min(r.right, box?.right ?? innerWidth) - Math.max(r.left, box?.left ?? 0);
-		return h >= r.height / 2 && w >= r.width / 2;
+	function speakerShown(id: string | null, inView: Set<string>): boolean {
+		if (!id || !inView.has(id)) return false;
+		const sp = document.getElementById(`speak-button-${id}`);
+		return !!sp && !sp.classList.contains('hover-reveal');
 	}
 
-	const look = () => {
-		frame = 0;
-		target = mostInView();
+	// room on the bar's left: measured once, and again when the window or the bar changes size (a sidebar)
+	let barRO: ResizeObserver | null = null;
+	const placeBar = () => {
 		const bar = root?.parentElement?.getBoundingClientRect();
 		beside = !!bar && bar.left >= 56;
-		speakerSeen = speakerShown(subjectNow());
-	};
-	const lookSoon = () => {
-		if (!frame) frame = requestAnimationFrame(look);
 	};
 
 	// awake: full while she speaks. a pointer over it or keyboard focus on it keeps it awake; once they
@@ -164,14 +160,15 @@
 	const measureSoon = () => {
 		if (speaking && !nearFrame) nearFrame = requestAnimationFrame(measure);
 	};
-	/** while she speaks: new lines, a growing bar, a resize or a scroll may bring words close (and move the
-	 *  reply's speaker button in or out of view) */
+	/** while she speaks: new lines, a growing bar, a resize or the chat scrolling may bring words close (the
+	 *  chat's scroll is listened to only now, while her voice plays) */
+	let chatBox: HTMLElement | null = null;
 	function watchNear() {
+		chatBox?.removeEventListener('scroll', measureSoon);
+		chatBox = document.getElementById('messages-container');
+		chatBox?.addEventListener('scroll', measureSoon, { passive: true });
 		if (typeof ResizeObserver !== 'undefined') {
-			nearRO ??= new ResizeObserver(() => {
-				measureSoon();
-				lookSoon();
-			}); // observing twice is a no-op
+			nearRO ??= new ResizeObserver(() => measureSoon()); // observing twice is a no-op
 			const chat = document.getElementById('messages-container');
 			const lines = chat?.firstElementChild ?? chat;
 			if (lines) nearRO.observe(lines);
@@ -180,6 +177,8 @@
 		measureSoon();
 	}
 	function unwatchNear() {
+		chatBox?.removeEventListener('scroll', measureSoon);
+		chatBox = null;
 		nearRO?.disconnect();
 		nearRO = null;
 		if (nearFrame) cancelAnimationFrame(nearFrame);
@@ -188,11 +187,18 @@
 	}
 
 	$: bubble = ($settings?.voiceControl ?? 'bubble') !== 'speaker';
+	$: if (bubble) watchSoon(); // chosen again: her eyes find the speaker buttons back
 	$: running = $voiceUI.state !== 'idle';
 	$: paused = $voiceUI.state === 'paused';
 	$: loading = $voiceUI.state === 'loading';
-	// a reply came, went or finished arriving, one was heard, her voice changed: look again
-	$: ($voiceReplies, $heardReplies, $voiceUI, lookSoon());
+	$: target = $voiceTarget; // the reply most in view (her eyes)
+	$: subject = subjectOf($voiceUI, target, $heardReplies);
+	// a reply came, went or finished (a speaker may have turned hover-only), or her eyes moved: look again
+	let speakerSeen = false;
+	$: {
+		void $voiceReplies;
+		speakerSeen = speakerShown(subject, $speakersInView);
+	}
 	$: shown = bubble && (running || (!!target && !$heardReplies.has(target)));
 	$: speaking = running && !paused; // ‖ at 26 % (before a play and paused: ▶ at full)
 	$: if (typeof window !== 'undefined') speaking ? watchNear() : unwatchNear();
@@ -208,7 +214,14 @@
 			: paused && (!target || target === $voiceUI.message_id || $heardReplies.has(target))
 				? $i18n.t('Resume her voice')
 				: $i18n.t('Her voice, for the reply in view');
-	$: title = hint ? `${label} · ${hint}` : label;
+	// A31 · which reply a tap plays (or pauses, or resumes): a few of its first words
+	let words = '';
+	$: {
+		void $voiceReplies; // its words are there once it registered
+		words = firstWords(subject);
+	}
+	$: named = words ? `${label} · “${words}”` : label;
+	$: title = hint ? `${named} · ${hint}` : named;
 
 	const onKey = (e: KeyboardEvent) => {
 		if (e.defaultPrevented || e.repeat || $settings?.keyboardShortcuts === false) return;
@@ -230,29 +243,26 @@
 		voiceTap(target ?? mostInView());
 	};
 
-	const onScroll = () => {
-		lookSoon();
-		measureSoon();
-	};
-
 	onMount(() => {
 		bubbles.add(root);
-		look();
+		placeBar();
+		if (typeof ResizeObserver !== 'undefined' && root?.parentElement) {
+			barRO = new ResizeObserver(placeBar);
+			barRO.observe(root.parentElement);
+		}
+		watchSoon();
 		if (speaking) watchNear(); // mounted while she speaks: the bar exists now
 		window.addEventListener('keydown', onKey, true);
-		// the chat scrolls inside its own container: any scroll, caught on its way down, looks again
-		window.addEventListener('scroll', onScroll, { capture: true, passive: true });
-		window.addEventListener('resize', onScroll, { passive: true });
+		window.addEventListener('resize', placeBar, { passive: true });
 	});
 	onDestroy(() => {
 		bubbles.delete(root);
-		if (frame) cancelAnimationFrame(frame);
 		if (wakeTimer) clearTimeout(wakeTimer);
+		barRO?.disconnect();
 		if (typeof window === 'undefined') return;
 		unwatchNear();
 		window.removeEventListener('keydown', onKey, true);
-		window.removeEventListener('scroll', onScroll, { capture: true } as EventListenerOptions);
-		window.removeEventListener('resize', onScroll);
+		window.removeEventListener('resize', placeBar);
 	});
 </script>
 
@@ -270,7 +280,7 @@
 			type="button"
 			class="pvb-main"
 			style:opacity={presence}
-			aria-label={label}
+			aria-label={named}
 			title={title}
 			aria-pressed={running ? !paused : undefined}
 			aria-hidden={!shown}

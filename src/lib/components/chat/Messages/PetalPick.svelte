@@ -10,7 +10,7 @@
 	// a second at most, none once both are shown or while the page is hidden. "together" keeps the A30 hold (still
 	// cards until both are written), "live" shows each as it comes (timing can tell). plain picks arrive the same way
 	import { getContext, onDestroy, onMount, tick } from 'svelte';
-	import type { Writable } from 'svelte/store';
+	import { get, type Writable } from 'svelte/store';
 
 	import { updateChatById } from '$lib/apis/chats';
 	import { mobile, models, settings } from '$lib/stores';
@@ -24,6 +24,7 @@
 		type OpenPick
 	} from '$lib/utils/petal-pick';
 	import { thumbVerdict } from '$lib/utils/petal-thumbs';
+	import { pickFocus } from '$lib/utils/petal-voice';
 	import {
 		Pace,
 		paceFor,
@@ -206,12 +207,32 @@
 
 	const show = (slot: number) => cols[slot]?.scrollIntoView({ block: 'nearest', inline: 'center' });
 
+	// A31 · the floating ▶︎ plays the reply her eyes are on here: the one she swiped to (phone), the one her
+	// pointer last rested on (desktop: a pointer passing over the other on its way to the button changes
+	// nothing). after her 💗 the pick closes, and the chosen reply is simply the one in view
+	const REST_MS = 450;
+	let resting: ReturnType<typeof setTimeout> | null = null;
+	const focus = (slot: number) => {
+		const id = ids?.[slot];
+		const f = get(pickFocus);
+		if (id && (f?.id !== id || f.ids[0] !== ids[0])) pickFocus.set({ ids: [...ids], id });
+	};
+	const rest = (e: PointerEvent, slot: number | null) => {
+		if (resting) clearTimeout(resting);
+		resting = null;
+		if (slot !== null && e.pointerType !== 'touch') resting = setTimeout(() => focus(slot), REST_MS);
+	};
+	$: if ($mobile) focus(seen);
+
 	onMount(() => {
 		watch();
+		focus(seen);
 		document.addEventListener('visibilitychange', onVisibility);
 	});
 	onDestroy(() => {
 		io?.disconnect();
+		if (resting) clearTimeout(resting);
+		if (get(pickFocus)?.ids.includes(pair.a)) pickFocus.set(null);
 		if (typeof document !== 'undefined') document.removeEventListener('visibilitychange', onVisibility);
 		if (raf) cancelAnimationFrame(raf);
 		raf = 0;
@@ -263,6 +284,8 @@
 				data-pick-slot={slot}
 				aria-label={$i18n.t('Reply {{n}} of 2', { n: slot + 1 })}
 				bind:this={cols[slot]}
+				on:pointerenter={(e) => rest(e, slot)}
+				on:pointerleave={(e) => rest(e, null)}
 			>
 				{#if held}
 					<!-- both are still being written: the same still card on both sides, nothing that moves -->
