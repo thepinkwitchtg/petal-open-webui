@@ -219,7 +219,9 @@
 		? resolveLocalizedModelName(model, $i18n.language)
 		: message.modelName || message.model;
 	$: model = $models.find((m) => m.id === message.model);
-	$: responseTimestamp = message?.meta?.response_ended_at ?? message?.timestamp;
+	// 🍒 A30d · inside an open pick both replies show the moment they were asked (the same on both): when each one
+	// ended would tell them apart before her 💗
+	$: responseTimestamp = (pickOpen ? null : message?.meta?.response_ended_at) ?? message?.timestamp;
 
 	$: statusEntries = message?.statusHistory ?? [...(message?.status ? [message?.status] : [])];
 	$: hasVisibleStatus =
