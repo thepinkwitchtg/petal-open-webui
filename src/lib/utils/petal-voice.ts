@@ -1,8 +1,11 @@
-// 🎙️ her voice on the page (slices A19 · A19b · A20 · A21 · A22): the way in, where she is, and what she lights on the way.
+// 🎙️ her voice on the page (slices A19 · A19b · A20 · A21 · A22 · A31): the way in, where she is, and what she lights on the way.
 //  · the registry: every reply on screen says how to speak it (ResponseMessage registers itself)
 //  · one control, Lily's choice (Settings → Interface → Voice control): the bubble (PetalVoiceBubble, left
 //    of the chat bar: plays the reply most in view, pause while she speaks, fades once that reply is heard)
 //    or OWUI's speaker by her name (PetalPlayButton). one reply per tap: she never reads on by herself
+//  · her eyes (A31): the reply most in view, followed by one IntersectionObserver (never a scroll listener):
+//    the largest share of itself in view, by tenths, a tie to the one nearest the view's middle · inside an
+//    open pick, the reply she swiped to (phone) or last pointed at (desktop)
 //  · the trail (petal-trail.ts): where she is, as a small run of soft pink under the words she's saying
 //    (where she is in a sentence is estimated from its timing). it pauses with her, and nothing of it moves
 //    off-screen, in a hidden tab or with reduced motion (a still dot marks her sentence then); on a low
@@ -51,17 +54,14 @@ export function lendWords(id: string, content: () => string): () => void {
 }
 // it moves whenever a reply comes, goes or finishes arriving: the bubble looks again
 export const voiceReplies = writable(0);
-const bump = () => voiceReplies.update((n) => n + 1);
-
-// a reply that came while she was here (it registered still arriving), and the newest one that finished:
-// the bubble comes back for it, even when an older reply fills more of the screen
-const arriving = new Set<string>();
-let fresh: string | null = null;
+const bump = () => {
+	voiceReplies.update((n) => n + 1);
+	watchSoon(); // her eyes follow the replies on screen (and their speaker buttons, once there)
+};
 
 export function registerReply(r: VoiceReply): () => void {
 	wire();
 	replies.set(r.id, r);
-	if (!r.done()) arriving.add(r.id);
 	bump();
 	return () => {
 		if (replies.get(r.id) === r) replies.delete(r.id);
@@ -69,12 +69,172 @@ export function registerReply(r: VoiceReply): () => void {
 	};
 }
 
-/** a reply finished arriving (ResponseMessage tells, also for replies that were done from the start) */
+/** a reply finished arriving (ResponseMessage tells, also for replies that were done from the start): it
+ *  can be played now, and its speaker button is there */
+const doneOnce = new Set<string>();
 export const replyDone = (id: string) => {
-	if (!arriving.delete(id)) return;
-	fresh = id; // a new one to hear
+	if (doneOnce.has(id)) return;
+	doneOnce.add(id);
 	bump();
 };
+
+// ── her eyes (A31): the reply most in view ──────────────────────────────────────────────────────────
+// one IntersectionObserver on the chat's own scroll box watches every reply on screen and its speaker button,
+// at steps of a tenth. a reply's share is how much of itself is in view (one taller than the view counts whole
+// when it fills it); shares compare by those tenths, and a tie goes to the reply nearest the view's middle. it
+// decides again only when a share crosses a step, a reply comes, goes or finishes, or her eyes move inside an
+// open pick: nothing runs while she's idle, and nothing is decided while the page is hidden (once back, it
+// looks once). still-arriving replies wait (nothing to play yet); with none in view, the newest one
+export const voiceTarget = writable<string | null>(null); // the reply a tap plays now
+export const speakersInView = writable<Set<string>>(new Set()); // replies whose own speaker is half in view
+/** inside an open pick (PetalPick tells): the reply she swiped to (phone) or last pointed at (desktop) */
+export const pickFocus = writable<{ ids: string[]; id: string } | null>(null);
+/** her console, ids and numbers only (`petalVoice.eyes`): the reply a tap plays, decisions, batches, watched */
+export const eyesStats = { looks: 0, batches: 0, watched: 0 };
+
+const STEPS = Array.from({ length: 11 }, (_, i) => i / 10);
+type Watch = { id: string; kind: 'reply' | 'speaker' };
+const watching = new Map<Element, Watch>();
+const shares = new Map<string, number>(); // reply id → how much of it is in view (0 … 1)
+let io: IntersectionObserver | null = null;
+let ioRoot: Element | null | undefined; // its box: the chat's (null: the window's), unset before the first
+let pending = false; // a change came while the page was hidden: look once she's back
+let queued = false;
+
+const pageHidden = () => typeof document !== 'undefined' && document.visibilityState === 'hidden';
+
+function observer(): IntersectionObserver | null {
+	if (typeof IntersectionObserver === 'undefined' || typeof document === 'undefined') return null;
+	const root = document.getElementById('messages-container'); // the chat's box (else the window's)
+	if (io && ioRoot === root) return io;
+	io?.disconnect(); // another chat's box: start over
+	watching.clear();
+	shares.clear();
+	speakersInView.set(new Set());
+	ioRoot = root;
+	io = new IntersectionObserver(seen, { root, threshold: STEPS });
+	return io;
+}
+
+/** watch what's on screen now: each reply, and its speaker button once it's there (stale ones let go) */
+function watchAll() {
+	const obs = observer();
+	if (!obs) return;
+	const want = new Map<Element, Watch>();
+	for (const r of replies.values()) {
+		const el = r.root();
+		if (el) want.set(el, { id: r.id, kind: 'reply' });
+		const sp = document.getElementById(`speak-button-${r.id}`);
+		if (sp) want.set(sp, { id: r.id, kind: 'speaker' });
+	}
+	let gone = false;
+	for (const [el, w] of watching)
+		if (!want.has(el)) {
+			obs.unobserve(el);
+			watching.delete(el);
+			if (w.kind === 'reply') shares.delete(w.id);
+			else gone = true;
+		}
+	if (gone) {
+		const kept = new Set([...watching.values()].filter((w) => w.kind === 'speaker').map((w) => w.id));
+		speakersInView.update((v) => new Set([...v].filter((id) => kept.has(id))));
+	}
+	for (const [el, w] of want)
+		if (!watching.has(el)) {
+			obs.observe(el); // its first sight arrives on its own
+			watching.set(el, w);
+		}
+	eyesStats.watched = watching.size;
+	look();
+}
+// a microtask: the reply's buttons row is in the page by then
+export function watchSoon() {
+	if (queued || typeof window === 'undefined') return;
+	queued = true;
+	queueMicrotask(() => {
+		queued = false;
+		watchAll();
+	});
+}
+
+function seen(entries: IntersectionObserverEntry[]) {
+	eyesStats.batches += 1;
+	let speakers: Set<string> | null = null;
+	for (const e of entries) {
+		const w = watching.get(e.target);
+		if (!w) continue;
+		if (w.kind === 'speaker') {
+			const on = e.isIntersecting && e.intersectionRatio >= 0.5;
+			speakers ??= new Set(get(speakersInView));
+			if (on) speakers.add(w.id);
+			else speakers.delete(w.id);
+			continue;
+		}
+		// its height in view, of what could be (a reply taller than the view fills it whole), times its width in
+		// view (a pick's card swiped aside on the phone only peeks in)
+		const [view, part, box] = [e.rootBounds, e.intersectionRect, e.boundingClientRect];
+		const tall = Math.min(box.height, view?.height ?? innerHeight);
+		const share =
+			e.isIntersecting && tall > 0 && box.width > 0
+				? Math.min(1, part.height / tall) * Math.min(1, part.width / box.width)
+				: 0;
+		shares.set(w.id, share);
+	}
+	if (speakers) speakersInView.set(speakers);
+	look();
+}
+
+/** the newest reply that can be played (with none in view) */
+function newest(): string | null {
+	let last: { id: string; at: number } | null = null;
+	for (const r of replies.values()) {
+		const el = r.root();
+		if (!el || !r.done()) continue;
+		const at = el.getBoundingClientRect().top;
+		if (!last || at > last.at) last = { id: r.id, at };
+	}
+	return last?.id ?? null;
+}
+
+/** of replies tied by their share, the one whose visible part sits nearest the view's middle (measured
+ *  now, only when there is a tie to break) */
+function nearestMiddle(ids: string[]): string | null {
+	const view = ioRoot?.getBoundingClientRect() ?? { top: 0, bottom: innerHeight, height: innerHeight };
+	const middle = view.top + view.height / 2;
+	let [best, bestOff] = [ids[0] ?? null, Infinity];
+	for (const id of ids) {
+		const r = replies.get(id)?.root()?.getBoundingClientRect();
+		if (!r) continue;
+		const [top, bottom] = [Math.max(r.top, view.top), Math.min(r.bottom, view.bottom)];
+		const off = Math.abs((top + bottom) / 2 - middle);
+		if (off < bestOff) [best, bestOff] = [id, off];
+	}
+	return best;
+}
+
+/** decide: the largest share by tenths, a tie to the nearest the middle · in an open pick, her focus */
+function look() {
+	if (pageHidden()) {
+		pending = true;
+		return;
+	}
+	pending = false;
+	eyesStats.looks += 1;
+	let step = -1;
+	let tied: string[] = [];
+	for (const r of replies.values()) {
+		const share = shares.get(r.id) ?? 0;
+		if (share <= 0 || !r.done()) continue;
+		const s = Math.floor(share * 10 + 1e-6); // by tenths, as the observer sees them
+		if (s > step) [step, tied] = [s, [r.id]];
+		else if (s === step) tied.push(r.id);
+	}
+	let best = tied.length > 1 ? nearestMiddle(tied) : (tied[0] ?? null);
+	best ??= newest();
+	const f = get(pickFocus);
+	if (best && f && f.ids.includes(best) && replies.get(f.id)?.done()) best = f.id;
+	if (best !== get(voiceTarget)) voiceTarget.set(best);
+}
 
 // replies heard to their end, this visit (the bubble fades on one, comes back on an unheard one)
 export const heardReplies = writable<Set<string>>(new Set());
@@ -132,27 +292,23 @@ export function playReply(id: string) {
 	r.speak();
 }
 
-/** the reply the bubble plays: one that just finished arriving, while any of it is on screen and it's
- *  unheard; otherwise the reply most in view (or the last one, with none in view) */
+/** the reply the bubble plays: the one most in view (her eyes, above), or the newest with none in view */
 export function mostInView(): string | null {
-	const box = document.getElementById('messages-container')?.getBoundingClientRect();
-	const top = box?.top ?? 0;
-	const bottom = box?.bottom ?? window.innerHeight;
-	let best: string | null = null;
-	let bestSeen = 0;
-	let freshSeen = 0;
-	let last: { id: string; at: number } | null = null;
-	for (const r of replies.values()) {
-		const el = r.root();
-		if (!el || !r.done()) continue;
-		const rect = el.getBoundingClientRect();
-		if (!last || rect.top > last.at) last = { id: r.id, at: rect.top };
-		const seen = Math.min(rect.bottom, bottom) - Math.max(rect.top, top);
-		if (r.id === fresh) freshSeen = seen;
-		if (seen > bestSeen + 1) [best, bestSeen] = [r.id, seen];
-	}
-	if (fresh && (freshSeen <= 0 || get(heardReplies).has(fresh))) fresh = null; // gone from view, or heard
-	return fresh ?? best ?? last?.id ?? null;
+	return get(voiceTarget) ?? newest();
+}
+
+/** a few of a reply's first words: the bubble's tooltip names the reply a tap plays */
+export function firstWords(id: string | null, n = 5): string {
+	const text = (id ? (replies.get(id)?.content() ?? '') : '')
+		.replace(/```[\s\S]*?```/g, ' ')
+		.replace(/!\[[^\]]*\]\([^)]*\)/g, ' ')
+		.replace(/\[([^\]]*)\]\([^)]*\)/g, '$1')
+		.replace(/<[^>]+>/g, ' ')
+		.replace(/[#>*_`~|[\]]/g, ' ')
+		.replace(/\s+/g, ' ')
+		.trim();
+	const words = text ? text.split(' ') : [];
+	return words.slice(0, n).join(' ') + (words.length > n ? '…' : '');
 }
 
 export function togglePause() {
@@ -597,7 +753,14 @@ function wire() {
 	});
 	document.addEventListener('visibilitychange', () => {
 		if (document.visibilityState !== 'visible') return freeze();
+		if (pending) look(); // A31 · what changed while the page was hidden, decided once
 		if (lineState !== 'idle') lineSync();
 		else sync();
 	});
+	pickFocus.subscribe(() => look()); // A31 · her eyes moved inside an open pick
+	(window as unknown as { petalVoice?: object }).petalVoice = {
+		get eyes() {
+			return { target: get(voiceTarget), ...eyesStats }; // ids and numbers only
+		}
+	};
 }
