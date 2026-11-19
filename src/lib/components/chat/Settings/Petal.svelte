@@ -3,7 +3,8 @@
 	// grows from real use. off by default; saved in her settings (synced with every device she signs in on).
 	// A30 · arms: 1 in her N picks differ only in pull. the pull is chosen from her shelf, read at runtime (the
 	// fork names no blend and no string); the server draws the side. A30b · the strength is found, not drawn:
-	// the search's interval, centre and phase show here. the selects are the app's own menu (PetalSelect)
+	// the search's interval, centre and phase show here. the selects are the app's own menu (PetalSelect).
+	// A30d · how a pick's two replies arrive (every pick, arm or plain): twin (default) · together · live
 	import { getContext, onMount } from 'svelte';
 	import type { Writable } from 'svelte/store';
 
@@ -12,6 +13,7 @@
 	import { formatChord, keybindings, Shortcut } from '$lib/shortcuts';
 	import { loadModes, modes } from '$lib/utils/petal-mode';
 	import { PICK_DEFAULTS, rulesOf, type PickRules } from '$lib/utils/petal-pick';
+	import { arrivalOf } from '$lib/utils/petal-twin';
 	import Switch from '$lib/components/common/Switch.svelte';
 
 	import PetalSelect from './PetalSelect.svelte';
@@ -87,6 +89,16 @@
 			items: [
 				{ value: 'every', label: $i18n.t('every Nth turn') },
 				{ value: 'share', label: $i18n.t('a share of turns') }
+			]
+		}
+	];
+	// A30d · how they arrive: the same for every pick, so a plain one never tells an arm apart
+	$: arriveGroups = [
+		{
+			items: [
+				{ value: 'twin', label: $i18n.t('twin · typing together') },
+				{ value: 'together', label: $i18n.t('together · once both are written') },
+				{ value: 'live', label: $i18n.t('live · as each arrives') }
 			]
 		}
 	];
@@ -303,17 +315,20 @@
 
 			<UserSettingRow
 				description={$i18n.t(
-					'A pulled reply can start a few seconds after its sibling (vLLM can’t reuse its cache for it), which would tell them apart.'
+					'A pulled reply can start a few seconds after its sibling (vLLM can’t reuse its cache for it). Twin types both at once, at one shared pace, so that never shows; together waits until both are written; live shows each as it arrives, and its timing can tell them apart. Plain picks arrive the same way.'
 				)}
 				let:labelId
 			>
-				<span slot="label">{$i18n.t('Show both together, once both are written')}</span>
-				<Switch
-					ariaLabelledbyId={labelId}
-					ariaLabel={$i18n.t('Show both together, once both are written')}
-					bind:state={rules.arms.hold}
-					disabled={!rules.arms.pull}
-					on:change={save}
+				<span slot="label">{$i18n.t('How they arrive')}</span>
+				<PetalSelect
+					id="petal-arm-arrive"
+					ariaLabelledby={labelId}
+					value={rules.arms.arrive}
+					groups={arriveGroups}
+					onChange={(v) => {
+						rules.arms = { ...rules.arms, arrive: arrivalOf(v) };
+						save();
+					}}
 				/>
 			</UserSettingRow>
 
