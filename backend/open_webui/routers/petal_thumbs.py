@@ -38,6 +38,10 @@ the verdict, never the note
 💗 A27 · one line per feedback: the page asks (`"thanks": true`) only on a feedback's first landing (the thumb),
 never on the note that follows it or a flip while the note is open; unasked, `thanks` is null and nothing is taken
 
+🍒 A30b · her 💗 on an arm (the chosen reply of a pick whose replies differ only in pull) teaches the strength
+search (utils/petal_arms.py): the reply's arm as the server recorded it says whether the pulled one won. once per
+arm: a verdict sent again teaches nothing more
+
     GET  /api/v1/petal/thumbs/thanks         (admin) → { ready, target, recent, written, shown, writing, last }
     POST /api/v1/petal/thumbs/thanks/refill  (admin) → the same, after waking a refill
 """
@@ -61,7 +65,7 @@ from open_webui.models.chats import ChatResponse, Chats
 from open_webui.models.feedbacks import Feedback, FeedbackForm, Feedbacks
 from open_webui.routers.chats import get_chat_by_id as read_chat_as_the_page_did
 from open_webui.routers.tasks import generate_chat_tags
-from open_webui.utils import petal_thanks
+from open_webui.utils import petal_arms, petal_thanks
 from open_webui.utils.auth import get_admin_user, get_verified_user
 from open_webui.utils.chat_id import is_saved_chat_id
 from open_webui.utils.misc import get_message_list
@@ -180,6 +184,16 @@ async def land_thumb(
                     subject_id=form.chat_id,
                     data={'title': saved.title},
                 )
+
+        # 🍒 A30b · her 💗 on an arm teaches the strength search: the arm as the server recorded it, learned once
+        if annotation.get('petal_pick') is True and annotation.get('rating') == 1:
+            record = stored.get('petal_pick') if isinstance(stored.get('petal_pick'), dict) else {}
+            arm = record.get('arm') if isinstance(record.get('arm'), dict) else None
+            if arm is not None and isinstance(arm.get('steered'), bool):
+                try:
+                    await asyncio.to_thread(petal_arms.learn, form.message_id, arm['steered'])
+                except Exception as e:  # the search never costs her the verdict
+                    log.warning(f'🍒 the strength search did not learn ({e!r})')
 
         return {
             'feedback_id': landed.id,
