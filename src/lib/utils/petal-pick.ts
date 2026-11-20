@@ -444,9 +444,4 @@ if (typeof window !== 'undefined')
 		}
 	};
 
-if (typeof document !== 'undefined') {
-	const mark = () =>
-		document.documentElement.toggleAttribute('data-petal-hidden', document.visibilityState === 'hidden');
-	document.addEventListener('visibilitychange', mark);
-	mark();
-}
+// <html data-petal-hidden> (the glow pauses on it) is kept page-wide by static/loader.js since A32

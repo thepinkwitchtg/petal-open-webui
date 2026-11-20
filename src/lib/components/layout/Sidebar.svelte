@@ -2114,10 +2114,16 @@
 												}
 											}}
 										>
+											<!-- 🌸 petal (A32): it pulses and spins only while a page is on its way · still at rest -->
 											<div
-												class="w-full flex justify-center py-1 text-xs animate-pulse items-center gap-2"
+												class="w-full flex justify-center py-1 text-xs items-center gap-2"
+												class:animate-pulse={chatListLoading}
 											>
-												<Spinner className=" size-4" />
+												{#if chatListLoading}
+													<Spinner className=" size-4" />
+												{:else}
+													<div class="size-4"></div>
+												{/if}
 												<div class=" ">{$i18n.t('Loading...')}</div>
 											</div>
 										</Loader>
