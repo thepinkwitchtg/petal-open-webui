@@ -15,9 +15,15 @@
 //   · lifetimes: 3200 ms default (the Toaster's own prop) · 6000 errors · 8000 with an
 //     action — filled in only when the caller didn't choose one
 //   · a date in a title or description keeps its hyphens whole (U+2011) on a narrow pill
+//   · ✍🏻 A33 · its words type in as it appears (and again when they change in place), through petal type at her
+//     speed, and it stays as much longer as the typing takes
 //
-// one delegated set of listeners, passive where they can be, no rAF, nothing runs idle.
+// one delegated set of listeners, passive where they can be, nothing runs idle (a toast's typing steps on
+// frames only while it types).
 import { toast } from 'svelte-sonner';
+
+import { settings } from '$lib/stores';
+import { syncTypingSpeed, typeIn, typeMs } from '$lib/utils/petal-type';
 
 const TAP_PX = 8;
 const TAP_MS = 350;
@@ -60,13 +66,19 @@ const installDurations = () => {
 			if (!isPetal()) return fn(message, data);
 			message = NB(message);
 			if (data && typeof data.description === 'string') data = { ...data, description: NB(data.description) };
-			if (data && data.duration !== undefined) return fn(message, data);
+			// ✍🏻 A33 · it types in first: its life grows by the typing (title and words beside it type together)
+			const typing = Math.max(typeMs(message), typeMs(data?.description));
+			if (data && data.duration !== undefined)
+				return fn(
+					message,
+					typing && Number.isFinite(data.duration) ? { ...data, duration: data.duration + typing } : data
+				);
 			const duration = data?.action
 				? PETAL_TOAST_MS.action
 				: m === 'error'
 					? PETAL_TOAST_MS.error
-					: undefined; // the Toaster's 3200 default
-			return fn(message, duration === undefined ? data : { ...data, duration });
+					: PETAL_TOAST_MS.default; // the Toaster's own default
+			return fn(message, { ...data, duration: duration + typing });
 		};
 		(wrapped as any).__petal = true;
 		(toast as any)[m] = wrapped;
@@ -190,6 +202,42 @@ export const installPetalToasts = (host?: HTMLElement | null): (() => void) => {
 		: null;
 	observer?.observe(host!, { childList: true });
 
+	// ✍🏻 A33 · each toast's words type in as they appear, and again when they change in place (one toast per
+	// reply, A23b). only the toaster's own text is watched (characters and children, never styles)
+	type Typed = { full: string; last: string; job: { cancel(): void } | null };
+	const typed = new WeakMap<Text, Typed>();
+	const onlyText = (el: Element): Text | null => {
+		const w = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
+		let found: Text | null = null;
+		for (let n = w.nextNode() as Text | null; n; n = w.nextNode() as Text | null) {
+			if (!n.data.trim()) continue;
+			if (found) return null; // words in more than one place: shown as they are
+			found = n;
+		}
+		return found;
+	};
+	const typeToasts = () => {
+		if (!isPetal() || !host) return;
+		for (const el of host.querySelectorAll('[data-sonner-toast] [data-title], [data-sonner-toast] [data-description]')) {
+			const node = onlyText(el);
+			if (!node) continue;
+			const was = typed.get(node);
+			const now = node.data;
+			if (was && (now === was.last || now === was.full)) continue; // our own step, or the same words again
+			was?.job?.cancel();
+			const t: Typed = { full: now, last: now, job: null };
+			typed.set(node, t);
+			t.job = typeIn(now, (part) => {
+				if (!node.isConnected || (node.data !== t.last && node.data !== t.full)) return t.job?.cancel(); // gone, or new words
+				t.last = part;
+				node.data = part;
+			});
+		}
+	};
+	const typer = host ? new MutationObserver(typeToasts) : null;
+	typer?.observe(host!, { childList: true, subtree: true, characterData: true });
+	const unsync = syncTypingSpeed(settings);
+
 	const restoreDurations = installDurations();
 
 	return () => {
@@ -199,6 +247,8 @@ export const installPetalToasts = (host?: HTMLElement | null): (() => void) => {
 		window.removeEventListener('pointercancel', onCancel, opts);
 		window.removeEventListener('click', onClick, { capture: true });
 		observer?.disconnect();
+		typer?.disconnect();
+		unsync();
 		restoreDurations();
 	};
 };

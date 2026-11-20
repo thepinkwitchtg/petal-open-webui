@@ -1,12 +1,19 @@
 /* ═══════════════════════════════════════════════════════════
-   🌸 petal · hush  ·  v0.13 · open + reply + linger + pin + pulse + reflex · she writes it in
+   🌸 petal · hush  ·  v0.14 · open + reply + linger + pin + pulse + reflex · she writes it in
    the empty chat field whispers — and Petal writes the words.
 
+   v0.14 · nothing appears pre-written (A33): every line types itself in through
+          petal type (static/petal/type.js), paced to its length at her speed
+          (Settings → 🌸 Petal → Typing), stepping on frames: it holds while the
+          page is hidden and carries on when you're back, and a field drawn
+          mid-way (a new page, the editor drawn again) starts empty instead of
+          showing the whole line. her thank-you types in too, at once: whatever
+          was typing stops cleanly where it was and her line starts from nothing.
    v0.13 · the reflex: petalHush.reflex(line) — her thank-you after your feedback
-          (petal-thumbs, A27) snaps into the field at once: no typing-in, and
-          whatever hush was showing or writing gives way (a reply whisper on its
-          way, the reading wait, a linger). it stays until you type, like any
-          whisper (nothing lingers over it); answered, it pins as 'thanks'.
+          (petal-thumbs, A27) takes the field at once, and whatever hush was
+          showing or writing gives way (a reply whisper on its way, the reading
+          wait, a linger). it stays until you type, like any whisper (nothing
+          lingers over it); answered, it pins as 'thanks'.
           a line too long for one row of the field (a phone) gets a second row.
           answers false when it couldn't be seen (no 🌸 skin, no field, words
           already in the field): the caller says it another way.
@@ -41,7 +48,8 @@
    no timers while idle; one request per mode at a time; the
    GPU only works after Petal's reply is done. the only motion
    is her line writing itself in (~1s), then everything rests.
-   reduced-motion → it simply appears.
+   typing is text arriving, not movement: it types with reduced
+   motion too ('at once' in Settings shows each line whole).
 
    v0.3 · a failed ask rests until you navigate; 3 misses → pool only.
    v0.5 · the console window (status · ask · roll · trail · reset · debug).
@@ -181,42 +189,60 @@
 			.trim() +
 		'"';
 
-	/* she writes it in: the final line goes on <html> at once (the truth),
-	   while #chat-input gets a growing copy that wins for the field alone —
-	   so each tick restyles one placeholder, not the whole page. */
-	let typing = null;
+	/* she writes it in (v0.14, A33): petal type paces it to its length at her speed and steps on frames.
+	   the field gets the growing line, written straight to #chat-input (one placeholder restyled per
+	   step, not the whole page); the <html> dial holds nothing until the line is whole, then holds it (the
+	   truth) — so a field drawn mid-way starts empty, never with the whole line pre-written. */
 	const graphemes = (s) =>
 		typeof Intl !== 'undefined' && Intl.Segmenter
 			? [...new Intl.Segmenter(undefined, { granularity: 'grapheme' }).segment(s)].map((g) => g.segment)
 			: [...s];
+	let typing = null; // the job in hand (petal type)
+	let fieldWait = null; // the line is waiting for the field to be drawn (a page still arriving)
+	let fieldWaitTimer = null;
+	const stopTyping = () => {
+		typing?.cancel(); // stops where it was: no more letters from the line that gave way
+		typing = null;
+		fieldWait?.disconnect();
+		fieldWait = null;
+		clearTimeout(fieldWaitTimer);
+	};
+	const whole = (line) => {
+		document.documentElement.style.setProperty('--p-hush', toCss(line));
+		document.querySelector('#chat-input')?.style.removeProperty('--p-hush');
+	};
 	const writeIn = (line) => {
-		clearTimeout(typing);
-		const field = document.querySelector('#chat-input');
-		const still = matchMedia('(prefers-reduced-motion: reduce)').matches;
-		if (!field || still || !line) {
-			field?.style.removeProperty('--p-hush');
+		stopTyping();
+		const root = document.documentElement;
+		const T = window.petalType;
+		if (!line || !T) return whole(line); // no engine (it loads first, so almost never): the line shows whole
+		root.style.setProperty('--p-hush', '""'); // until it's written, nothing pre-written anywhere
+		if (!document.querySelector('#chat-input')) {
+			// the field isn't drawn yet: she writes it in the moment it is (one observer, gone once it's there)
+			fieldWait = new MutationObserver(() => {
+				if (!document.querySelector('#chat-input')) return;
+				stopTyping();
+				writeIn(line);
+			});
+			fieldWait.observe(document.body, { childList: true, subtree: true });
+			fieldWaitTimer = setTimeout(() => (stopTyping(), whole(line)), 20000); // no field came: just the dial
 			return;
 		}
-		const g = graphemes(line);
-		let i = 0;
-		const step = () => {
-			i++;
-			field.style.setProperty('--p-hush', toCss(g.slice(0, i).join('')));
-			if (i < g.length) typing = setTimeout(step, 22 + Math.random() * 30);
-			else field.style.removeProperty('--p-hush'); // done — the <html> line takes over, nothing left running
-		};
-		field.style.setProperty('--p-hush', '""');
-		typing = setTimeout(step, 60);
+		typing = T.run({
+			text: line,
+			write: (part, done) => {
+				if (done) {
+					typing = null;
+					return whole(line); // done: the <html> line takes over, nothing left running
+				}
+				document.querySelector('#chat-input')?.style.setProperty('--p-hush', toCss(part));
+			}
+		});
 	};
 
-	const paint = (line, from, mode = 'open', lingered = 0, { snap = false } = {}) => {
-		const root = document.documentElement;
-		root.style.setProperty('--p-hush', toCss(line));
-		delete root.dataset.pHushTall; // a second row belongs to the line that asked for it
-		if (snap) {
-			clearTimeout(typing); // a reflex: no letters falling in, the whole line at once
-			document.querySelector('#chat-input')?.style.removeProperty('--p-hush');
-		} else writeIn(line);
+	const paint = (line, from, mode = 'open', lingered = 0) => {
+		delete document.documentElement.dataset.pHushTall; // a second row belongs to the line that asked for it
+		writeIn(line); // every line types in, her thank-you too (v0.14)
 		shown = { line, from, mode, at: Date.now(), lingered };
 		stillest = 0;
 		if (mode === 'open' && line) {
@@ -1125,7 +1151,7 @@
 		return `all well 🌸 — the field shows a line from ${shown.from}`;
 	};
 
-	/* ── the reflex: a line that snaps in at once (v0.13) ──── */
+	/* ── the reflex: a line that takes the field at once, typed (v0.13 · v0.14) ──── */
 	let measure = null;
 	const fitsOneRow = (line) => {
 		const p = document.querySelector('#chat-input p.is-editor-empty');
@@ -1145,34 +1171,35 @@
 		if (!line) return false;
 		if (!root.classList.contains('petal') || getComputedStyle(root).getPropertyValue('--abyss').trim() === '')
 			return note('reflex not seen', { why: 'no 🌸 skin' }), false;
-		if (!document.querySelector('#chat-input')) return note('reflex not seen', { why: 'no chat field' }), false;
+		const field = document.querySelector('#chat-input');
+		if (!field) return note('reflex not seen', { why: 'no chat field' }), false;
 		if (!fieldIsEmpty()) return note('reflex not seen', { why: 'words already in the field' }), false;
-		// whatever hush had on its way lets go: this line wins
+		// can the field draw her line? (another stylesheet may not draw the dial) · asked and undone in this
+		// same instant, so nothing of it is ever seen
+		const empty = document.querySelector('#chat-input p.is-editor-empty');
+		const was = field.style.getPropertyValue('--p-hush');
+		field.style.setProperty('--p-hush', toCss(line));
+		const drawn = empty ? getComputedStyle(empty, '::before').content : null;
+		if (was) field.style.setProperty('--p-hush', was);
+		else field.style.removeProperty('--p-hush');
+		if (!empty || unquote(drawn) !== unquote(toCss(line)))
+			return note('reflex not seen', { why: 'the field does not draw the dial' }), false;
+		// whatever hush had on its way lets go: this line wins, typed from its first letter (v0.14)
 		replyCtrl?.abort();
 		replyCtrl = null;
 		replyFor = null;
 		clearTimeout(openTimer);
 		readStop('a reflex line');
 		lingerStop('a reflex line');
-		const before = { shown, dial: root.style.getPropertyValue('--p-hush') };
-		paint(line, from, kind === 'thanks' ? 'thanks' : 'reflex', 0, { snap: true });
+		const interrupted = !!typing;
+		paint(line, from, kind === 'thanks' ? 'thanks' : 'reflex', 0);
 		if (!fitsOneRow(line)) root.dataset.pHushTall = '2';
-		const empty = document.querySelector('#chat-input p.is-editor-empty');
-		const drawn = empty ? getComputedStyle(empty, '::before').content : null;
-		if (!empty || unquote(drawn) !== unquote(toCss(line))) {
-			// painted but not drawn (a stylesheet that doesn't draw the dial): put the old line back
-			delete root.dataset.pHushTall;
-			if (before.dial) root.style.setProperty('--p-hush', before.dial);
-			else root.style.removeProperty('--p-hush');
-			shown = before.shown;
-			return note('reflex not seen', { why: 'the field does not draw the dial' }), false;
-		}
-		note('reflex', { chars: line.length, kind, rows: root.dataset.pHushTall ? 2 : 1 });
+		note('reflex', { chars: line.length, kind, rows: root.dataset.pHushTall ? 2 : 1, interrupted });
 		return true; // no linger is armed: it stays until you type
 	};
 
 	window.petalHush = {
-		/** a line that snaps in at once (her thank-you, A27) · true when the field shows it */
+		/** her thank-you (A27), typed in at once over whatever was typing (A33) · true when the field shows it */
 		reflex,
 		status() {
 			const f = facts();

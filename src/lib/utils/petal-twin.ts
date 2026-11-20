@@ -209,16 +209,38 @@ export function pacedMessage<T extends TwinMsg>(m: T, n: number): T {
 const SHARED = ['sources', 'citations', 'statusHistory', 'status'] as const;
 const present = (v: unknown) => (Array.isArray(v) ? v.length > 0 : v !== undefined && v !== null && v !== '');
 
+/** A33 · the reply that becomes whole at this step, finished, while the other still draws as typing: it keeps
+ * typing for this one step. OWUI draws a finished reply's words at once and a typing one's on the next frame, so
+ * for that frame the finished one would show more than the other (a frame out of step, and a hint of which one
+ * ended). held, both draw on the same frame; the next step lets it be done · null: nothing to hold */
+export function twinHold<H extends { messages: Record<string, TwinMsg> }>(
+	history: H,
+	a: string,
+	b: string,
+	n: number,
+	before: number
+): string | null {
+	const [ma, mb] = [history.messages[a], history.messages[b]];
+	const whole = (m: TwinMsg | undefined) => !!m?.done && unitsOf(m) > before && n >= unitsOf(m);
+	const typing = (m: TwinMsg | undefined) => !!m && !(m.done && n >= unitsOf(m));
+	if (whole(ma) && typing(mb)) return a;
+	if (whole(mb) && typing(ma)) return b;
+	return null;
+}
+
 /** the history the cards are shown while twin: both replies cut at the shared count, what only one of them has
- * been shown yet set aside on both, everything else as it is */
+ * been shown yet set aside on both, everything else as it is · `hold` (twinHold): whole, still drawn as typing */
 export function twinView<H extends { messages: Record<string, TwinMsg> }>(
 	history: H,
 	a: string,
 	b: string,
-	n: number
+	n: number,
+	hold: string | null = null
 ): H {
 	const [ma, mb] = [history.messages[a], history.messages[b]];
 	let [va, vb] = [pacedMessage(ma, n), pacedMessage(mb, n)];
+	if (hold === a && va === ma) va = { ...ma, done: false };
+	if (hold === b && vb === mb) vb = { ...mb, done: false };
 	const lone = SHARED.filter((k) => present(ma?.[k]) !== present(mb?.[k]));
 	if (lone.length) {
 		const without = (m: TwinMsg) => {
