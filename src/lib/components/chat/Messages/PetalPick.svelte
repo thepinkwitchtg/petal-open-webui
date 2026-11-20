@@ -24,13 +24,14 @@
 		type OpenPick
 	} from '$lib/utils/petal-pick';
 	import { thumbVerdict } from '$lib/utils/petal-thumbs';
-	import { pickFocus } from '$lib/utils/petal-voice';
+	import { lendPickFocus, pickFocus } from '$lib/utils/petal-voice';
 	import {
 		Pace,
 		paceFor,
 		reach,
 		reachedOf,
 		sideOf,
+		twinHold,
 		twinStats,
 		twinStep,
 		twinTarget,
@@ -140,11 +141,14 @@
 		last = t;
 		const [a, b] = sides;
 		const box = following();
+		const before = shown;
 		shown = twinStep(shown, target, !a.done && !b.done, dt, paceFor(a, b, shown, paces[0], paces[1]));
 		reach(pair.a, shown);
-		view = twinView(history, pair.a, pair.b, shown);
+		// A33 · a reply finishing while the other types draws on the same frame as it (held for this one step)
+		const hold = twinHold(history, pair.a, pair.b, shown, before);
+		view = twinView(history, pair.a, pair.b, shown, hold);
 		twinStats.frames += 1;
-		if (shown < target) raf = requestAnimationFrame(frame);
+		if (shown < target || hold) raf = requestAnimationFrame(frame); // held: the next step lets it be done
 		if (box) {
 			await tick();
 			box.scrollTo({ top: box.scrollHeight });
@@ -212,6 +216,7 @@
 	// nothing). after her 💗 the pick closes, and the chosen reply is simply the one in view
 	const REST_MS = 450;
 	let resting: ReturnType<typeof setTimeout> | null = null;
+	let over: number | null = null; // the card under her pointer right now (desktop)
 	const focus = (slot: number) => {
 		const id = ids?.[slot];
 		const f = get(pickFocus);
@@ -220,16 +225,44 @@
 	const rest = (e: PointerEvent, slot: number | null) => {
 		if (resting) clearTimeout(resting);
 		resting = null;
+		over = e.pointerType === 'touch' ? null : slot;
 		if (slot !== null && e.pointerType !== 'touch') resting = setTimeout(() => focus(slot), REST_MS);
 	};
 	$: if ($mobile) focus(seen);
 
+	// A33 · her focus, read live at the moment of a tap (the store may still be a step behind): the phone's
+	// card centred in the scroller now (a swipe still settling counts where it lands), else the card under
+	// her pointer now (a key pressed while she points), else the one her pointer last rested on
+	const focusNow = () => {
+		if (!ids?.length) return null;
+		let slot: number | null = null;
+		if ($mobile && scroller) {
+			const box = scroller.getBoundingClientRect();
+			const middle = box.left + box.width / 2;
+			let off = Infinity;
+			cols.forEach((c, i) => {
+				if (!c) return;
+				const r = c.getBoundingClientRect();
+				const d = Math.abs(r.left + r.width / 2 - middle);
+				if (d < off) [slot, off] = [i, d];
+			});
+		} else if (over !== null) slot = over;
+		if (slot === null) {
+			const f = get(pickFocus);
+			return f && f.ids.includes(ids[0]) ? f : null;
+		}
+		return ids[slot] ? { ids: [...ids], id: ids[slot] } : null;
+	};
+	let unlend: (() => void) | null = null;
+
 	onMount(() => {
 		watch();
 		focus(seen);
+		unlend = lendPickFocus(focusNow);
 		document.addEventListener('visibilitychange', onVisibility);
 	});
 	onDestroy(() => {
+		unlend?.();
 		io?.disconnect();
 		if (resting) clearTimeout(resting);
 		if (get(pickFocus)?.ids.includes(pair.a)) pickFocus.set(null);

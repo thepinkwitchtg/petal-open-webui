@@ -5,6 +5,8 @@
 	// fork names no blend and no string); the server draws the side. A30b · the strength is found, not drawn:
 	// the search's interval, centre and phase show here. the selects are the app's own menu (PetalSelect).
 	// A30d · how a pick's two replies arrive (every pick, arm or plain): twin (default) · together · live
+	// A33 · how her words type in (hush's whispers, her thank-you, the toasts' words): natural (default) · slow ·
+	// quick · at once, mirrored on each device for the static scripts (utils/petal-type.ts)
 	import { getContext, onMount } from 'svelte';
 	import type { Writable } from 'svelte/store';
 
@@ -14,6 +16,7 @@
 	import { loadModes, modes } from '$lib/utils/petal-mode';
 	import { PICK_DEFAULTS, rulesOf, type PickRules } from '$lib/utils/petal-pick';
 	import { arrivalOf } from '$lib/utils/petal-twin';
+	import { speedOf, type TypeSpeed } from '$lib/utils/petal-type';
 	import Switch from '$lib/components/common/Switch.svelte';
 
 	import PetalSelect from './PetalSelect.svelte';
@@ -102,6 +105,18 @@
 			]
 		}
 	];
+	// A33 · her words, typed in as they appear: how quickly
+	let typing: TypeSpeed = speedOf($settings);
+	$: typingGroups = [
+		{
+			items: [
+				{ value: 'natural', label: $i18n.t('natural · paced to each line') },
+				{ value: 'slow', label: $i18n.t('slow · savoured') },
+				{ value: 'quick', label: $i18n.t('quick') },
+				{ value: 'instant', label: $i18n.t('at once · nothing types') }
+			]
+		}
+	];
 	// numbers only: how many ready blends and ♡ strings her shelf holds (and vLLM's own word, when it says no)
 	const shelfSays = (pulls: ShelfPulls['pulls'], strung: boolean | null) => {
 		const blends = pulls.filter((p) => p.kind === 'blend').length;
@@ -129,7 +144,28 @@
 </script>
 
 <div class="flex h-full flex-col overflow-y-auto text-sm" id="tab-petal">
-	<UserSettingSection title={$i18n.t('🍒 Picks · two replies, one moment')} first>
+	<UserSettingSection title={$i18n.t('✍🏻 Her words · typed as they appear')} first>
+		<UserSettingRow
+			description={$i18n.t(
+				'Whispers, her thank-you and the little notes type themselves in as they show, each paced to its length. Her replies keep streaming as they arrive.'
+			)}
+			let:labelId
+		>
+			<span slot="label">{$i18n.t('Typing')}</span>
+			<PetalSelect
+				id="petal-typing"
+				ariaLabelledby={labelId}
+				value={typing}
+				groups={typingGroups}
+				onChange={(v) => {
+					typing = speedOf({ petalTyping: v });
+					saveSettings({ petalTyping: typing });
+				}}
+			/>
+		</UserSettingRow>
+	</UserSettingSection>
+
+	<UserSettingSection title={$i18n.t('🍒 Picks · two replies, one moment')}>
 		<UserSettingRow
 			description={$i18n.t(
 				'Some turns send your message twice and show both replies; one tap picks the one that feels right. Each pick becomes a preference pair for training.'

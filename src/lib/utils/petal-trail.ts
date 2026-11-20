@@ -5,6 +5,11 @@
 // where her voice is and fades where it fell. it moves only while a sentence plays: it holds still when she
 // pauses, and rests off-screen, in a hidden tab or a minimized window. reduced motion shows a still dot
 // under her sentence; a low battery (auto quotes) keeps the lead alone. on a phone it flows at 60 %.
+// A33 · pinned to her voice: the lead goes where the audio's own clock says (each sentence's road laid from the
+// rig's B7 timings) and never past it. a lead that got ahead of her (a stall the page never heard of, a clock that
+// ran on) eases down and waits for her voice, still once she's far behind; it never jumps back over road it
+// already ran, so it can't loop. each road ends at its sentence's end: past the last sentence the rig has told,
+// it rests instead of guessing.
 import { batteryLow, deviceKind } from '$lib/utils/petal-battery';
 
 type Spot = { x: number; y: number };
@@ -12,6 +17,7 @@ type Spot = { x: number; y: number };
 const POOL = 64; // marks kept for reuse (past it, the oldest is reused)
 const PETAL_SHARE = 0.035; // now and then a petal among the sparkles
 const PHONE_FLOW = 0.6; // a phone's main thread pays for each mark: there it flows at 60 %
+const EASE_MS = 400; // a lead this far ahead of her voice holds still; closer, it slows in proportion
 
 const T = (x: number, y: number, extra = '') => `translate(${x.toFixed(1)}px, ${y.toFixed(1)}px) ${extra}`;
 const either = () => (Math.random() < 0.5 ? -1 : 1);
@@ -253,12 +259,30 @@ export class Trail {
 		tick();
 	}
 
+	/** A33 · pin the lead to her clock (s into the sentence, at her speed): behind or on time, it meets her
+	 *  (a step forward); ahead, it never steps back: it slows the more it's ahead, and holds still past EASE_MS
+	 *  until her voice catches up (the next pin lets it go) · true when it had to wait for her */
+	pin(at: number, rate: number): boolean {
+		if (!this.leadAnim) return false;
+		const want = Math.max(0, Math.min(this.ms, at * 1000));
+		const ahead = Number(this.leadAnim.currentTime ?? 0) - want;
+		this.ahead = Math.max(0, ahead);
+		if (ahead > 0) {
+			this.leadAnim.playbackRate = (rate || 1) * Math.max(0, 1 - ahead / EASE_MS);
+			return true;
+		}
+		this.leadAnim.playbackRate = rate || 1;
+		if (ahead < -1) this.leadAnim.currentTime = want;
+		return false;
+	}
+
+	ahead = 0; // ms the lead was ahead of her voice at the last pin (for the eyes and the tests)
+
 	/** keep the lead on her clock: where she is (s), at her speed, paused with her and off-screen */
 	time(at: number, rate: number, paused: boolean) {
 		if (!this.leadAnim) return;
 		try {
-			this.leadAnim.playbackRate = rate || 1;
-			this.leadAnim.currentTime = Math.max(0, at * 1000);
+			this.pin(at, rate);
 			if (paused || !this.onScreen || document.visibilityState !== 'visible') {
 				this.leadAnim.pause();
 				this.stopDrops();
@@ -330,7 +354,9 @@ export class Trail {
 	get state() {
 		return {
 			lead: this.leadAnim?.playState ?? null,
-			alive: this.marks.filter((s) => s.getAnimations().some((a) => a.playState === 'running')).length
+			alive: this.marks.filter((s) => s.getAnimations().some((a) => a.playState === 'running')).length,
+			at: Math.round(Number(this.leadAnim?.currentTime ?? 0)), // ms into the road
+			ahead: Math.round(this.ahead) // ms ahead of her voice at the last pin
 		};
 	}
 }

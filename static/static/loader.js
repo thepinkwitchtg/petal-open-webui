@@ -88,7 +88,8 @@
 	if (window.__petalGarden) return;
 	window.__petalGarden = true;
 
-	for (const src of ['/static/petal/hush.js', '/static/petal/probe.js']) {
+	// type first (A33): hush and the page type her words through it
+	for (const src of ['/static/petal/type.js', '/static/petal/hush.js', '/static/petal/probe.js']) {
 		const s = document.createElement('script');
 		s.src = src;
 		s.async = false; // keep garden order

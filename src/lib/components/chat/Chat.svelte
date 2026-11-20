@@ -63,6 +63,8 @@
 	import { adoptMode, modeToSend } from '$lib/utils/petal-mode'; // 🌀 the mode chip (A15)
 	import { thumbsNudge } from '$lib/utils/petal-thumbs'; // 👍🏻 instant thumbs (A23): waiting verdicts go first
 	import { playReply, speakingNow } from '$lib/utils/petal-voice'; // 🔈 auto-playback in speaker mode (A23)
+	import { petalDraft } from '$lib/utils/petal-draft'; // 📷 A33 · her draft kept in this browser too
+	import { installPetalCamera } from '$lib/utils/petal-camera'; // 📷 A33 · the camera stays in the page
 	import {
 		armsAsk,
 		decidePick,
@@ -974,8 +976,13 @@
 		});
 	};
 
-	const restoreChatInput = async (storageChatInput: string | null) => {
-		if (!storageChatInput || $temporaryChat) {
+	const restoreChatInput = async (
+		storageChatInput: string | null,
+		key = getChatInputKey(chatIdProp || embeddedDraftKey) // the same key OWUI's own copy was read from
+	) => {
+		if ($temporaryChat) return false;
+		storageChatInput = await petalDraft.recall(key, storageChatInput); // 📷 A33 · what this browser kept
+		if (!storageChatInput) {
 			return false;
 		}
 
@@ -1031,7 +1038,10 @@
 
 	$: if (embedded && embeddedDraftKey && embeddedDraftKey !== currentDraftKey) {
 		noteChatDebug('embedded draft requested', { embeddedDraftKey });
-		if (currentDraftKey) sessionStorage.removeItem(getChatInputKey(currentDraftKey));
+		if (currentDraftKey) {
+			sessionStorage.removeItem(getChatInputKey(currentDraftKey));
+			void petalDraft.drop(getChatInputKey(currentDraftKey)); // 📷 A33 · OWUI let go of it: nothing kept here either
+		}
 		currentDraftKey = embeddedDraftKey;
 		initEmbeddedDraft();
 	}
@@ -2286,6 +2296,8 @@
 		loading = true;
 		console.log('mounted');
 		if (!embedded && appLayout) appLayout.initNewChat = initNewChat;
+		installPetalCamera(); // 📷 A33 · once per page
+		petalDraft.prune();
 		window.addEventListener('message', onMessageHandler);
 		$socket?.on('events', chatEventHandler);
 		$socket?.on('connect', handleSocketConnect);
@@ -3172,7 +3184,8 @@
 		// resetInput() must stay last: the selected model's defaults override the draft's selection.
 		prompt = '';
 		files = [];
-		const chatInputPrompt = (await restoreChatInput(sessionStorage.getItem(getChatInputKey())))
+		const newChatKey = getChatInputKey(); // 📷 A33 · OWUI's copy and the one this browser kept share it
+		const chatInputPrompt = (await restoreChatInput(sessionStorage.getItem(newChatKey), newChatKey))
 			? prompt
 			: null;
 		const previousChatId = $chatId;
@@ -5884,6 +5897,7 @@
 		if (saveDraftTimeout) {
 			clearTimeout(saveDraftTimeout);
 		}
+		petalDraft.keep(getChatInputKey(chatId), draft); // 📷 A33 · kept in this browser too (IndexedDB), OWUI's key
 
 		if (draft.prompt !== null && draft.prompt.length < MAX_DRAFT_LENGTH) {
 			const key = getChatInputKey(chatId);
@@ -5923,6 +5937,7 @@
 		if (saveDraftTimeout) {
 			clearTimeout(saveDraftTimeout);
 		}
+		void petalDraft.drop(getChatInputKey(chatId)); // 📷 A33 · sent: nothing kept here either
 		await sessionStorage.removeItem(getChatInputKey(chatId));
 	};
 
