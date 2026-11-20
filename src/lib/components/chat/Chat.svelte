@@ -61,6 +61,8 @@
 	import { adoptMode, modeToSend } from '$lib/utils/petal-mode'; // 🌀 the mode chip (A15)
 	import { thumbsNudge } from '$lib/utils/petal-thumbs'; // 👍🏻 instant thumbs (A23): waiting verdicts go first
 	import { playReply, speakingNow } from '$lib/utils/petal-voice'; // 🔈 auto-playback in speaker mode (A23)
+	import { draftKey, petalDraft } from '$lib/utils/petal-draft'; // 📷 A33 · her draft kept in this browser too
+	import { installPetalCamera } from '$lib/utils/petal-camera'; // 📷 A33 · the camera stays in the page
 	import {
 		armsAsk,
 		decidePick,
@@ -846,8 +848,13 @@
 		});
 	};
 
-	const restoreChatInput = async (storageChatInput: string | null) => {
-		if (!storageChatInput || $temporaryChatEnabled) {
+	const restoreChatInput = async (
+		storageChatInput: string | null,
+		key = draftKey(chatIdProp) // the same key OWUI's own copy was read from
+	) => {
+		if ($temporaryChatEnabled) return false;
+		storageChatInput = await petalDraft.recall(key, storageChatInput); // 📷 A33 · what this browser kept
+		if (!storageChatInput) {
 			return false;
 		}
 
@@ -2031,6 +2038,8 @@
 	onMount(() => {
 		loading = true;
 		console.log('mounted');
+		installPetalCamera(); // 📷 A33 · once per page
+		petalDraft.prune();
 		window.addEventListener('message', onMessageHandler);
 		$socket?.on('events', chatEventHandler);
 		$socket?.on('connect', handleSocketConnect);
@@ -2906,7 +2915,7 @@
 		autoScroll = true;
 
 		// resetInput() must stay last: the selected model's defaults override the draft's selection.
-		const chatInputPrompt = (await restoreChatInput(sessionStorage.getItem('chat-input')))
+		const chatInputPrompt = (await restoreChatInput(sessionStorage.getItem('chat-input'), 'chat-input'))
 			? prompt
 			: null;
 		const previousChatId = $chatId;
@@ -5331,6 +5340,7 @@
 		if (saveDraftTimeout) {
 			clearTimeout(saveDraftTimeout);
 		}
+		petalDraft.keep(draftKey(chatId), draft); // 📷 A33 · kept in this browser too (IndexedDB)
 
 		if (draft.prompt !== null && draft.prompt.length < MAX_DRAFT_LENGTH) {
 			const key = `chat-input${chatId ? `-${chatId}` : ''}`;
@@ -5363,6 +5373,7 @@
 		if (saveDraftTimeout) {
 			clearTimeout(saveDraftTimeout);
 		}
+		void petalDraft.drop(draftKey(chatId)); // 📷 A33 · sent: nothing kept here either
 		await sessionStorage.removeItem(`chat-input${chatId ? `-${chatId}` : ''}`);
 	};
 

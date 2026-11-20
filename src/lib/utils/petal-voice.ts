@@ -89,6 +89,15 @@ export const voiceTarget = writable<string | null>(null); // the reply a tap pla
 export const speakersInView = writable<Set<string>>(new Set()); // replies whose own speaker is half in view
 /** inside an open pick (PetalPick tells): the reply she swiped to (phone) or last pointed at (desktop) */
 export const pickFocus = writable<{ ids: string[]; id: string } | null>(null);
+// A33 · a tap never trusts a focus that may be a step behind (her swipe still settling, an observer not yet
+// heard from): each open pick lends its own live reading, asked at the moment of the tap
+type PickNow = () => { ids: string[]; id: string } | null;
+const pickReaders = new Set<PickNow>();
+/** an open pick lends its live focus (PetalPick) · the returned function takes it back */
+export function lendPickFocus(read: PickNow): () => void {
+	pickReaders.add(read);
+	return () => pickReaders.delete(read);
+}
 /** her console, ids and numbers only (`petalVoice.eyes`): the reply a tap plays, decisions, batches, watched */
 export const eyesStats = { looks: 0, batches: 0, watched: 0 };
 
@@ -184,12 +193,18 @@ function seen(entries: IntersectionObserverEntry[]) {
 	look();
 }
 
+/** an open pick's sibling her eyes are not on (A33): never the one a tap plays */
+function aside(id: string): boolean {
+	const f = get(pickFocus);
+	return !!f && f.id !== id && f.ids.includes(id);
+}
+
 /** the newest reply that can be played (with none in view) */
 function newest(): string | null {
 	let last: { id: string; at: number } | null = null;
 	for (const r of replies.values()) {
 		const el = r.root();
-		if (!el || !r.done()) continue;
+		if (!el || !r.done() || aside(r.id)) continue;
 		const at = el.getBoundingClientRect().top;
 		if (!last || at > last.at) last = { id: r.id, at };
 	}
@@ -220,20 +235,47 @@ function look() {
 	}
 	pending = false;
 	eyesStats.looks += 1;
+	// A33 · an open pick counts once, through the reply her eyes are on, with the larger share of its two
+	// (a swipe moves her eyes between them, never away from the pick); its other reply never competes
+	const f = get(pickFocus);
+	let pickShare = 0;
+	if (f) for (const id of f.ids) pickShare = Math.max(pickShare, shares.get(id) ?? 0);
 	let step = -1;
 	let tied: string[] = [];
+	let waiting = false; // the pick wins her eyes, but the reply she's on is still arriving
 	for (const r of replies.values()) {
-		const share = shares.get(r.id) ?? 0;
-		if (share <= 0 || !r.done()) continue;
+		const mine = !!f && f.ids.includes(r.id);
+		if (mine && r.id !== f!.id) continue;
+		const share = mine ? pickShare : (shares.get(r.id) ?? 0);
+		if (share <= 0 || (!r.done() && !mine)) continue;
 		const s = Math.floor(share * 10 + 1e-6); // by tenths, as the observer sees them
 		if (s > step) [step, tied] = [s, [r.id]];
 		else if (s === step) tied.push(r.id);
 	}
 	let best = tied.length > 1 ? nearestMiddle(tied) : (tied[0] ?? null);
-	best ??= newest();
-	const f = get(pickFocus);
-	if (best && f && f.ids.includes(best) && replies.get(f.id)?.done()) best = f.id;
+	if (best && f && best === f.id && !replies.get(best)?.done()) [best, waiting] = [null, true];
+	if (!waiting) best ??= newest(); // nothing to play yet where she looks: the bubble waits with her
 	if (best !== get(voiceTarget)) voiceTarget.set(best);
+}
+
+/** A33 · the reply a tap plays, decided at the moment of the tap: an open pick's focus read live (the card
+ *  centred in its scroller now, the card under her pointer now), then her eyes once more */
+export function tapTarget(): string | null {
+	for (const read of pickReaders) {
+		let now: { ids: string[]; id: string } | null = null;
+		try {
+			now = read();
+		} catch {
+			now = null;
+		}
+		if (!now) continue;
+		const f = get(pickFocus);
+		if (!f || f.id !== now.id || f.ids[0] !== now.ids[0]) pickFocus.set(now); // looks again by itself
+		break;
+	}
+	pending = false;
+	look();
+	return mostInView();
 }
 
 // replies heard to their end, this visit (the bubble fades on one, comes back on an unheard one)
@@ -336,7 +378,10 @@ export function voiceTap(target: string | null = mostInView()) {
 	const ui = get(voiceUI);
 	if (ui.state === 'playing' || ui.state === 'loading') return togglePause();
 	if (ui.state === 'paused') {
-		const unheard = target && target !== ui.message_id && !get(heardReplies).has(target);
+		// A33 · inside an open pick, the reply her eyes moved to plays, heard or not (she's comparing them)
+		const f = get(pickFocus);
+		const turned = !!target && !!f && f.ids.includes(target) && f.ids.includes(ui.message_id ?? '');
+		const unheard = target && target !== ui.message_id && (turned || !get(heardReplies).has(target));
 		return unheard ? playReply(target) : togglePause();
 	}
 	if (target) playReply(target);
@@ -695,6 +740,21 @@ function hookAudio() {
 	a.addEventListener('seeked', sync);
 	a.addEventListener('ratechange', sync);
 	a.addEventListener('waiting', freeze);
+	a.addEventListener('timeupdate', pinNow); // A33 · a few times a second while she plays: on her clock
+}
+
+/** A33 · between two edges, a few times a second while she plays (the audio's own timeupdate, no timer): the
+ *  lead stays pinned to her clock, never ahead of her voice and never stepping back · a sentence that ended,
+ *  or one the rig has told meanwhile, is met at its edge */
+function pinNow() {
+	if (lineState !== 'idle') return;
+	const a = petalStreamAudio();
+	if (!a || a.paused || document.visibilityState === 'hidden' || get(voiceNow).state === 'idle') return;
+	const seg = shown?.seg;
+	if (!seg) return segs.length ? sync() : undefined;
+	const t = a.currentTime;
+	if (t < seg.start || t >= seg.start + seg.duration) return sync();
+	trail.pin(t - seg.start, a.playbackRate || 1);
 }
 
 /** the sentence clips (petal stream's fallback) are her voice too: the bubble can pause them */
@@ -761,6 +821,10 @@ function wire() {
 	(window as unknown as { petalVoice?: object }).petalVoice = {
 		get eyes() {
 			return { target: get(voiceTarget), ...eyesStats }; // ids and numbers only
+		},
+		/** A33 · the trail, numbers only: the lead's state, ms into its road, ms it last was ahead of her voice */
+		get trail() {
+			return trail.state;
 		}
 	};
 }

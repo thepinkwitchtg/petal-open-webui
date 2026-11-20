@@ -788,6 +788,7 @@ import { isSavedChatId, isTemporaryChatId } from '$lib/utils/chatId';
 	$: showCommands =
 		['/', '#', '@', '$', ':'].includes(command?.charAt(0)) || '\\#' === command?.slice(0, 2);
 	let suggestions = null;
+	let seededEditor: unknown = null; // 📷 A33 · the editor whose first word has been heard
 	$: atSelectedModelName = resolveLocalizedModelName(atSelectedModel, $i18n.language);
 
 	let showTools = false;
@@ -2421,6 +2422,12 @@ import { isSavedChatId, isTemporaryChatId } from '$lib/utils/chatId';
 													id={inputId}
 													editable={!showInputModal}
 													onChange={(content) => {
+														// 📷 A33 · a draft restored before its editor existed (a reload): the editor's
+														// first, empty word never erases it; the draft is written into it instead
+														if (seededEditor !== chatInputElement) {
+															seededEditor = chatInputElement;
+															if (!content.md && prompt) return void chatInputElement?.setText(prompt);
+														}
 														prompt = content.md;
 														inputContent = content;
 														command = getCommand();

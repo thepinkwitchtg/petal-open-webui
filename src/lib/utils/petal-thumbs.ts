@@ -24,6 +24,8 @@
 //    (no "sent", no word; a failure still speaks). a landing that also carries an older click (one that never
 //    landed on its own: offline, retrying) says the older word first, the newer one ~1.8 s later. both stay
 //    ~1.8 s whatever their length; her own line keeps living in hush, once per feedback (A27)
+//  · ✍🏻 A33 · every word types in as it appears (petal type): a little word glows its ~1.8 s once typed, her
+//    line types into hush at once over whatever was typing there (or into its own toast)
 //  · 🍒 A29 · a pick's two verdicts (utils/petal-pick.ts) ride the same queue, quietly: no "sent", no word,
 //    no feedback begun (so no thank-you, no hush), no tag step. a failure still speaks after its tries
 //  · a page reload keeps what's still waiting, in localStorage: ids and verdicts only (the rating, the reason
@@ -36,6 +38,7 @@ import { toast } from 'svelte-sonner';
 import { WEBUI_API_BASE_URL } from '$lib/constants';
 import { isSavedChatId } from '$lib/utils/chatId';
 import { PETAL_TOAST_MS } from '$lib/utils/petal-toast-touch';
+import { typeMs } from '$lib/utils/petal-type';
 
 type Annotation = Record<string, unknown>;
 
@@ -136,12 +139,15 @@ function speak(id: string, landed: Word[]) {
 	const glowing = showing.get(id);
 	const left =
 		glowing === 'thanks' || glowing === 'saved'
-			? WORD_MS - SWAP_EARLY_MS - (Date.now() - (saidAt.get(id) ?? 0))
+			? glowMs(glowing) - SWAP_EARLY_MS - (Date.now() - (saidAt.get(id) ?? 0))
 			: 0;
 	if (left > 0) return later(id, words, left); // the word glowing now finishes first
 	say(id, words[0]);
-	if (words.length > 1) later(id, words.slice(1), WORD_MS - SWAP_EARLY_MS);
+	if (words.length > 1) later(id, words.slice(1), glowMs(words[0]) - SWAP_EARLY_MS);
 }
+
+/** ✍🏻 A33 · a little word types in first, then glows its ~1.8 s (its toast lives as long, petal-toast-touch) */
+const glowMs = (w: Word) => WORD_MS + typeMs(w === 'thanks' ? THANKS : SAVED);
 
 function later(id: string, words: Word[], ms: number) {
 	queued.set(id, {

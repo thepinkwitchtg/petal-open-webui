@@ -32,7 +32,7 @@
 	import {
 		firstWords,
 		heardReplies,
-		mostInView,
+		tapTarget,
 		speakersInView,
 		voiceReplies,
 		voiceTap,
@@ -234,13 +234,13 @@
 		if (!inside && !(loose && lone)) return;
 		e.preventDefault();
 		e.stopPropagation();
-		voiceTap(mostInView());
+		voiceTap(tapTarget()); // A33 · read at the moment of the key, from her focus now
 		nudge();
 	};
 
 	const tap = () => {
 		nudge();
-		voiceTap(target ?? mostInView());
+		voiceTap(tapTarget()); // A33 · read at the moment of the tap, never the target she hovered
 	};
 
 	onMount(() => {
