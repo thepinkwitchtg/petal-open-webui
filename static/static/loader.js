@@ -62,6 +62,26 @@
 	console.log('🌸 petal registrar alive — theme is', localStorage.getItem('theme'));
 })();
 
+// 🌸 petal — rest v0.1 (A32) · a hidden page animates nothing.
+// <html data-petal-hidden> while the tab is hidden (the A29 glow keys on it too); every css
+// animation, theirs and ours, holds its frame until she's back, then carries on from there.
+(() => {
+	if (window.__petalRest) return;
+	window.__petalRest = true;
+
+	const root = document.documentElement;
+	const rest = document.createElement('style');
+	rest.id = 'petal-rest';
+	rest.textContent =
+		'html[data-petal-hidden],html[data-petal-hidden] *,html[data-petal-hidden] *::before,' +
+		'html[data-petal-hidden] *::after{animation-play-state:paused!important}';
+	document.head.appendChild(rest);
+
+	const mark = () => root.toggleAttribute('data-petal-hidden', document.visibilityState === 'hidden');
+	document.addEventListener('visibilitychange', mark);
+	mark();
+})();
+
 // 🌸 petal — script garden v0.1 · layered under the registrar, never over it.
 // each entry wakes one petal script; they load after the registrar, in order.
 (() => {
