@@ -134,3 +134,47 @@ html.petal[data-p-hush-tall] #chat-input p.is-editor-empty:first-child:not(.ai-a
 	line-clamp: 2;
 	white-space: normal;
 }
+
+/* ── the bar's glass (A-BAR) ─────────────────────────────────
+   0.13.3 drew the input bar from the gray spine (dark: gray-500
+   at 5 % fill, gray-850 at 50 % border), so the tokens above
+   turned it into violet glass. 0.13.4 paints it with a literal
+   oklch(0.24 0 0) at 90 % that no lever reaches: a flat gray
+   block. the fork marks the container with data-petal-bar
+   ('temporary' in a temp chat), so this holds through rebases.
+   values are 0.13.3's own, through the same tokens.
+   ──────────────────────────────────────────────────────────── */
+html.petal [data-petal-bar] {
+	background-color: rgb(255 255 255 / 0.05);
+	border-color: color-mix(in oklab, var(--color-gray-100) 50%, transparent);
+	-webkit-backdrop-filter: blur(8px);
+	backdrop-filter: blur(8px);
+	box-shadow:
+		0 10px 15px -3px rgb(0 0 0 / 0.1),
+		0 4px 6px -4px rgb(0 0 0 / 0.1);
+}
+html.petal [data-petal-bar]:hover {
+	border-color: var(--color-gray-200);
+}
+html.petal [data-petal-bar]:focus-within {
+	border-color: var(--color-gray-100);
+}
+html.petal.dark [data-petal-bar] {
+	background-color: color-mix(in oklab, var(--color-gray-500) 5%, transparent);
+	border-color: color-mix(in oklab, var(--color-gray-850) 50%, transparent);
+}
+html.petal.dark [data-petal-bar]:is(:hover, :focus-within) {
+	border-color: var(--color-gray-800);
+}
+html.petal [data-petal-bar='temporary'] {
+	border-color: var(--color-gray-100);
+}
+html.petal [data-petal-bar='temporary']:is(:hover, :focus-within) {
+	border-color: var(--color-gray-200);
+}
+html.petal.dark [data-petal-bar='temporary'] {
+	border-color: var(--color-gray-800);
+}
+html.petal.dark [data-petal-bar='temporary']:is(:hover, :focus-within) {
+	border-color: var(--color-gray-700);
+}
