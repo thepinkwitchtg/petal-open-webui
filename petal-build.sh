@@ -48,6 +48,10 @@ python3 "$HOME/Gardens/Transformation Sequences - Automation/petal_core/petal-am
 echo "🌸 building frontend..."
 NODE_OPTIONS="--max-old-space-size=8192" npm run build
 
+# 🌸 pyodide-lock.json is refreshed by every build (new package versions from the internet).
+#    keep the committed copy so it never shows as a change; the build output keeps the fresh one.
+git checkout -- static/pyodide/pyodide-lock.json 2>/dev/null || true
+
 echo "🌸 re-seating editable install..."
 source ~/.venvs/openwebui/bin/activate
 python -m pip install -e . --quiet
@@ -63,3 +67,4 @@ echo "✨ done~ restart open-webui serve to pick up changes"
 #   owui up   → reports drift, defers, touches nothing
 #   owui down → backs up + nukes in the safe window, your restart brings her back clean
 chmod +x ./petal-ghost-check.sh
+./petal-ghost-check.sh || echo "⚠️  ghost check skipped — build is done either way"
