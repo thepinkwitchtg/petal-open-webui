@@ -39,6 +39,8 @@ says whether the turn may be a pick, and serves it.
   chats, internal and subagent turns, 🧪 tries, no live page, a continue or a guided regeneration, agents,
   direct connections, models served by anything but an OpenAI-style connection, code interpreter or image
   generation on, anything but two fresh ids for one model
+- **🌕 the fusion check (A34)** asks through this module too: its one decider sits in `FUSION_ASK`, beside
+  `OFFERS`, asked through `ask_fusion` (utils/petal_fusion.py holds the v1 rate and the rails)
 """
 
 import asyncio
@@ -50,7 +52,7 @@ import random
 import weakref
 from typing import Any
 
-from open_webui.utils import petal_arms, petal_shelf
+from open_webui.utils import petal_arms, petal_fusion, petal_shelf
 from open_webui.utils.chat_id import is_saved_chat_id
 
 log = logging.getLogger(__name__)
@@ -363,6 +365,34 @@ def should_offer(context: dict) -> tuple[bool, str]:
         if isinstance(got, (tuple, list)) and got and got[0] is True:
             return True, str(got[1] if len(got) > 1 and got[1] else 'a trigger asked')[:200]
     return False, 'nothing asks for a pick yet'
+
+
+# ── 🌕 the fusion check (A34): one decider, registered here beside OFFERS ────────────────────────────────────
+# (context) → (bool, why), asked once a reply is finished (context: utils/petal_fusion.context_for). v1 is her rate,
+# aggressive at first and calming as her moons accumulate (petal_fusion.fusion_should_ask). the decision service's
+# `offer:fusion` takes this one place in v2 (FUSION_ASK[0] = its client): the page and the routes never change,
+# and the rails below hold whoever decides
+FUSION_ASK: list = [petal_fusion.fusion_should_ask]
+
+
+def ask_fusion(context: dict) -> tuple[bool, str]:
+    """🌕 A34 · should this finished reply ask her how the fusion is going? the rails first (saved chats only, no
+    internal chat or turn, never inside a pick, once a stretch, never in a young stretch), then the one decider."""
+    why = petal_fusion.rails(context)
+    if why:
+        return False, why
+    decide = FUSION_ASK[0] if FUSION_ASK else None
+    if not callable(decide):
+        return False, 'nothing decides the fusion check'
+    try:
+        got = decide(context)
+    except Exception as e:  # a decider never costs her the turn
+        log.warning(f'🌕 petal fusion: the decider failed ({e!r})')
+        return False, 'the fusion check could not decide'
+    if isinstance(got, (tuple, list)) and got:
+        said = str(got[1]) if len(got) > 1 and got[1] else ''
+        return (True, (said or 'asked')[:200]) if got[0] is True else (False, (said or 'not now')[:200])
+    return False, 'not now'
 
 
 def _pull(payload: dict) -> Any:
