@@ -7,6 +7,8 @@
 	// ~2 s (one opacity animation on a still ring, the compositor's alone) while its words type in, then rests as a
 	// softly lit card with nothing moving. a hidden tab pauses the beats (static/loader.js, A32); an ask already
 	// there when the chat opens rests as it is. the fold is a single short scale, and then nothing runs.
+	// 👁 A35: an ask that appears off her screen holds its first frame (the rise, the beats, its words typing) and
+	// plays from there the moment she scrolls to it (her sight, utils/petal-sight.ts)
 	import { onDestroy, onMount } from 'svelte';
 	import { scale } from 'svelte/transition';
 
@@ -22,6 +24,7 @@
 		type Score
 	} from '$lib/utils/petal-fusion';
 	import { typeIn } from '$lib/utils/petal-type';
+	import { sight } from '$lib/utils/petal-sight';
 
 	export let chatId: string;
 	export let message: { id: string; petal_fusion?: FusionStamp | null };
@@ -31,7 +34,8 @@
 	let open = false; // the three moons shown again, to change hers
 	let glowing = false; // the appear: beats of light, once
 	let words = ASK;
-	let typing: { cancel(): void } | null = null;
+	let typing: { cancel(): void; hold?(on: boolean): void } | null = null;
+	const seen = (on: boolean) => typing?.hold?.(!on); // off her screen, its words wait where they are
 
 	// the stamp the rig (or a reload) hands down replaces the one this card began with
 	$: if (message?.petal_fusion && message.petal_fusion !== stamp) {
@@ -128,6 +132,7 @@
 				aria-label={ASK}
 				on:animationend={glowEnded}
 				use:onCancel={glowEnded}
+				use:sight={{ on: glowing, seen }}
 				out:scale={{ duration: 200, start: 0.86, opacity: 0 }}
 			>
 				<span class="pf-words"

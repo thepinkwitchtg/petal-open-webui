@@ -28,6 +28,7 @@ import { getOutputText } from '$lib/components/chat/Messages/structuredOutput';
 import { createMessagesList, removeAllDetails } from '$lib/utils';
 import type { Verdict } from '$lib/utils/petal-thumbs';
 import { ARRIVAL_DEFAULT, arrivalOf, twinStats, type Arrival } from '$lib/utils/petal-twin';
+import { watchSight } from '$lib/utils/petal-sight';
 
 export type ArmRules = {
 	every: number; // 1 in N of her picks is an arm
@@ -404,6 +405,39 @@ export function offered(answer: { offer?: unknown; why?: unknown } | null | unde
 
 /** the chosen reply glows once, quietly; the glow rests while the page is hidden */
 export const pickGlow = writable<string | null>(null);
+
+/** A35 · the glow on its message (`use:pickGlowOn={messageId}`): it plays while she can see it and holds where it is
+ *  when she can't (off her screen: her sight · a hidden tab: A32's rule), then glows on from there · nothing cuts it
+ *  short (A29's 4 s fallback did, in a hidden tab) · it ends with its own animation, or with its message */
+export function pickGlowOn(node: HTMLElement, id: string) {
+	let mine = id;
+	let unsee: (() => void) | null = null;
+	const look = (g: string | null) => {
+		const on = !!mine && g === mine;
+		if (on && !unsee) unsee = watchSight(node);
+		else if (!on && unsee) {
+			unsee();
+			unsee = null;
+		}
+	};
+	const ended = (e: AnimationEvent) => {
+		if (get(pickGlow) === mine && e.animationName.includes('petal-picked')) pickGlow.set(null);
+	};
+	const stop = pickGlow.subscribe(look);
+	node.addEventListener('animationend', ended);
+	return {
+		update(next: string) {
+			mine = next;
+			look(get(pickGlow));
+		},
+		destroy() {
+			stop();
+			unsee?.();
+			node.removeEventListener('animationend', ended);
+			if (mine && get(pickGlow) === mine) pickGlow.set(null); // her moment passed with its message (the chat changed)
+		}
+	};
+}
 
 // her console: `petalPick.last` (the last send's decision and why) · `petalPick.ask()` (a pick next send)
 type Last = PickDecision & { at: string; arm?: string; pulls?: { chosen: string; other: string } };

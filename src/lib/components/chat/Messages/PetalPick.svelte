@@ -6,9 +6,11 @@
 	// A30 · blind: nothing here says which one is pulled until her 💗 (a steered one can start a few seconds later,
 	// which would tell them apart). A30d · twin streaming: both type at once, at one shared pace (utils/petal-twin.ts):
 	// each side keeps what arrives, the cards show only as much as both have received (nothing until both have
-	// begun), and once one is done the other types on at its own speed. steps batched on requestAnimationFrame, ~30
-	// a second at most, none once both are shown or while the page is hidden. "together" keeps the A30 hold (still
+	// begun), and once one is done the other types on at its own speed. "together" keeps the A30 hold (still
 	// cards until both are written), "live" shows each as it comes (timing can tell). plain picks arrive the same way
+	// A35 · full beauty while she can see it: a step on every frame (no ~30 a second gate). in a hidden tab, or with
+	// the pick off her screen, both hold where they are and type on from there when she's back (nothing jumps
+	// ahead); none once both are shown
 	import { getContext, onDestroy, onMount, tick } from 'svelte';
 	import { get, type Writable } from 'svelte/store';
 
@@ -25,6 +27,7 @@
 	} from '$lib/utils/petal-pick';
 	import { thumbVerdict } from '$lib/utils/petal-thumbs';
 	import { lendPickFocus, pickFocus } from '$lib/utils/petal-voice';
+	import { watchSight } from '$lib/utils/petal-sight';
 	import {
 		Pace,
 		paceFor,
@@ -78,7 +81,7 @@
 	$: held = !pair.ready && arrive === 'together'; // A30 · both show together, once both are written
 
 	// ── A30d · twin: both type at once, at one shared pace ───────────────────────────────────────────────────
-	const STEP_MS = 32; // batched: ~30 steps a second at most, whatever the token rate
+	const FRAME_MS = 16; // the first step after a rest counts one frame (A35: a step on every frame)
 	const paces = [new Pace(), new Pace()]; // each side's own speed (a backlog types at it, never in a burst)
 	let view = history; // what the cards show: the replies cut at the shared count while they type
 	let shown = -1; // the shared count, in units (-1: not started)
@@ -86,6 +89,7 @@
 	let last = 0;
 	const isHidden = () => typeof document !== 'undefined' && document.visibilityState === 'hidden';
 	let hidden = isHidden();
+	let away = false; // A35 · the pick is off her screen: both hold where they are, and type on from there
 
 	// where a card begins (shown again, or twin chosen mid-stream): both written → all of both at once · both still
 	// typing → where both are now (never one side ahead) · one done → where it was, or where both are, whichever is
@@ -118,12 +122,17 @@
 			wake();
 		}
 	}
-	$: Object.assign(twinStats, { arrive, typing, target, shown: Math.max(0, shown), hidden });
+	$: Object.assign(twinStats, { arrive, typing, target, shown: Math.max(0, shown), hidden, away });
 	$: if (complete) reach(pair.a, null);
 
 	const wake = () => {
-		if (raf || hidden || typeof requestAnimationFrame === 'undefined') return;
+		if (raf || hidden || away || typeof requestAnimationFrame === 'undefined') return;
 		raf = requestAnimationFrame(frame);
+	};
+	/** hidden or off her screen: no step runs, and the time away never counts (it types on from where it was) */
+	const pause = () => {
+		if (raf) cancelAnimationFrame(raf);
+		[raf, last] = [0, 0];
 	};
 
 	// the chat follows a growing card while she's at its bottom (its own setting), as it does while words arrive
@@ -135,9 +144,8 @@
 
 	const frame = async (t: number) => {
 		raf = 0;
-		if (!typing || hidden) return;
-		if (last && t - last < STEP_MS) return void (raf = requestAnimationFrame(frame));
-		const dt = last ? t - last : STEP_MS;
+		if (!typing || hidden || away) return;
+		const dt = last ? t - last : FRAME_MS;
 		last = t;
 		const [a, b] = sides;
 		const box = following();
@@ -155,19 +163,28 @@
 		}
 	};
 
-	// hidden: nothing runs · back: both show where they are now, nothing types to catch up
+	// hidden: nothing runs · back: both carry on from where they were (A35), in step as ever
 	const onVisibility = () => {
 		hidden = isHidden();
-		if (hidden) {
-			if (raf) cancelAnimationFrame(raf);
-			[raf, last] = [0, 0];
-			return;
-		}
-		if (!typing) return;
-		shown = Math.max(shown, target);
-		view = twinView(history, pair.a, pair.b, shown);
-		wake();
+		if (hidden) return pause();
+		if (typing) wake();
 	};
+
+	// A35 · off her screen (the chat scrolled away from the pick while it types): both hold where they are; back on
+	// it, they type on from there · watched only while they type (her sight, utils/petal-sight.ts)
+	let root: HTMLElement;
+	let unsee: (() => void) | null = null;
+	const sighted = (on: boolean) => {
+		away = !on;
+		if (away) pause();
+		else wake();
+	};
+	$: if (root && typing && !unsee) unsee = watchSight(root, sighted);
+	$: if ((!typing || !root) && unsee) {
+		unsee();
+		unsee = null;
+		away = false;
+	}
 
 	const pick = (chosen: string) => {
 		const open = openPick(history, chosen);
@@ -263,6 +280,7 @@
 	});
 	onDestroy(() => {
 		unlend?.();
+		unsee?.();
 		io?.disconnect();
 		if (resting) clearTimeout(resting);
 		if (get(pickFocus)?.ids.includes(pair.a)) pickFocus.set(null);
@@ -273,6 +291,7 @@
 </script>
 
 <div
+	bind:this={root}
 	class="petal-pick"
 	class:pp-phone={$mobile}
 	class:pp-wide={$settings?.widescreenMode ?? false}

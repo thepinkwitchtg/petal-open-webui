@@ -4,19 +4,25 @@
 // drifting down. a leading sparkle travels the sentence's road on the compositor; every mark appears right
 // where her voice is and fades where it fell. it moves only while a sentence plays: it holds still when she
 // pauses, and rests off-screen, in a hidden tab or a minimized window. reduced motion shows a still dot
-// under her sentence; a low battery (auto quotes) keeps the lead alone. on a phone it flows at 60 %.
+// under her sentence; a low battery (auto quotes) keeps the lead alone.
 // A33 · pinned to her voice: the lead goes where the audio's own clock says (each sentence's road laid from the
 // rig's B7 timings) and never past it. a lead that got ahead of her (a stall the page never heard of, a clock that
 // ran on) eases down and waits for her voice, still once she's far behind; it never jumps back over road it
 // already ran, so it can't loop. each road ends at its sentence's end: past the last sentence the rig has told,
 // it rests instead of guessing.
-import { batteryLow, deviceKind } from '$lib/utils/petal-battery';
+// A35 · full beauty while she can see it: every mark flows on the phone as on the rig, and only auto quotes on a low
+// battery keep the lead alone (her setting). her voice paused, the lead holds where she is, and what it left behind
+// finishes falling and leaves; off her screen or in a hidden tab, everything holds where it is and carries on from
+// there. each mark leaves the page the moment its own fall ends (nothing lingers, nothing replays), and a trail
+// whose reply left the page (drawn again, or the chat changed) tells petal-voice, which lays it again where her
+// words are now.
+import { batteryLow } from '$lib/utils/petal-battery';
+import { atEnd } from '$lib/utils/petal-sight';
 
 type Spot = { x: number; y: number };
 
-const POOL = 64; // marks kept for reuse (past it, the oldest is reused)
+const CAP = 160; // marks alive at once, at most (about 90 at the fullest flow: past it, the oldest leaves at once)
 const PETAL_SHARE = 0.035; // now and then a petal among the sparkles
-const PHONE_FLOW = 0.6; // a phone's main thread pays for each mark: there it flows at 60 %
 const EASE_MS = 400; // a lead this far ahead of her voice holds still; closer, it slows in proportion
 
 const T = (x: number, y: number, extra = '') => `translate(${x.toFixed(1)}px, ${y.toFixed(1)}px) ${extra}`;
@@ -24,7 +30,7 @@ const either = () => (Math.random() < 0.5 ? -1 : 1);
 
 /** a sparkle or a four-ray star, scattered above and below the line; most fall a little, a few float up,
  *  some stars twinkle on their way out · each lives 0.8–2 s */
-function sparkle(s: HTMLElement, at: Spot) {
+function sparkle(s: HTMLElement, at: Spot): Animation {
 	const star = Math.random() < 0.45;
 	const twinkle = star && Math.random() < 0.4;
 	const size = star ? 6 + Math.random() * 8 : 2 + Math.random() * 7;
@@ -51,7 +57,7 @@ function sparkle(s: HTMLElement, at: Spot) {
 				{ transform: T(x, y, 'scale(1)'), opacity: peak, offset: 0.05, easing: out },
 				{ transform: T(x + dx, y + dy, `scale(0.25) rotate(${turn}deg)`), opacity: 0 }
 			];
-	s.animate(frames, { duration: 800 + Math.random() * 1200, easing: 'linear', fill: 'forwards' });
+	return s.animate(frames, { duration: 800 + Math.random() * 1200, easing: 'linear', fill: 'forwards' });
 }
 
 // petals' tints: candy, rose, blush, deep candy, a warmer candy · now and then a touch of iris
@@ -60,7 +66,7 @@ const TINTS_DAY = ['226 92 166', '234 112 178', '240 140 192', '214 76 152', '22
 
 /** a petal appears right where her voice is, then drifts down, turning and swaying, and fades · sizes,
  *  tints, turns and falls all vary · each lives 1.6–2.8 s */
-function petal(s: HTMLElement, at: Spot) {
+function petal(s: HTMLElement, at: Spot): Animation {
 	const tints = document.documentElement.classList.contains('dark') ? TINTS_NIGHT : TINTS_DAY;
 	const size = 5 + Math.random() * 6;
 	s.className = 'pv-mark pv-petal';
@@ -75,7 +81,7 @@ function petal(s: HTMLElement, at: Spot) {
 	const turn = either() * (40 + Math.random() * 160);
 	const peak = 0.72 + Math.random() * 0.22;
 	const soft = 'ease-in-out';
-	s.animate(
+	return s.animate(
 		[
 			{ transform: T(x, y, `rotate(${r0}deg) scale(0.7)`), opacity: 0, easing: 'ease-out' },
 			{ transform: T(x, y + fall * 0.04, `rotate(${r0 + turn * 0.05}deg) scale(1)`), opacity: peak, offset: 0.05, easing: soft },
@@ -86,13 +92,8 @@ function petal(s: HTMLElement, at: Spot) {
 	);
 }
 
-let phone: boolean | null = null;
-/** the wait before the next mark: a quick, uneven flow, about thirty a second (eighteen on a phone) */
-function flow() {
-	phone ??= deviceKind() === 'phone';
-	const ms = 18 + Math.random() * 30;
-	return phone ? ms / PHONE_FLOW : ms;
-}
+/** the wait before the next mark: a quick, uneven flow, about thirty a second (the phone as the rig, A35) */
+const flow = () => 18 + Math.random() * 30;
 
 const reduced = () =>
 	typeof window !== 'undefined' && !!window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
@@ -128,15 +129,13 @@ export function lineBoxes(range: Range) {
 
 type Road = { lines: { x0: number; x1: number; y: number }[]; total: number };
 
-/** a mark let go: it finishes fading where it fell, then leaves (at once if it was holding still) */
-function retire(s: HTMLElement) {
-	const fading = s.getAnimations().filter((a) => a.playState === 'running');
-	if (!fading.length) return s.remove();
-	Promise.all(fading.map((a) => a.finished)).then(
-		() => s.remove(),
-		() => s.remove()
-	);
-}
+const visible = () => typeof document === 'undefined' || document.visibilityState === 'visible';
+
+export type TrailHooks = {
+	back?: () => void; // the watched block came back on screen: meet her where she is
+	lost?: () => void; // the watched block left the page (her reply drawn again, or the chat changed)
+	simple?: () => boolean; // only the lead travels (auto quotes on a low battery)
+};
 
 /** one trail: lay it under a sentence, keep it on her clock, let it rest */
 export class Trail {
@@ -145,14 +144,23 @@ export class Trail {
 	private host: HTMLElement | null = null;
 	private lead: HTMLElement | null = null; // the leading sparkle (a still dot with reduced motion)
 	private leadAnim: Animation | null = null;
-	private marks: HTMLElement[] = [];
-	private at = 0;
+	private dust = new Set<HTMLElement>(); // marks alive: each leaves the page when its own fall ends (A35)
+	private held = new Set<Animation>(); // marks holding off her screen or in a hidden tab (only these play on)
 	private timer: ReturnType<typeof setTimeout> | null = null;
 	private io: IntersectionObserver | null = null;
-	onScreen = true; // the watched block, against the screen (nothing moves off it)
+	private hooks: Required<TrailHooks>;
+	onScreen = true; // the watched block, against the screen (off it, everything holds where it is)
 
-	/** back: called when the watched block comes back on screen (to meet her where she is) */
-	constructor(private back: () => void = () => {}) {}
+	/** hooks: back (her block came back on screen), lost (her block left the page), simple (lead alone) · a bare
+	 *  function reads as `back` */
+	constructor(hooks: TrailHooks | (() => void) = {}) {
+		const h = typeof hooks === 'function' ? { back: hooks } : hooks;
+		this.hooks = {
+			back: h.back ?? (() => {}),
+			lost: h.lost ?? (() => {}),
+			simple: h.simple ?? batteryLow
+		};
+	}
 
 	private mark(cls: string, host: HTMLElement) {
 		const i = document.createElement('i');
@@ -179,7 +187,7 @@ export class Trail {
 	lay(range: Range, host: HTMLElement, ms: number) {
 		style();
 		this.stopDrops();
-		if (this.host && this.host !== host) this.clear(false); // another reply: the old trail fades there
+		if (this.host && this.host !== host) this.clear(false); // another reply (or her reply drawn again): the old trail leaves there
 		this.leadAnim?.cancel();
 		this.leadAnim = null;
 		this.host = host;
@@ -217,29 +225,42 @@ export class Trail {
 		this.lead.classList.add('pv-on');
 	}
 
-	/** may it move right now: a sentence playing, its block on screen, the tab visible */
-	private moving() {
-		return (
-			!!this.leadAnim &&
-			this.leadAnim.playState === 'running' &&
-			this.onScreen &&
-			document.visibilityState === 'visible'
-		);
+	/** she can see it: its block on screen, the tab visible */
+	private seen() {
+		return this.onScreen && visible();
 	}
 
-	/** one mark right where her voice is now, left behind to fade */
+	/** may a mark drop right now: a sentence playing, and she can see it */
+	private moving() {
+		return !!this.leadAnim && this.leadAnim.playState === 'running' && this.seen();
+	}
+
+	/** one mark right where her voice is now, left behind to fall and fade · it leaves the page when its fall ends */
 	private drop() {
-		if (!this.host || !this.leadAnim || batteryLow()) return;
+		if (!this.host || !this.leadAnim || this.hooks.simple()) return;
 		const at = this.roadAt(Number(this.leadAnim.currentTime ?? 0) / this.ms);
 		if (!at) return;
-		let s = this.marks[this.at];
-		if (!s || s.parentElement !== this.host) {
-			s?.remove();
-			s = this.marks[this.at] = this.mark('', this.host);
-		}
-		this.at = (this.at + 1) % POOL;
-		for (const a of s.getAnimations()) a.cancel();
-		(Math.random() < PETAL_SHARE ? petal : sparkle)(s, at);
+		if (this.dust.size >= CAP) this.away(this.dust.values().next().value as HTMLElement);
+		const s = this.mark('', this.host);
+		this.dust.add(s);
+		const a = (Math.random() < PETAL_SHARE ? petal : sparkle)(s, at);
+		const gone = () => this.vanish(s);
+		a.addEventListener('finish', gone);
+		a.addEventListener('cancel', gone);
+	}
+
+	/** a mark leaves the page (its fall ended) */
+	private vanish(s: HTMLElement) {
+		if (!this.dust.delete(s)) return;
+		for (const a of s.getAnimations()) this.held.delete(a);
+		s.remove();
+	}
+
+	/** a mark leaves at once, mid-fall (held where she can't see it, or past the cap) */
+	private away(s: HTMLElement) {
+		const anims = s.getAnimations();
+		this.vanish(s);
+		for (const a of anims) a.cancel();
 	}
 
 	private stopDrops() {
@@ -249,7 +270,7 @@ export class Trail {
 
 	private startDrops() {
 		this.stopDrops();
-		if (batteryLow() || reduced()) return; // a low battery keeps just the lead; reduced motion, the dot
+		if (this.hooks.simple() || reduced()) return; // auto quotes on a low battery keep just the lead; reduced motion, the dot
 		const tick = () => {
 			this.timer = null;
 			if (!this.moving()) return;
@@ -257,6 +278,19 @@ export class Trail {
 			this.timer = setTimeout(tick, flow());
 		};
 		tick();
+	}
+
+	/** the marks held off her screen (or in a hidden tab) carry on from where they were: only those, never one
+	 *  whose fall already ended */
+	private wake() {
+		for (const a of [...this.held]) {
+			try {
+				if (a.playState !== 'paused') continue;
+				if (atEnd(a)) a.finish(); // its fall ended as it was held: it leaves, never replays
+				else a.play();
+			} catch {}
+		}
+		this.held.clear();
 	}
 
 	/** A33 · pin the lead to her clock (s into the sentence, at her speed): behind or on time, it meets her
@@ -278,40 +312,55 @@ export class Trail {
 
 	ahead = 0; // ms the lead was ahead of her voice at the last pin (for the eyes and the tests)
 
-	/** keep the lead on her clock: where she is (s), at her speed, paused with her and off-screen */
+	/** keep the lead on her clock: where she is (s), at her speed · paused with her · held off her screen */
 	time(at: number, rate: number, paused: boolean) {
 		if (!this.leadAnim) return;
 		try {
 			this.pin(at, rate);
-			if (paused || !this.onScreen || document.visibilityState !== 'visible') {
-				this.leadAnim.pause();
-				this.stopDrops();
-			} else {
-				this.leadAnim.play();
-				for (const s of this.marks) for (const a of s.getAnimations()) if (a.playState === 'paused') a.play();
-				this.startDrops();
-			}
+			if (!this.seen()) return this.freeze();
+			this.wake(); // what held off her screen carries on from where it was
+			if (paused) return this.hold();
+			this.leadAnim.play();
+			this.startDrops();
 		} catch {}
 	}
 
-	/** she paused (or the block left the screen, or the tab hid): the whole trail holds still */
+	/** her voice paused (or waiting for the stream): the lead holds where she is, no new mark drops, and what it
+	 *  left behind finishes its fall and leaves (A35: nothing hangs in the air while she's paused) */
+	hold() {
+		this.stopDrops();
+		try {
+			this.leadAnim?.pause();
+		} catch {}
+	}
+
+	/** off her screen, or the tab hid: the whole trail holds where it is (marks mid-fall too), and carries on from
+	 *  there once she can see it */
 	freeze() {
 		this.stopDrops();
 		try {
 			this.leadAnim?.pause();
-			for (const s of this.marks) for (const a of s.getAnimations()) a.pause();
+			for (const s of this.dust)
+				for (const a of s.getAnimations())
+					if (a.playState === 'running') {
+						a.pause();
+						this.held.add(a);
+					}
 		} catch {}
 	}
 
-	/** between two sentences: the lead fades; what it left behind finishes fading */
+	/** between two sentences: the lead fades; what it left behind finishes falling (held marks too, once she can
+	 *  see them) */
 	rest() {
 		this.stopDrops();
 		this.leadAnim?.pause();
 		this.lead?.classList.remove('pv-on');
+		if (this.seen()) this.wake();
 	}
 
-	/** the end: no new marks; the lead fades, what it left finishes fading where it fell, then all of it is
-	 *  gone (and the trail stops watching, unless told to keep its watch) */
+	/** the end: no new marks; the lead fades, the marks she can see finish their fall where they are and leave,
+	 *  the ones she can't (held, or on a page that left) leave at once · the trail stops watching, unless told to
+	 *  keep its watch */
 	clear(unwatch = true) {
 		this.stopDrops();
 		const lead = this.lead;
@@ -326,35 +375,52 @@ export class Trail {
 				lead.remove();
 			}, 320);
 		}
-		for (const s of this.marks) retire(s);
-		this.marks = [];
-		this.at = 0;
+		const seen = !!this.host?.isConnected && this.seen();
+		for (const s of [...this.dust]) {
+			const falling = s.isConnected && s.getAnimations().some((a) => a.playState === 'running');
+			if (seen && falling) continue; // it finishes its fall, then leaves by itself
+			this.away(s);
+		}
+		this.held.clear();
 		this.road = null;
 		this.host = null;
 		if (unwatch) this.watch(null);
 	}
 
-	/** watch a block: off the screen, nothing of the trail moves; back on it, `back` resyncs */
+	/** watch a block: off the screen, everything holds; back on it, `back` resyncs · gone from the page, `lost` */
 	watch(el: Element | null) {
 		this.io?.disconnect();
 		this.io = null;
 		this.onScreen = true;
 		if (!el || typeof IntersectionObserver === 'undefined') return;
-		this.io = new IntersectionObserver(([e]) => {
+		this.io = new IntersectionObserver((entries) => {
+			// A35 · a batch can hold several entries for her block, oldest first: only the newest is now (reading the
+			// first one froze a trail she could see, after a quick out-and-in)
+			const e = entries[entries.length - 1];
 			if (!e) return;
+			if (!e.target.isConnected) return this.hooks.lost(); // her block left the page: petal-voice finds her words again
 			const was = this.onScreen;
 			this.onScreen = e.isIntersecting;
 			if (was && !this.onScreen) this.freeze();
-			else if (!was && this.onScreen) this.back();
+			else if (!was && this.onScreen) this.hooks.back();
 		});
 		this.io.observe(el);
 	}
 
-	/** for the eyes and the tests: how its parts are doing */
+	/** the trail's reply left the page (drawn again, or the chat changed) */
+	get orphaned() {
+		return !!this.host && !this.host.isConnected;
+	}
+
+	/** for the eyes and the tests, numbers only: how its parts are doing */
 	get state() {
+		let alive = 0;
+		for (const s of this.dust) if (s.getAnimations().some((a) => a.playState === 'running')) alive += 1;
 		return {
 			lead: this.leadAnim?.playState ?? null,
-			alive: this.marks.filter((s) => s.getAnimations().some((a) => a.playState === 'running')).length,
+			alive, // marks falling right now
+			particles: this.dust.size, // marks on the page (falling or held)
+			held: this.held.size, // marks holding off her screen or in a hidden tab
 			at: Math.round(Number(this.leadAnim?.currentTime ?? 0)), // ms into the road
 			ahead: Math.round(this.ahead) // ms ahead of her voice at the last pin
 		};

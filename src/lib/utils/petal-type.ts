@@ -7,7 +7,7 @@
 export const TYPE_SPEEDS = ['natural', 'slow', 'quick', 'instant'] as const;
 export type TypeSpeed = (typeof TYPE_SPEEDS)[number];
 
-type Job = { cancel(): void; finish(): void; readonly done: boolean; total: number };
+type Job = { cancel(): void; finish(): void; hold?(on: boolean): void; readonly done: boolean; total: number }; // hold: A35
 type Engine = {
 	run(o: { text: string; write: (part: string, done: boolean) => void; speed?: TypeSpeed }): Job;
 	ms(text: string, speed?: TypeSpeed): number;

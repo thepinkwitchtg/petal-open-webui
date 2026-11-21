@@ -12,6 +12,10 @@
 //    battery (auto quotes) only the leading mark travels
 //  · quotes: when her voice reaches a display quote, its reveal plays again; a click on a quote reveals it
 //    and has her say only that line (the speaker path, under B's ceiling), if she isn't already speaking
+//  · A35 · her voice paused, the lead holds where she is and what it left finishes falling; only off her screen or
+//    in a hidden tab does everything hold (and carry on from there). her reply drawn again under her (a pick
+//    closing, the list keyed again, its words re-rendered) is found again where it is now, from the sentence's own
+//    start; gone from the page (the chat changed), nothing of the trail stays
 // built on contract ch. 11.6 (B7's events): petal stream's events door gives each `sentence {message_id,
 // idx, text, start, duration}` on the player's clock; a sentence is kept by idx (a later start replaces it)
 // and followed while start ≤ currentTime < start + duration. pause · resume · end · stop are the page's own.
@@ -30,7 +34,8 @@ import {
 	voiceNow,
 	type VoiceSentence
 } from '$lib/utils/petalStream';
-import { holdAwake, voiceReveal } from '$lib/utils/petal-quote-fx';
+import { fxMode, voiceReveal } from '$lib/utils/petal-quote-fx';
+import { batteryLow } from '$lib/utils/petal-battery';
 import { Trail } from '$lib/utils/petal-trail';
 
 // ── the registry ─────────────────────────────────────────────────────────────────────────────────────
@@ -63,9 +68,11 @@ export function registerReply(r: VoiceReply): () => void {
 	wire();
 	replies.set(r.id, r);
 	bump();
+	if (r.id === segsMessage && shown) relocateSoon(); // A35 · the reply she's hearing, drawn again: the trail follows
 	return () => {
 		if (replies.get(r.id) === r) replies.delete(r.id);
 		bump();
+		if (r.id === segsMessage && shown) relocateSoon(); // gone, or about to be drawn again: decided on the next frame
 	};
 }
 
@@ -307,7 +314,6 @@ function refresh() {
 	const was = get(voiceUI);
 	if (was.state !== ui.state || was.message_id !== ui.message_id || was.kind !== ui.kind) {
 		voiceUI.set(ui);
-		holdAwake('voice', ui.state === 'playing' || ui.state === 'loading');
 	}
 }
 
@@ -388,7 +394,8 @@ export function voiceTap(target: string | null = mostInView()) {
 }
 
 // ── following her: the sentence she's on, from the rig's events ──────────────────────────────────────
-type Shown = { seg: VoiceSentence; range: Range | null; host: HTMLElement | null; block: Element | null };
+// from: where the search for this sentence began (in the reply's letters): her reply drawn again, it's found again from there
+type Shown = { seg: VoiceSentence; range: Range | null; host: HTMLElement | null; block: Element | null; from: number };
 let segs: VoiceSentence[] = [];
 let segsStream: string | null = null;
 let segsMessage: string | null = null;
@@ -396,6 +403,8 @@ let cursor = 0; // where the last sentence ended, in the reply's letters
 let shown: Shown | null = null;
 let nextTimer: ReturnType<typeof setTimeout> | null = null;
 let hostRO: ResizeObserver | null = null;
+let roHost: HTMLElement | null = null; // the words the ResizeObserver watches now (it follows her reply when it's drawn again)
+let relocating = 0;
 
 const LETTER = /[\p{L}\p{N}]/u;
 // what never carries her words: code blocks, buttons, icons, layers that only echo the words
@@ -469,24 +478,90 @@ function blockOf(range: Range): Element | null {
 }
 
 // ── the trail (petal-trail.ts): a leading sparkle under the words, sparkles and a rare petal behind ─────
-const trail = new Trail(
-	() => (lineState !== 'idle' ? lineSync : sync)() // her block came back on screen: meet her again
-);
+const trail = new Trail({
+	back: () => (lineState !== 'idle' ? lineSync : sync)(), // her block came back on screen: meet her again
+	lost: () => relocateSoon(), // her block left the page: find her words where they are now
+	simple: () => fxMode() === 'auto' && batteryLow() // auto quotes on a low battery: the lead alone (her setting)
+});
 
-/** she paused (or the tab hid): the whole trail holds still, and the next edge waits for her */
+/** she paused (or the stream is waiting for words): the lead holds where she is, the next edge waits for her, and
+ *  what it left behind finishes falling */
+function hold() {
+	if (nextTimer) clearTimeout(nextTimer);
+	nextTimer = null;
+	trail.hold();
+}
+
+/** the tab hid: the whole trail holds where it is, and the next edge waits for her */
 function freeze() {
 	if (nextTimer) clearTimeout(nextTimer);
 	nextTimer = null;
 	trail.freeze();
 }
 
+function unobserveHost() {
+	hostRO?.disconnect();
+	hostRO = null;
+	roHost = null;
+}
+
 function clearFollower() {
 	if (nextTimer) clearTimeout(nextTimer);
 	nextTimer = null;
+	if (relocating) cancelAnimationFrame(relocating);
+	relocating = 0;
 	trail.clear();
-	hostRO?.disconnect();
-	hostRO = null;
+	unobserveHost();
 	shown = null;
+}
+
+/** a range still standing on the page (its words weren't drawn again under it) */
+const alive = (r: Range | null) =>
+	!!r && r.startContainer.isConnected && r.endContainer.isConnected && !r.collapsed;
+
+/** A35 · her reply was drawn again (a pick closing, the list keyed again) or its words re-rendered under her, or it
+ *  left the page: looked at on the next frame, once the page has settled */
+function relocateSoon() {
+	if (relocating || typeof requestAnimationFrame === 'undefined') return;
+	relocating = requestAnimationFrame(relocate);
+}
+
+/** the sentence she's on, found again in the page as it is now, from where its search began · her reply not on the
+ *  page (the chat changed): nothing of the trail stays, and it's found again if her reply comes back */
+function relocate() {
+	relocating = 0;
+	if (lineState !== 'idle') return lineLost();
+	const s = shown;
+	if (!s) return;
+	const host = replies.get(segsMessage ?? '')?.words() ?? null;
+	if (host?.isConnected && host === s.host && (!s.range || alive(s.range))) return; // nothing moved
+	if (nextTimer) clearTimeout(nextTimer);
+	nextTimer = null;
+	if (!host?.isConnected) {
+		trail.clear();
+		unobserveHost();
+		shown = { ...s, range: null, host: null, block: null };
+		return;
+	}
+	cursor = s.from;
+	shown = null;
+	sync();
+}
+
+/** watch the words her voice is in for a change of size (one observer, following her reply when it's drawn again) */
+function observeHost(host: HTMLElement) {
+	if (typeof ResizeObserver === 'undefined' || roHost === host) return;
+	hostRO ??= new ResizeObserver(() => {
+		// the page moved under her (a resize, an image arriving): the road is laid again · drawn again: found again
+		const s = shown;
+		if (!s?.range || !s.host) return;
+		if (!s.host.isConnected || !alive(s.range)) return relocateSoon();
+		trail.lay(s.range, s.host, s.seg.duration * 1000);
+		sync();
+	});
+	if (roHost) hostRO.unobserve(roHost);
+	hostRO.observe(host);
+	roHost = host;
 }
 
 function resetFollower(stream: string | null, message: string | null) {
@@ -499,25 +574,18 @@ function resetFollower(stream: string | null, message: string | null) {
 
 /** her next sentence: its road, and the quotes it reaches */
 function show(seg: VoiceSentence) {
-	const host = replies.get(segsMessage ?? '')?.words() ?? null;
+	const live = replies.get(segsMessage ?? '')?.words() ?? null;
+	const host = live?.isConnected ? live : null;
+	const from = cursor;
 	const found = host ? locate(host, seg.text, cursor) : null;
-	shown = { seg, range: found?.range ?? null, host, block: found ? blockOf(found.range) : null };
+	shown = { seg, range: found?.range ?? null, host, block: found ? blockOf(found.range) : null, from };
 	if (!found || !host) return trail.rest();
 	cursor = found.end;
 	trail.lay(found.range, host, seg.duration * 1000);
 	trail.watch(shown.block);
 	for (const q of host.querySelectorAll<HTMLElement>('.petal-quote'))
 		if (found.range.intersectsNode(q)) voiceReveal(q); // her voice reached it: the reveal plays again
-	if (!hostRO && typeof ResizeObserver !== 'undefined') {
-		hostRO = new ResizeObserver(() => {
-			// the page moved under her (a resize, an image arriving): the road is laid again
-			if (shown?.range && shown.host) {
-				trail.lay(shown.range, shown.host, shown.seg.duration * 1000);
-				sync();
-			}
-		});
-		hostRO.observe(host);
-	}
+	observeHost(host);
 }
 
 /** meet her where she is: the sentence followed while start ≤ currentTime < start + duration (none
@@ -527,6 +595,7 @@ function sync() {
 	nextTimer = null;
 	const a = petalStreamAudio();
 	if (!a || !segs.length || get(voiceNow).state === 'idle') return;
+	if (shown?.host && (!shown.host.isConnected || (shown.range && !alive(shown.range)))) return relocateSoon(); // A35
 	const t = a.currentTime;
 	const rate = a.playbackRate || 1;
 	const cur = segs.find((s) => s.start <= t && t < s.start + s.duration) ?? null;
@@ -652,6 +721,7 @@ function lineSync() {
 	lineTimer = null;
 	const a = line;
 	if (!a || lineState === 'idle' || !lineRange || !lineHost) return;
+	if (!lineHost.isConnected) return lineLost(); // A35 · her reply drawn again under the line: the trail lets go
 	const t = a.currentTime;
 	const seg = lineSeg ?? { start: 0, duration: Number.isFinite(a.duration) ? a.duration : 0 };
 	const on = seg.duration > 0 && seg.start <= t && t < seg.start + seg.duration;
@@ -667,6 +737,15 @@ function lineSync() {
 	const edge = t < seg.start ? seg.start : t < seg.start + seg.duration ? seg.start + seg.duration : Infinity;
 	if (edge < Infinity)
 		lineTimer = setTimeout(lineSync, ((edge - t) / (a.playbackRate || 1)) * 1000 + 5);
+}
+
+/** A35 · the reply her line lives in left the page (drawn again, the chat changed): the line plays on, the trail
+ *  lets go at once (its marks leave with it) */
+function lineLost() {
+	if (lineHost?.isConnected) return;
+	if (lineFollowed) trail.clear();
+	lineFollowed = false;
+	lineRange = lineHost = null;
 }
 
 /** a click on a display quote: she says just that line, unless she's already speaking (the reveal plays
@@ -713,7 +792,7 @@ export async function speakQuote(quote: HTMLElement) {
 		setLine('paused', quote);
 		if (lineTimer) clearTimeout(lineTimer);
 		lineTimer = null;
-		freeze();
+		hold();
 	};
 	a.onended = a.onerror = () => {
 		if (ticket === lineTicket) stopLine();
@@ -739,7 +818,7 @@ function hookAudio() {
 	a.addEventListener('playing', sync);
 	a.addEventListener('seeked', sync);
 	a.addEventListener('ratechange', sync);
-	a.addEventListener('waiting', freeze);
+	a.addEventListener('waiting', hold);
 	a.addEventListener('timeupdate', pinNow); // A33 · a few times a second while she plays: on her clock
 }
 
@@ -750,7 +829,9 @@ function pinNow() {
 	if (lineState !== 'idle') return;
 	const a = petalStreamAudio();
 	if (!a || a.paused || document.visibilityState === 'hidden' || get(voiceNow).state === 'idle') return;
-	const seg = shown?.seg;
+	const s = shown;
+	if (s?.host && (!s.host.isConnected || (s.range && !alive(s.range)))) return relocateSoon(); // A35 · drawn again
+	const seg = s?.seg;
 	if (!seg) return segs.length ? sync() : undefined;
 	const t = a.currentTime;
 	if (t < seg.start || t >= seg.start + seg.duration) return sync();
@@ -807,7 +888,7 @@ function wire() {
 			if (had && had.start > e.start) return;
 			segs = [...segs.filter((s) => s.idx !== e.idx), e].sort((a, b) => a.start - b.start);
 			sync();
-		} else if (e.type === 'pause') freeze();
+		} else if (e.type === 'pause') hold();
 		else if (e.type === 'resume') sync();
 		else clearFollower(); // end · stop
 	});

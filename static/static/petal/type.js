@@ -1,5 +1,5 @@
 /* ═══════════════════════════════════════════════════════════
-   🌸 petal · type  ·  v0.1 (A33) · nothing of hers appears pre-written
+   🌸 petal · type  ·  v0.2 (A35) · nothing of hers appears pre-written
    one small engine for every Petal text the page shows that was written before it showed: hush's
    whispers and her thank-you, the notes and little words in toasts, a note the page leaves her.
    live streams keep streaming as they are; only what arrives whole types itself in.
@@ -9,13 +9,16 @@
    · her speed: Settings → 🌸 Petal → Typing (natural · slow · quick · at once), kept on this device in
      localStorage 'petal.type.speed' (the app mirrors her setting there). typing is text arriving, not
      movement, so it types even with reduced motion: 'at once' is the switch for that
-   · event-driven: a job starts when a text arrives and steps on requestAnimationFrame (one write at most
-     every ~32 ms, only when a letter changes), stops the moment it's done, and holds while the page is
-     hidden (no letter and no frame there, even where a browser keeps frames coming; the hidden time never
-     counts), carrying on from where it was when she's back. slow frames still type in real time (a few letters a frame). nothing runs at rest.
+   · event-driven: a job starts when a text arrives and steps on requestAnimationFrame, writing on every
+     frame a letter changes (A35: full beauty, no ~32 ms gate), stops the moment it's done, and holds while
+     the page is hidden (no letter and no frame there, even where a browser keeps frames coming; the hidden
+     time never counts), carrying on from where it was when she's back. slow frames still type in real time
+     (a few letters a frame). nothing runs at rest.
+   · A35 · a job can hold where it is while its place is off her screen (hold(true)), and carries on from
+     there (hold(false)); the time it held never counts either.
 
    window.petalType:
-     run({ text, write(partial, done), speed? }) → { cancel(), finish(), done }   (write('') at once)
+     run({ text, write(partial, done), speed? }) → { cancel(), finish(), hold(on), done }   (write('') at once)
      ms(text, speed?)   how long it takes to type     ·     speed() / speed('quick')     ·     active
    ═══════════════════════════════════════════════════════════ */
 (() => {
@@ -25,7 +28,6 @@
 	const PACE = { natural: 1, slow: 1.6, quick: 0.55, instant: 0 };
 	const CAP = { natural: 3600, slow: 5200, quick: 2200 }; // the longest a text takes, whatever its length
 	const BASE = 34; // ms a grapheme, at natural, for a line of about forty
-	const STEP = 32; // the shortest time between two writes
 	const FROZEN = 1000; // a gap between frames this long, with the page never hidden, was a freeze: it doesn't count
 
 	let jobs = 0;
@@ -103,7 +105,7 @@
 		let e = 0; // how long it has been typing: frame gaps, minus any time the page was hidden
 		let last = null;
 		let lastHidden = 0;
-		let wrote = 0;
+		let held = false; // its place is off her screen (A35): no letter, no frame, the time doesn't count
 		const put = (n) => {
 			if (n === job.shown) return;
 			job.shown = n;
@@ -124,11 +126,11 @@
 		// hidden: no letter and no frame (whatever a browser does with frames there); back: from where it was
 		function wake() {
 			asleep.delete(wake);
-			if (!job.done && !raf) raf = requestAnimationFrame(step);
+			if (!job.done && !raf && !held) raf = requestAnimationFrame(step);
 		}
 		function step(now) {
 			raf = 0;
-			if (job.done) return;
+			if (job.done || held) return;
 			if (document.visibilityState === 'hidden') return void asleep.add(wake);
 			const hid = hiddenNow();
 			if (last !== null) {
@@ -141,10 +143,7 @@
 			let n = Math.max(0, job.shown);
 			while (n < p.g.length && p.at[n] <= e) n++;
 			if (n >= p.g.length) return put(n);
-			if (n !== job.shown && now - wrote >= STEP) {
-				put(n);
-				wrote = now;
-			}
+			if (n !== job.shown) put(n); // every frame a letter changes (A35)
 			raf = requestAnimationFrame(step);
 		}
 		const handle = {
@@ -155,6 +154,16 @@
 			},
 			finish() {
 				if (!job.done) put(p.g.length);
+			},
+			/** A35 · its place left her screen (true): it holds where it is · back (false): it carries on from there */
+			hold(on) {
+				if (job.done || held === !!on) return;
+				held = !!on;
+				if (held) {
+					if (raf) cancelAnimationFrame(raf);
+					raf = 0;
+					last = null; // the time it holds never counts: the next frame starts the count again
+				} else wake();
 			},
 			get done() {
 				return job.done;
@@ -183,6 +192,6 @@
 		get facts() {
 			return { jobs, hidden: hiddenSince !== null, hiddenMs: Math.round(hiddenNow()) };
 		},
-		v: '0.1'
+		v: '0.2'
 	};
 })();

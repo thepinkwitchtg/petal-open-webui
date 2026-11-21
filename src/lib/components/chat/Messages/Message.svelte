@@ -12,7 +12,7 @@
 	import MultiResponseMessages from './MultiResponseMessages.svelte';
 	import PetalPick from './PetalPick.svelte'; // 🍒 A29 · two replies, one tap
 	import PetalFusion from './PetalFusion.svelte'; // 🌕 A34 · the fusion check: three moons, now and then
-	import { openPick, pickGlow, revealOf } from '$lib/utils/petal-pick';
+	import { openPick, pickGlow, pickGlowOn, revealOf } from '$lib/utils/petal-pick';
 	import ResponseMessage from './ResponseMessage.svelte';
 	import UserMessage from './UserMessage.svelte';
 
@@ -62,14 +62,6 @@
 	// 🍒 A30 · an arm, after her 💗 (never before: revealOf is null while the pair is open), each side's pull in one
 	// quiet line under the reply · never in previews or shared views (as the pick)
 	$: reveal = compactPreview || readOnly ? null : revealOf(history, messageId);
-	let glowFallback: ReturnType<typeof setTimeout> | null = null;
-	$: if ($pickGlow === messageId) {
-		clearTimeout(glowFallback ?? undefined);
-		glowFallback = setTimeout(() => $pickGlow === messageId && pickGlow.set(null), 4000);
-	}
-	const glowEnded = (e: AnimationEvent) => {
-		if ($pickGlow === messageId && e.animationName.includes('petal-picked')) pickGlow.set(null);
-	};
 
 	// Shown at the top of the reply to it.
 	$: shownInReply =
@@ -104,7 +96,7 @@
 	class:hidden={shownInReply}
 	class:message-virtualized={!isWebKit && !isFirefox && !wasCurrentTurn}
 	class:petal-picked-glow={$pickGlow === messageId}
-	on:animationend={glowEnded}
+	use:pickGlowOn={messageId}
 >
 	{#if history.messages[messageId]}
 		{#if history.messages[messageId].role === 'user'}
@@ -273,7 +265,7 @@
 		color: var(--pearl, inherit);
 	}
 	/* 🍒 A29 · the chosen reply glows once, quietly: one opacity fade on a still ring (compositor only),
-	   paused while the page is hidden, gone when it ends */
+	   paused while the page is hidden or off her screen (A35, it glows on from there), gone when it ends */
 	.petal-picked-glow {
 		position: relative;
 	}
