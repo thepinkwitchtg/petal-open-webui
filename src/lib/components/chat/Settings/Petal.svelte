@@ -7,6 +7,8 @@
 	// A30d · how a pick's two replies arrive (every pick, arm or plain): twin (default) · together · live
 	// A33 · how her words type in (hush's whispers, her thank-you, the toasts' words): natural (default) · slow ·
 	// quick · at once, mirrored on each device for the static scripts (utils/petal-type.ts)
+	// A34 · the fusion check (utils/petal-fusion.ts): on by default, 1 in 5 finished replies at first, calming to 1 in
+	// 25 as her moons accumulate; her two numbers ride with each ask, and the line below shows where it stands now
 	import { getContext, onMount } from 'svelte';
 	import type { Writable } from 'svelte/store';
 
@@ -17,6 +19,14 @@
 	import { PICK_DEFAULTS, rulesOf, type PickRules } from '$lib/utils/petal-pick';
 	import { arrivalOf } from '$lib/utils/petal-twin';
 	import { speedOf, type TypeSpeed } from '$lib/utils/petal-type';
+	import {
+		FLOOR_CHOICES,
+		START_CHOICES,
+		fusionRate,
+		fusionRules,
+		type FusionRate,
+		type FusionRules
+	} from '$lib/utils/petal-fusion';
 	import Switch from '$lib/components/common/Switch.svelte';
 
 	import PetalSelect from './PetalSelect.svelte';
@@ -117,6 +127,30 @@
 			]
 		}
 	];
+	// A34 · the fusion check: her two numbers, and where its rate stands now (numbers only, from the rig)
+	let fusion: FusionRules = fusionRules($settings);
+	let fusionNow: FusionRate | null = null;
+	const loadFusionNow = async () => (fusionNow = await fusionRate(localStorage.token, fusion));
+	const saveFusion = () => {
+		fusion = fusionRules({ petalFusion: fusion }); // kept inside its ranges before it leaves
+		saveSettings({ petalFusion: fusion });
+		void loadFusionNow();
+	};
+	// her own number stays a choice even when it isn't one of the usual ones (set elsewhere, another device)
+	const choices = (usual: number[], hers: number, from = 1) =>
+		[...new Set([...usual, hers])]
+			.filter((n) => n >= from)
+			.sort((a, b) => a - b)
+			.map((n) => ({ value: String(n), label: `${n}` }));
+	$: startGroups = [{ items: choices(START_CHOICES, fusion.start) }];
+	$: floorGroups = [{ items: choices(FLOOR_CHOICES, fusion.floor, fusion.start) }];
+	const moonsLine = (r: FusionRate) =>
+		[
+			`${$i18n.t('Now 1 in')} ${r.every}`,
+			`${r.answers} ${r.answers === 1 ? $i18n.t('moon so far') : $i18n.t('moons so far')} (🌕 ${r.counts.flowing ?? 0} · 🌑 ${r.counts.off ?? 0})`,
+			`🌗 ${r.counts.mixed ?? 0} ${(r.counts.mixed ?? 0) === 1 ? $i18n.t('pass') : $i18n.t('passes')}`
+		].join(' · ');
+
 	// numbers only: how many ready blends and ♡ strings her shelf holds (and vLLM's own word, when it says no)
 	const shelfSays = (pulls: ShelfPulls['pulls'], strung: boolean | null) => {
 		const blends = pulls.filter((p) => p.kind === 'blend').length;
@@ -137,6 +171,7 @@
 	onMount(() => {
 		loadModes();
 		if (keeper) void loadShelf();
+		void loadFusionNow();
 	});
 
 	const field =
@@ -277,6 +312,65 @@
 			{chord || $i18n.t('Settings → Shortcuts')}{$i18n.t(', or a long press on the mode chip on your phone.')}
 			{$i18n.t(
 				'Never in temporary chats, internal or subagent turns, tests, while her voice speaks, or twice in a row unless you ask.'
+			)}
+		</p>
+	</UserSettingSection>
+
+	<UserSettingSection title={$i18n.t('🌕 The fusion check · three moons, now and then')}>
+		<UserSettingRow
+			description={$i18n.t(
+				'Now and then, under a finished reply: how is the fusion so far? 🌕 flowing · 🌗 ignore · 🌑 off. It scores the stretch of conversation, not one reply, and folds into a tiny moon you can change later. Petal never sees your moons.'
+			)}
+			let:labelId
+		>
+			<span slot="label">{$i18n.t('Ask how the fusion is going')}</span>
+			<Switch
+				ariaLabelledbyId={labelId}
+				ariaLabel={$i18n.t('Ask how the fusion is going')}
+				bind:state={fusion.on}
+				on:change={saveFusion}
+			/>
+		</UserSettingRow>
+
+		<UserSettingRow
+			description={$i18n.t(
+				'Often while it learns, calmer as your moons accumulate (🌕 and 🌑 teach it; 🌗 is a pass), never silent.'
+			)}
+			let:labelId
+		>
+			<span slot="label">{$i18n.t('How often')}</span>
+			<div class="flex items-center gap-1.5 text-xs text-gray-400 dark:text-gray-600">
+				{$i18n.t('1 in')}
+				<PetalSelect
+					id="petal-fusion-start"
+					ariaLabelledby={labelId}
+					value={String(fusion.start)}
+					groups={startGroups}
+					disabled={!fusion.on}
+					onChange={(v) => {
+						fusion = { ...fusion, start: Number(v) };
+						saveFusion();
+					}}
+				/>
+				{$i18n.t('at first, calming to 1 in')}
+				<PetalSelect
+					id="petal-fusion-floor"
+					ariaLabel={$i18n.t('calming to 1 in')}
+					value={String(fusion.floor)}
+					groups={floorGroups}
+					disabled={!fusion.on}
+					onChange={(v) => {
+						fusion = { ...fusion, floor: Number(v) };
+						saveFusion();
+					}}
+				/>
+			</div>
+		</UserSettingRow>
+
+		<p class="text-[0.6875rem] text-gray-400 dark:text-gray-600" data-fusion-line>
+			{#if fusionNow}{moonsLine(fusionNow)} ·{/if}
+			{$i18n.t(
+				'Never inside a pick, in temporary or internal chats, before a stretch has three replies, or twice in one stretch.'
 			)}
 		</p>
 	</UserSettingSection>
