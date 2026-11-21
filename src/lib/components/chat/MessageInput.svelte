@@ -2282,6 +2282,7 @@
 						<div
 							id={inputId === 'chat-input' ? 'message-input-container' : `${inputId}-wrapper`}
 							data-composer-id={inputId}
+							data-petal-bar={$temporary ? 'temporary' : ''}
 							class="flex-1 flex flex-col relative w-full shadow-[0_6px_24px_-4px_rgba(0,0,0,0.1)] rounded-3xl border {$temporary
 								? 'border-dashed border-gray-300/70 dark:border-gray-700/70'
 								: ' border-gray-200/60 dark:border-gray-800/40'} {($settings?.highContrastMode ??
