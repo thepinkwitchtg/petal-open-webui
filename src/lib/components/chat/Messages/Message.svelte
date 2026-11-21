@@ -11,6 +11,7 @@
 
 	import MultiResponseMessages from './MultiResponseMessages.svelte';
 	import PetalPick from './PetalPick.svelte'; // 🍒 A29 · two replies, one tap
+	import PetalFusion from './PetalFusion.svelte'; // 🌕 A34 · the fusion check: three moons, now and then
 	import { openPick, pickGlow, revealOf } from '$lib/utils/petal-pick';
 	import ResponseMessage from './ResponseMessage.svelte';
 	import UserMessage from './UserMessage.svelte';
@@ -187,6 +188,10 @@
 						>{reveal.chosen === 'other' ? '💗 ' : ''}{reveal.other}</span
 					>
 				</div>
+			{/if}
+			{#if !compactPreview && !readOnly && history.messages[messageId]?.petal_fusion}
+				<!-- 🌕 A34 · a fusion check asked under this reply: its card, then her tiny moon (never in a pick) -->
+				<PetalFusion {chatId} message={history.messages[messageId]} />
 			{/if}
 		{:else}
 			{#key messageId}

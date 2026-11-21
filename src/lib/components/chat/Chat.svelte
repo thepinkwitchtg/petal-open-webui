@@ -78,6 +78,7 @@
 		takeAsk
 	} from '$lib/utils/petal-pick'; // 🍒 A29 · A29b · A30 · A30b
 	import { getOffer } from '$lib/apis/petal-shelf'; // 🍒 A30b · picks that come to her
+	import { askFusion, fusionRules } from '$lib/utils/petal-fusion'; // 🌕 A34 · the fusion check
 	import { refreshChatList, refreshFolderChatLists } from '$lib/stores/chatList';
 
 	import { WEBUI_API_BASE_URL } from '$lib/constants';
@@ -3550,6 +3551,15 @@
 		// 🍒 A30b · should her next reply be a pick? (petal_pick.should_offer: nothing asks yet) · a yes arms the cherry
 		if (_chatId && !$temporaryChatEnabled && !isTemporaryChatId(_chatId) && $user?.role === 'admin')
 			void getOffer(localStorage.token, _chatId, responseMessageId).then(offered);
+		// 🌕 A34 · may this finished reply ask how the fusion is going? (the rig decides: petal_pick.ask_fusion) · a yes
+		// stamps the reply there and here, and its card glows as it appears · never inside an open pick
+		if (_chatId && !$temporaryChatEnabled && !isTemporaryChatId(_chatId) && !openPick(history, responseMessageId))
+			void askFusion(localStorage.token, _chatId, responseMessageId, fusionRules($settings)).then((stamp) => {
+				const reply = stamp && $chatId === _chatId ? history.messages[responseMessageId] : null;
+				if (!reply || reply.petal_fusion) return;
+				reply.petal_fusion = stamp;
+				history = history;
+			});
 	};
 
 	const chatActionHandler = async (_chatId, actionId, modelId, responseMessageId, event = null) => {

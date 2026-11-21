@@ -44,6 +44,28 @@ arm: a verdict sent again teaches nothing more
 
     GET  /api/v1/petal/thumbs/thanks         (admin) → { ready, target, recent, written, shown, writing, last }
     POST /api/v1/petal/thumbs/thanks/refill  (admin) → the same, after waking a refill
+
+🌕 A34 · the fusion check (utils/petal_fusion.py): how is a stretch of conversation going? her three moons ride this
+door too, quietly, beside her thumbs:
+
+    POST /api/v1/petal/fusion/ask  { chat_id, message_id, rules: {on, start, floor} }
+         → { ask, why, stamp? }
+
+- asked by the page once a reply is finished. the rails, then the one decider (petal_pick.ask_fusion · v1: her rate,
+  aggressive at first, calming as her moons accumulate). a yes stamps the reply (`petal_fusion`, a top-level key:
+  never replayed to the model) without moving the chat in her sidebar, and hands the stamp back for the card
+
+    POST /api/v1/petal/thumbs  { chat_id, message_id, annotation: {}, fusion: 'flowing' | 'mixed' | 'off' }
+         → { feedback_id, created, score, changes }
+
+- her moon: a `petal_fusion` row (one per reply: data = the score with its provenance, meta = chat, reply, turn), no
+  snapshot. a change replaces the score and keeps the one it replaced in `history`; the same moon again changes
+  nothing. the reply's stamp learns the score. only under a reply that was asked; temporary chats keep no moons.
+  never a thank-you, a tag step or a lesson for the arms, and her annotation (what petal_state reads) is never touched
+
+    GET  /api/v1/petal/fusion/rate?on&start&floor  → { on, every, rate, answers, counts, start, floor, half }
+
+- numbers only: how often a finished reply asks now, and her moons so far (Settings → 🌸 Petal)
 """
 
 import asyncio
@@ -65,7 +87,7 @@ from open_webui.models.chats import ChatResponse, Chats
 from open_webui.models.feedbacks import Feedback, FeedbackForm, Feedbacks
 from open_webui.routers.chats import get_chat_by_id as read_chat_as_the_page_did
 from open_webui.routers.tasks import generate_chat_tags
-from open_webui.utils import petal_arms, petal_thanks
+from open_webui.utils import petal_arms, petal_fusion, petal_pick, petal_thanks
 from open_webui.utils.auth import get_admin_user, get_verified_user
 from open_webui.utils.chat_id import is_saved_chat_id
 from open_webui.utils.misc import get_message_list
@@ -86,6 +108,7 @@ class ThumbForm(BaseModel):
     sibling_model_ids: Optional[list[str]] = None
     meta: dict = {}
     thanks: bool = False  # 💗 A27 · this landing begins a feedback: hand back her next line (once per feedback)
+    fusion: Optional[str] = None  # 🌕 A34 · her moon on a fusion check (flowing · mixed · off): a petal_fusion row
     model_config = ConfigDict(extra='ignore', protected_namespaces=())
 
 
@@ -117,6 +140,8 @@ async def land_thumb(
     user=Depends(get_verified_user),
     db: AsyncSession = Depends(get_async_session),
 ):
+    if form.fusion is not None:  # 🌕 A34 · a moon, not a thumb: its own row, quietly
+        return await _land_fusion(request, form, user, db)
     if not is_saved_chat_id(form.chat_id):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='temporary chats keep no thumbs')
     if len(repr(form.annotation)) > MAX_ANNOTATION_BYTES:
@@ -204,6 +229,121 @@ async def land_thumb(
             # 💗 A27 · taken only when the page asks (a feedback's first landing): one line per feedback
             'thanks': await petal_thanks.take(request, user, model_id=form.model_id) if form.thanks else None,
         }
+
+
+async def _land_fusion(request: Request, form: ThumbForm, user, db: AsyncSession):
+    """🌕 A34 · her moon on a fusion check: one petal_fusion row per reply, its history kept, the stamp told"""
+    score = form.fusion
+    if score not in petal_fusion.SCORES:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='a moon is flowing, mixed or off')
+    if not is_saved_chat_id(form.chat_id):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='temporary chats keep no moons')
+
+    async with _locks[(user.id, f'fusion:{form.message_id}')]:
+        chat = await Chats.get_chat_by_id_and_user_id(form.chat_id, user.id, db=db)  # her own chat only
+        messages = (((chat.chat or {}).get('history') or {}).get('messages') or {}) if chat else {}
+        reply = messages.get(form.message_id)
+        if not isinstance(reply, dict):
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=ERROR_MESSAGES.NOT_FOUND)
+        stamp = reply.get('petal_fusion')
+        if not isinstance(stamp, dict) or not stamp.get('asked_at'):
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='no fusion check was asked here')
+
+        row = await petal_fusion.row_for(user.id, form.message_id, db)
+        prior = dict(row.data or {}) if row else None
+        data = petal_fusion.row_data(stamp, score, form.chat_id, form.message_id, prior, model_id=reply.get('model'))
+        if row and prior and prior.get('score') == score:
+            landed, created = row, False  # the same moon again: nothing changes
+        else:
+            feedback_form = FeedbackForm(
+                type=petal_fusion.TYPE,
+                data=data,
+                meta={'chat_id': form.chat_id, 'message_id': form.message_id, 'turn_index': stamp.get('turn_index')},
+                snapshot=None,
+            )
+            if row:
+                landed = await Feedbacks.update_feedback_by_id_and_user_id(
+                    id=row.id, user_id=user.id, form_data=feedback_form, db=db
+                )
+                created = False
+            else:
+                landed = await Feedbacks.insert_new_feedback(user_id=user.id, form_data=feedback_form, db=db)
+                created = True
+            if not landed:
+                raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=ERROR_MESSAGES.DEFAULT())
+            await publish_event(
+                request,
+                EVENTS.FEEDBACK_CREATED if created else EVENTS.FEEDBACK_UPDATED,
+                actor=user,
+                subject_id=landed.id,
+                data={'type': petal_fusion.TYPE},
+            )
+
+        kept = landed.data or data
+        told = {
+            **stamp,
+            'score': score,
+            'feedback_id': landed.id,
+            'answered_at': kept.get('answered_at'),
+            'changes': len(kept.get('history') or []),
+        }
+        if told != stamp:  # her sidebar keeps its order: a moon never moves the chat
+            await Chats.upsert_message_to_chat_by_id_and_message_id(
+                form.chat_id, form.message_id, {'petal_fusion': told}, touch=False
+            )
+        return {'feedback_id': landed.id, 'created': created, 'score': score, 'changes': told['changes']}
+
+
+class FusionAskForm(BaseModel):
+    chat_id: str
+    message_id: str
+    rules: dict = {}  # her settings (Settings → 🌸 Petal): {on, start, floor}, kept inside their ranges here
+
+
+@router.post('/fusion/ask')
+async def fusion_ask(
+    request: Request,
+    form: FusionAskForm,
+    user=Depends(get_verified_user),
+    db: AsyncSession = Depends(get_async_session),
+):
+    """🌕 A34 · a reply is finished: may it ask her how the fusion is going? (the rails, then the one decider)"""
+    if not is_saved_chat_id(form.chat_id):
+        return {'ask': False, 'why': 'temporary chats never ask'}
+    async with _locks[(user.id, f'fusion-ask:{form.chat_id}')]:  # two replies finishing at once: one ask a stretch
+        chat = await Chats.get_chat_by_id_and_user_id(form.chat_id, user.id, db=db)
+        if not chat:
+            return {'ask': False, 'why': 'not her chat'}
+        context = await petal_fusion.context_for(user, chat, form.message_id, form.rules, db=db)
+        ask, why = petal_pick.ask_fusion(context)
+        if not ask:
+            return {'ask': False, 'why': why}
+        stamp = await asyncio.to_thread(petal_fusion.stamp_for, context, why)  # 👁 is read once, for the pull
+        saved = await Chats.upsert_message_to_chat_by_id_and_message_id(
+            form.chat_id, form.message_id, {'petal_fusion': stamp}, touch=False
+        )
+        if not saved:
+            return {'ask': False, 'why': 'the ask could not be kept'}
+        return {'ask': True, 'why': why, 'stamp': stamp}
+
+
+@router.get('/fusion/rate')
+async def fusion_rate(on: bool = True, start: int = petal_fusion.START, floor: int = petal_fusion.FLOOR, user=Depends(get_verified_user)):
+    """🌕 A34 · numbers only: how often a finished reply asks now, and her moons so far"""
+    r = petal_fusion.rules({'on': on, 'start': start, 'floor': floor})
+    counts = await petal_fusion.answers(user.id)
+    answered = counts['flowing'] + counts['off']
+    p = petal_fusion.rate(answered, r['start'], r['floor'])
+    return {
+        'on': r['on'],
+        'every': petal_fusion.every(p),
+        'rate': round(p, 4),
+        'answers': answered,
+        'counts': counts,
+        'start': r['start'],
+        'floor': r['floor'],
+        'half': petal_fusion.HALF,
+    }
 
 
 @router.get('/thumbs/thanks')
