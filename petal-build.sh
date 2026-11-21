@@ -50,7 +50,7 @@ NODE_OPTIONS="--max-old-space-size=8192" npm run build
 
 # 🌸 pyodide-lock.json is refreshed by every build (new package versions from the internet).
 #    keep the committed copy so it never shows as a change; the build output keeps the fresh one.
-git checkout -- static/pyodide/pyodide-lock.json 2>/dev/null || true
+git checkout HEAD -- static/pyodide/pyodide-lock.json 2>/dev/null || true
 
 echo "🌸 re-seating editable install..."
 source ~/.venvs/openwebui/bin/activate
