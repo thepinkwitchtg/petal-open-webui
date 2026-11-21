@@ -15,9 +15,12 @@
 	// pass with no pause (about 85 px a second, 4–7 s a crossing) · the door starts and stops the loop
 	// if a layer ever fails to paint, the words beneath still show. the door ($lib/utils/petal-quote-fx)
 	// decides when anything moves; a click reveals it and lets her voice say just that line.
+	// 👁 A35: off her screen (or in a hidden tab) the loop holds mid-pass and glides on from there; every star of a
+	// reveal, and every faint star of the gloss, leaves the page the moment its own twinkle ends.
 	import { onDestroy, setContext } from 'svelte';
 	import { PLAY_MS, enroll, replay, touch } from '$lib/utils/petal-quote-fx';
 	import { speakQuote } from '$lib/utils/petal-voice';
+	import { atEnd } from '$lib/utils/petal-sight';
 
 	export let display = false;
 	// the quote's words as written, and whether its message is done streaming
@@ -81,13 +84,32 @@
 	// light every period: as one band leaves the words the next comes in, so the loop has no seam and no
 	// pause (two transforms on a loop, run by the compositor) ───────────────────────────────────────────
 	let glossAnims: Animation[] = [];
+	let heldAnims: Animation[] = []; // the loop's parts holding where they are (A35: only these glide on)
 	let glossW = 0;
 	let glossRO: ResizeObserver | null = null;
+	/** A35 · off her screen, a hidden tab: the loop holds mid-pass · back: it glides on from there */
+	function hold(held: boolean) {
+		if (held) {
+			for (const a of glossAnims)
+				if (a.playState === 'running') {
+					a.pause();
+					heldAnims.push(a);
+				}
+			return;
+		}
+		for (const a of heldAnims) {
+			if (a.playState !== 'paused' || !glossAnims.includes(a)) continue;
+			if (atEnd(a)) a.finish(); // the fade-in ended as it was held: never played over again
+			else a.play();
+		}
+		heldAnims = [];
+	}
 	function gloss(on: boolean, soft = false) {
 		const win = sheenEl?.firstElementChild as HTMLElement | null;
 		const words = win?.firstElementChild as HTMLElement | null;
 		if (!win || !words) return;
 		if (!on) {
+			heldAnims = [];
 			if (!glossAnims.length) return;
 			const going = glossAnims;
 			glossAnims = [];
@@ -149,14 +171,17 @@
 		if (!glossRO && typeof ResizeObserver !== 'undefined') {
 			glossRO = new ResizeObserver(() => {
 				if (!glossAnims.length || !sheenEl || Math.abs(sheenEl.clientWidth - glossW) < 2) return;
+				const held = heldAnims.length > 0; // a loop holding off her screen holds again at its new size
 				gloss(false);
 				gloss(true);
+				if (held) hold(true);
 			});
 			glossRO.observe(sheenEl);
 		}
 	}
 
-	// ── one faint star near the words, once (its own little element, gone when it's done) ──────────
+	// ── one faint star near the words, once (its own little element, gone the moment its twinkle ends: a twinkle
+	// held off her screen finishes when she sees it, A35) ──────────────────────────────────────────────────
 	function star() {
 		if (!glintsEl || reduced()) return;
 		const s = scatter(true)[0];
@@ -164,9 +189,14 @@
 		const i = document.createElement('i');
 		i.className = `pq-spark pq-${s.kind} pq-glint`;
 		i.style.cssText = `left:${s.x}px;top:${s.y}px;--sz:${s.size}px;--at:0ms;--life:${s.life}ms;--rot:${s.rot}deg`;
+		const gone = () => i.remove();
+		i.addEventListener('animationend', gone, { once: true });
+		i.addEventListener('animationcancel', gone, { once: true });
 		glintsEl.appendChild(i);
-		setTimeout(() => i.remove(), s.life + 100);
 	}
+	/** a reveal's star leaves the page when its own twinkle ends (a star that never twinkles, reduced motion, leaves
+	 *  with the reveal) */
+	const sparkDone = (s: Spark) => (sparks = sparks.filter((x) => x !== s));
 
 	// ── a display quote joins the door once its layers exist (and leaves it if it stops being one) ──
 	function arm() {
@@ -190,6 +220,7 @@
 				sparks = [];
 			},
 			gloss,
+			hold,
 			star,
 			selecting: (on) => (selecting = on)
 		});
@@ -348,9 +379,10 @@
 		<span class="pq-sparks pq-glints pq-copy" aria-hidden="true" inert bind:this={glintsEl}></span>
 		{#if revealing && sparks.length}
 			<span class="pq-sparks pq-copy" aria-hidden="true" inert
-				>{#each sparks as s}<i
+				>{#each sparks as s (s)}<i
 						class="pq-spark pq-{s.kind}"
 						style="left: {s.x}px; top: {s.y}px; --sz: {s.size}px; --at: {s.at}ms; --life: {s.life}ms; --rot: {s.rot}deg"
+						on:animationend={() => sparkDone(s)}
 					></i>{/each}</span
 			>
 		{/if}
