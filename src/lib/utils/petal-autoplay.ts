@@ -8,9 +8,13 @@
 //    through the fork's neutral door (/api/v1/audio/petal-route), which only opens or holds the gate
 //  · the rules: only replies this tab asked for speak by themselves (a reload, another tab, an old chat: never) ·
 //    a reply speaks by itself once (its id is remembered on this device, ids only) · a pick waits and plays only
-//    the chosen reply · a new send stops her · scrolled away (or gone from the page) while the page is visible,
-//    she fades and stops; a hidden page or a dark screen never counts as away · one voice across her tabs (the
-//    newest one speaking wins) · stop (⏹ by the mic) and pause (the bubble) are one tap each
+//    the chosen reply · stop (⏹ by the mic) and pause (the bubble) are one tap each
+//  · 🔈 A40 · her voice follows her: it plays on across the app's tabs and views, a dark screen, a menu, the chat
+//    scrolled away. only her ⏹, a new send in the chat it speaks for, or another reply's voice stops it (a send in
+//    another chat lets that send's reply take over once it speaks; a voice she starts after that send is left be).
+//    one voice at a time across her browser tabs too (the newest one speaking wins)
+//  · 🔈 A40 · the play button joins a reply still being written (the one in view): a growing stream from its first
+//    sentence, fed as she writes, picks aside (A38 reads those)
 //  · 🍒 A38 · a pick, read aloud: while a pick is open she reads both in turn, each opened by her cue (Settings →
 //    🌸 Petal → Voice, defaults below, empty: no cue): cue one, reply one; cue two, reply two. each follows what
 //    the pick shows (twin streaming types both at one pace, so her voice never tells which one is steered), and
@@ -32,7 +36,7 @@ import {
 	unlockPetalStream,
 	voiceNow
 } from '$lib/utils/petalStream';
-import { playReply, replyOf, stopAllVoice, voiceReplies, voiceUI } from '$lib/utils/petal-voice';
+import { playReply, replyOf, setLivePlayer, stopAllVoice, voiceUI } from '$lib/utils/petal-voice';
 
 export type AutoMode = 'off' | 'finished' | 'writing';
 export type AudioRoute = 'earphones' | 'speaker' | 'unknown';
@@ -41,8 +45,6 @@ export const AUTO_MODES: AutoMode[] = ['off', 'finished', 'writing'];
 const KEY = { mode: 'petal-autoplay', ear: 'petal-earphones', follow: 'petal-route-follow', heard: 'petal-autoplayed' };
 const HEARD_KEEP = 300; // ids remembered, newest kept
 const THROTTLE_MS = 280; // a growing reply is looked at this often (and at once when it's done)
-const AWAY_MS = 1500; // out of sight this long while the page is visible: she fades
-const FADE_MS = 900;
 const ROUTE_FRESH_MS = 10000;
 const ROUTE_EVERY_MS = 20000;
 
@@ -241,6 +243,8 @@ type Writing = {
 	timer: ReturnType<typeof setTimeout> | null;
 	lead: string; // 🍒 A38 · her cue, said first (empty: none)
 	pick: PickRead | null; // 🍒 A38 · the pick this turn reads
+	chat: string | null; // 🔈 A40 · the chat it speaks for
+	eager: boolean; // 🔈 A40 · her tap on a reply still being written: open at once, before a sentence is whole
 };
 let writing: Writing | null = null;
 
@@ -269,7 +273,9 @@ function begin(id: string, content: string, finished: boolean, lead = '', pick: 
 		chain: Promise.resolve(),
 		timer: null,
 		lead,
-		pick
+		pick,
+		chat: replyOf(id)?.meta?.()?.chat_id ?? null,
+		eager: false
 	};
 	writing = w;
 	handled.add(id);
@@ -298,8 +304,9 @@ export function grew(
 			return;
 		const r = replyOf(id);
 		if (!r || r.pick?.()) return; // 🍒 a pick waits for her choice
-		if (get(voiceUI).state !== 'idle') return why('writing waits: she listens', id); // she's already listening to something she chose
+		if (get(voiceUI).state !== 'idle' && !mayTakeOver()) return why('writing waits: she listens', id); // she's listening to something she chose
 		why('writing begins', id);
+		takeOver();
 		w = begin(id, content, finished);
 	}
 	w.content = content;
@@ -329,7 +336,7 @@ function flush(w: Writing) {
 	const ready = wholeParts(w.content, w.finished);
 	if (!w.feed) {
 		// her cue opens the turn as soon as its reply shows its first words (a picture alone included)
-		if (!ready.length && !(w.lead && (w.content.trim() || w.finished))) {
+		if (!ready.length && !w.eager && !(w.lead && (w.content.trim() || w.finished))) {
 			if (w.finished) {
 				letGo(w, false); // nothing she'd say aloud
 				if (w.pick && reading === w.pick) nextTurn(w.pick); // a reply with nothing to say never holds the other
@@ -392,7 +399,6 @@ async function open(w: Writing, ready: ReturnType<typeof wholeParts>) {
 		return;
 	}
 	markHeard(w.id);
-	watchAway(w.id);
 	flush(w); // what was written while it opened
 }
 
@@ -412,7 +418,8 @@ function pickGrew(id: string, content: string, finished: boolean, parentId: stri
 		if (readThrough.has(a)) return;
 		if (effectiveMode() === 'off' || !ttsReady() || !petalStreamEnabled()) return;
 		if (!mayAuto(a, parentId) || handled.has(a) || handled.has(b)) return; // heard, or taken, already
-		if (get(voiceUI).state !== 'idle' || writing) return why('pick waits: she listens', a); // she chose something to hear
+		if ((get(voiceUI).state !== 'idle' || writing) && !mayTakeOver()) return why('pick waits: she listens', a); // she chose something to hear
+		takeOver();
 		reading = { a, b, turn: 0, chosen: null, shows: {} };
 		why('pick read begins', a);
 	}
@@ -465,7 +472,6 @@ export function picked(id: string): boolean {
 		if (hearing === id) {
 			p.chosen = id;
 			handled.add(id);
-			watchAway(id);
 			why('picked the one she hears', id);
 			return true;
 		}
@@ -505,106 +511,61 @@ export function autoAfter(id: string, parentId?: string | null, parentText?: str
 	if (!mine(id, parentId, parentText) || !mayAuto(id, parentId)) return (why('after: not hers here', id), false);
 	why('after: yes', id);
 	markHeard(id);
-	watchAway(id);
 	return true;
 }
 
-/** a new send of hers: whatever her voice was saying stops (and her tap lets the next reply play) */
-export function newSend() {
-	why('new send');
-	reading = null;
+/** 🔈 A40 · the voice a send in another chat may hand over to that send's reply (null: none) */
+let yieldTo: string | null = null;
+const mayTakeOver = () => {
+	const ui = get(voiceUI);
+	return !!yieldTo && ui.state !== 'idle' && ui.message_id === yieldTo;
+};
+/** her new reply speaks: the voice it was handed (another chat's) stops, whatever kind it was */
+function takeOver() {
+	if (!mayTakeOver()) return;
+	why('her new reply takes the voice over', yieldTo);
+	yieldTo = null;
+	if (writing) letGo(writing, true);
+	stopAllVoice();
+}
+
+/** a new send of hers (Chat, with the chat it's sent in): the voice speaking for that chat stops, and her tap
+ *  lets the next reply play · 🔈 A40 · a voice speaking for another chat plays on, until this send's reply speaks */
+export function newSend(chatId?: string | null) {
 	unlockPetalStream();
+	const ui = get(voiceUI);
+	const v = get(voiceNow);
+	const theirs = ui.state !== 'idle' && v.state !== 'idle' && v.chat_id ? v.chat_id : null; // the chat it speaks for
+	if (theirs && theirs !== (chatId ?? '')) {
+		yieldTo = ui.message_id;
+		why('new send in another chat: she plays on', ui.message_id);
+		return;
+	}
+	why('new send');
+	yieldTo = null;
+	reading = null;
+	if (writing) letGo(writing, true);
+	if (ui.state !== 'idle') stopAllVoice();
+}
+
+/** 🔈 A40 · the play button on a reply still being written: her voice joins it from its first sentence and follows
+ *  the typing (one growing stream, fed by grew) · false: not hers to take (finished, gone, or one of an open pick:
+ *  A38's rules) */
+export function playLive(id: string): boolean {
+	const r = replyOf(id);
+	if (!r || r.done() || r.pair?.() || !ttsReady() || !petalStreamEnabled()) return false;
+	if (writing?.id === id && get(voiceUI).state !== 'idle') return true; // she's already speaking it
+	why('her tap joins it as it is written', id);
+	yieldTo = null;
+	reading = null;
 	if (writing) letGo(writing, true);
 	if (get(voiceUI).state !== 'idle') stopAllVoice();
-}
-
-// ── away: scrolled out of sight (or gone from the page) while the page is visible ───────────────────────
-let awayIO: IntersectionObserver | null = null;
-let awayId: string | null = null;
-let awayTimer: ReturnType<typeof setTimeout> | null = null;
-let unReplies: (() => void) | null = null;
-let fading: ReturnType<typeof setInterval> | null = null;
-
-function clearAway() {
-	awayIO?.disconnect();
-	awayIO = null;
-	awayId = null;
-	if (awayTimer) clearTimeout(awayTimer);
-	awayTimer = null;
-	unReplies?.();
-	unReplies = null;
-}
-
-function soonAway() {
-	if (awayTimer || document.visibilityState !== 'visible') return;
-	awayTimer = setTimeout(() => {
-		awayTimer = null;
-		if (document.visibilityState === 'visible') fadeOut();
-	}, AWAY_MS);
-}
-function back() {
-	if (awayTimer) clearTimeout(awayTimer);
-	awayTimer = null;
-}
-
-/** where her reply is drawn now: inside an open pick, the whole pick (the phone shows one side at a time) */
-const awayTarget = (id: string): HTMLElement | null => {
-	const el = replyOf(id)?.root() ?? null;
-	return (el?.closest('[data-petal-pick]') as HTMLElement | null) ?? el;
-};
-
-function watchAway(id: string) {
-	clearAway();
-	if (typeof IntersectionObserver === 'undefined') return;
-	awayId = id;
-	let watched: HTMLElement | null = null;
-	// 🍒 A38 · her reply drawn again (a pick closing, the list keyed again) is watched where it is now: the card it
-	// left is detached, which an observer reports as out of view, and that is not her scrolling away
-	const follow = () => {
-		if (awayId !== id) return;
-		const el = awayTarget(id);
-		if (el === watched && el?.isConnected) return;
-		awayIO?.disconnect();
-		awayIO = null;
-		watched = el;
-		if (!el || !el.isConnected) return void soonAway(); // gone from the page (the chat changed under her)
-		back();
-		awayIO = new IntersectionObserver((entries) => {
-			const e = entries[entries.length - 1];
-			if (!e || awayId !== id) return;
-			if (!(e.target as HTMLElement).isConnected || e.target !== watched) return follow();
-			if (e.isIntersecting) back();
-			else soonAway();
-		});
-		awayIO.observe(el);
-	};
-	follow();
-	unReplies = voiceReplies.subscribe(() => queueMicrotask(follow));
-}
-
-/** her voice fades over FADE_MS and stops (only the stream's <audio> can fade; anything else just stops) */
-export function fadeOut(ms = FADE_MS) {
-	if (fading) return;
-	const a = petalStreamAudio();
-	const ui = get(voiceUI);
-	if (ui.state === 'idle') return clearAway();
-	if (!a || ui.kind !== 'stream' || a.paused) {
-		stopAllVoice();
-		return clearAway();
-	}
-	const from = a.volume;
-	const t0 = performance.now();
-	fading = setInterval(() => {
-		const k = Math.min(1, (performance.now() - t0) / ms);
-		a.volume = Math.max(0, from * (1 - k));
-		if (k >= 1) {
-			if (fading) clearInterval(fading);
-			fading = null;
-			stopAllVoice();
-			a.volume = from;
-			clearAway();
-		}
-	}, 50);
+	handled.delete(id);
+	const w = begin(id, r.content() ?? '', false);
+	w.eager = true;
+	markHeard(id);
+	flush(w);
+	return true;
 }
 
 // ── one voice across her tabs ───────────────────────────────────────────────────────────────────────────
@@ -616,6 +577,7 @@ let installed = false;
 export function installAutoplay() {
 	if (installed || typeof window === 'undefined') return;
 	installed = true;
+	setLivePlayer(playLive); // 🔈 A40 · the play button joins a reply still being written
 	// her first touch of the page lets her stream's <audio> play by itself later (phones ask for a tap)
 	const unlock = () => {
 		if (effectiveMode() !== 'off') unlockPetalStream();
@@ -643,7 +605,7 @@ export function installAutoplay() {
 	});
 	voiceNow.subscribe((v) => {
 		if (v.state !== 'idle') return;
-		// she ended (played out, stopped, broken): the writing voice and the away watch let go of it
+		// she ended (played out, stopped, broken): the writing voice lets go of it
 		const ended = writing && (!v.message_id || v.message_id === writing.id) && (writing.feed || !writing.opening) ? writing : null;
 		if (ended) letGo(ended, true);
 		// 🍒 A38 · a pick's turn: reached its end → the other's turn · stopped, faded, broken → the reading ends
@@ -654,10 +616,9 @@ export function installAutoplay() {
 				reading = null;
 			}
 		}
-		if (awayId && get(voiceUI).state === 'idle') clearAway();
+		if (v.message_id === yieldTo) yieldTo = null; // the voice she might have handed over has ended
 	});
 	voiceUI.subscribe((ui) => {
-		if (ui.state === 'idle' && awayId && !fading) clearAway();
 		if (ui.state === 'idle' && reading && !writing) pickTurn(reading); // 🍒 the next turn, once she's quiet
 	});
 	// the rig's audio route, while she follows it on the phone and the page is visible: no clock at all otherwise
@@ -674,7 +635,6 @@ export function installAutoplay() {
 	});
 	document.addEventListener('visibilitychange', () => {
 		if (document.visibilityState === 'visible') void refreshRoute();
-		else back(); // a hidden page or a dark screen is never away
 	});
 	void refreshRoute(true);
 	(window as unknown as { petalAutoplay?: object }).petalAutoplay = {

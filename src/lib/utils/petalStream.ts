@@ -40,6 +40,7 @@ let current: {
 	trace?: string;
 	token: string;
 	message_id?: string;
+	chat_id?: string; // 🔈 A40 · the chat she's speaking for (a send in another chat leaves her be)
 	title: string;
 	started: boolean;
 	onEnded?: () => void;
@@ -55,6 +56,7 @@ export type VoiceEnd = 'natural' | 'stopped' | 'broken';
 export type VoiceNow = {
 	state: 'idle' | 'loading' | 'playing' | 'paused';
 	message_id: string | null;
+	chat_id?: string | null; // 🔈 A40 · the chat of the reply she speaks (ids only)
 	id: string | null; // the stream's ticket
 	ended: VoiceEnd | null; // why the last one ended (natural: she reached the end)
 };
@@ -237,7 +239,7 @@ const setState = (s: MediaSessionPlaybackState) => {
 };
 
 const say = (state: VoiceNow['state']) =>
-	voiceNow.set({ state, message_id: current?.message_id ?? null, id: current?.id ?? null, ended: null });
+	voiceNow.set({ state, message_id: current?.message_id ?? null, chat_id: current?.chat_id ?? null, id: current?.id ?? null, ended: null });
 
 const finish = (broken: boolean, why: VoiceEnd = broken ? 'broken' : 'stopped') => {
 	const was = current;
@@ -255,7 +257,7 @@ const finish = (broken: boolean, why: VoiceEnd = broken ? 'broken' : 'stopped') 
 	}
 	setState('none');
 	if (!was) return;
-	voiceNow.set({ state: 'idle', message_id: was.message_id ?? null, id: was.id, ended: why });
+	voiceNow.set({ state: 'idle', message_id: was.message_id ?? null, chat_id: was.chat_id ?? null, id: was.id, ended: why });
 	// a stream that breaks before her first sound gets a second chance as sentence clips;
 	// once she has spoken, a break just ends her like a stop would
 	if (broken && !was.started) was.onError?.();
@@ -333,14 +335,14 @@ export const flagPetalVoice = async (
 
 // → true when the stream was opened and handed to the player; false means use sentence clips now
 export const playPetalStream = async (p: Play): Promise<boolean> => {
-	if (!current) voiceNow.set({ state: 'loading', message_id: p.meta?.message_id ?? null, id: null, ended: null });
+	if (!current) voiceNow.set({ state: 'loading', message_id: p.meta?.message_id ?? null, chat_id: p.meta?.chat_id ?? null, id: null, ended: null });
 	const res = await fetch(`${AUDIO_API_BASE_URL}/petal-stream`, {
 		method: 'POST',
 		headers: { Authorization: `Bearer ${p.token}`, 'Content-Type': 'application/json' },
 		body: JSON.stringify({ voice: p.voice, parts: p.parts, meta: p.meta, ...(p.growing ? { growing: true } : {}) })
 	}).catch(() => null);
 	const unopened = () => {
-		if (!current) voiceNow.set({ state: 'idle', message_id: p.meta?.message_id ?? null, id: null, ended: 'broken' });
+		if (!current) voiceNow.set({ state: 'idle', message_id: p.meta?.message_id ?? null, chat_id: p.meta?.chat_id ?? null, id: null, ended: 'broken' });
 		return false;
 	};
 	if (!res || !res.ok) return unopened();
@@ -356,6 +358,7 @@ export const playPetalStream = async (p: Play): Promise<boolean> => {
 		trace: opened?.trace,
 		token: p.token,
 		message_id: p.meta?.message_id,
+		chat_id: p.meta?.chat_id,
 		title,
 		started: false,
 		onEnded: p.onEnded,
