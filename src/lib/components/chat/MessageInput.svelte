@@ -3100,6 +3100,16 @@
 								</div>
 
 								<div class="self-end flex space-x-1 mr-1 min-w-0 gap-[0.03125rem]">
+									<!-- 💗 petal (A39): every Petal control under one heart · left of the model picker, where her 💗 always sat -->
+									<PetalHeart
+										chatId={chatId || null}
+										admin={$_user?.role === 'admin'}
+										filters={petalHeartFilters}
+										onFilter={petalHeartFilter}
+										trip={petalTrip.trip}
+										vow={petalTrip.vow}
+										onTrip={(which, anchor) => petalStatusChip?.openPanel?.(anchor, which)}
+									/>
 									<div class="flex min-w-0 max-w-[10rem] items-center sm:max-w-[13rem]">
 										<ModelSelector
 											bind:this={modelSelector}
@@ -3125,16 +3135,6 @@
 									{/if}
 									<!-- 🍒 petal (A29): her ask for a pick on the next send · on the bar when pinned (A39), its key always -->
 									<PetalPickArm shown={$heartPins.includes('pick')} />
-									<!-- 💗 petal (A39): every Petal control under one heart -->
-									<PetalHeart
-										chatId={chatId || null}
-										admin={$_user?.role === 'admin'}
-										filters={petalHeartFilters}
-										onFilter={petalHeartFilter}
-										trip={petalTrip.trip}
-										vow={petalTrip.vow}
-										onTrip={(which, anchor) => petalStatusChip?.openPanel?.(anchor, which)}
-									/>
 									<!-- 🎧 petal (A37): earphones in (phone, pinned by default) · ⏹ stop her voice, by the mic -->
 									<PetalEarChip ear={$heartPins.includes('ear')} />
 
