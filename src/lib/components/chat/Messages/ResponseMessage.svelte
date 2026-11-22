@@ -34,6 +34,7 @@
 	import PetalEyes from './PetalEyes.svelte'; // 👁 what Petal received (slice A10)
 	import PetalPlayButton from './PetalPlayButton.svelte'; // 🔈 the speaker by her name (slices A19 · A19b)
 	import { registerReply, replyDone } from '$lib/utils/petal-voice'; // 🎙️ the voice control and the trail find replies here
+	import { grew } from '$lib/utils/petal-autoplay'; // 🔈 A37 · her voice as she writes
 	import PetalOrbitMenu from './PetalOrbitMenu.svelte'; // ✧ the menu (slice A11)
 	import {
 		copyToClipboard as _copyToClipboard,
@@ -351,10 +352,22 @@
 			done: () => !!message?.done && message.id === id,
 			speak: () => speak(),
 			voice: () => getVoiceId(),
-			content: () => visibleResponseContent ?? ''
+			content: () => visibleResponseContent ?? '',
+			meta: () => ({
+				chat_id: chatId,
+				model: message?.model,
+				title: model?.name ? `${model.name} 💗` : 'Petal 💗',
+				artwork: model?.info?.meta?.profile_image_url,
+				playbackRate: $settings.audio?.tts?.playbackRate ?? 1
+			}),
+			pick: () => !!(message as { petal_pick?: unknown } | undefined)?.petal_pick
 		});
 	}
 	$: if (message?.done && message?.id) replyDone(message.id);
+	// 🔈 A37 · each change of her words, for the voice that speaks as she writes (it decides; nothing runs when off)
+	const parentOf = (m: unknown) => (m as { parentId?: string | null } | undefined)?.parentId ?? null;
+	const parentWords = () => history?.messages?.[parentOf(message) ?? '']?.content; // read only when asked (a queued send of hers)
+	$: if (message?.id && !readOnly) grew(message.id, visibleResponseContent ?? '', !!message.done, parentOf(message), parentWords);
 
 	// legacy: true → the old one-clip-per-sentence path (petal stream's fallback)
 	const speak = async ({ legacy = false }: { legacy?: boolean } = {}) => {

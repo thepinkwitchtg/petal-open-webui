@@ -8,6 +8,17 @@ freezes it, and the next sentence never starts. here she becomes a little radio 
   GET  /api/v1/audio/petal-stream/{id}          one continuous audio/mpeg stream, played by one <audio>
   GET  /api/v1/audio/petal-stream/{id}/events   📡 what she's saying, sentence by sentence (voice_events.py)
 
+🌱 a growing stream (A37 · her voice as she writes): POST with "growing": true opens a stream whose parts
+keep arriving while the reply is still being written. the answer adds a feed capability (its own 128
+random bits, for the same signed-in user only):
+
+  POST /api/v1/audio/petal-stream/feed/{feed}   {parts: [{text, para_end}], done?: bool, source?: str}
+                                                → {ok, parts: <total>, done}
+
+the voice asks each sentence as soon as it's fed; while the next one isn't written yet she simply waits
+between sentences, and the station's little quiet holds the line (the same care as a late voice). done
+(or GROW_IDLE_S with nothing fed) lets her finish. the events door tells each sentence as always.
+
 behind the GET, each sentence is asked of the omni voice (vLLM-Omni, streaming pcm) while the
 previous one is still playing, and each take is a fresh generation, so she varies per sentence.
 
@@ -75,6 +86,8 @@ APP = Path(os.environ.get("PETAL_APP_DATA", Path.home() / "Gardens/Documents/Pet
 CADENCE_PATH = APP / "petal-voice" / "stream-cadence.json"
 
 TICKET_TTL_S = 120
+GROW_IDLE_S = 180  # 🌱 a growing stream fed nothing for this long ends by itself (the page went away)
+FEED_TTL_S = 1800  # 🌱 a feed capability outlives no reply by more than this
 MAX_PARTS = 600
 MAX_CHARS = 40000
 
@@ -197,6 +210,65 @@ class Flow:
         return ahead + self.queued / (2 * RATE)
 
 
+class Growing(list):
+    """🌱 a reply's parts that keep arriving while she writes (A37). produce() walks it with each_part():
+    past the end it waits for more, until done (or GROW_IDLE_S with nothing fed)."""
+
+    def __init__(self, parts: list[dict]):
+        super().__init__(parts)
+        self.done = False
+        self.chars = sum(len(p["text"]) for p in parts)
+        self.fed_at = time.monotonic()
+        self._more = asyncio.Event()
+
+    def feed(self, parts: list[dict], done: bool = False) -> int:
+        """adds what fits (MAX_PARTS · MAX_CHARS across the whole reply) → how many were taken"""
+        took = 0
+        if not self.done:
+            for p in parts:
+                if len(self) >= MAX_PARTS or self.chars + len(p["text"]) > MAX_CHARS:
+                    done = True  # nothing more can be said: what she has is the whole of it
+                    break
+                self.append(p)
+                self.chars += len(p["text"])
+                took += 1
+            self.done = self.done or bool(done)
+        self.fed_at = time.monotonic()
+        self._more.set()
+        return took
+
+    def end(self) -> None:
+        self.done = True
+        self._more.set()
+
+    async def wait(self) -> None:
+        """until something is fed, or the reply is done, or nothing came for GROW_IDLE_S"""
+        while not self.done:
+            self._more.clear()
+            left = GROW_IDLE_S - (time.monotonic() - self.fed_at)
+            if left <= 0:
+                self.done = True
+                return
+            try:
+                await asyncio.wait_for(self._more.wait(), timeout=left)
+                return
+            except asyncio.TimeoutError:
+                continue
+
+
+async def each_part(parts: list[dict]):
+    """(i, part) for a plain list as it is; for a Growing one, waiting at its end for more"""
+    i = 0
+    while True:
+        if i < len(parts):
+            yield i, parts[i]
+            i += 1
+        elif isinstance(parts, Growing) and not parts.done:
+            await parts.wait()
+        else:
+            return
+
+
 RUSH_S = 0.35  # near-free: below this much audio ahead of her ears, she's waiting, so a take may start early
 
 
@@ -229,8 +301,9 @@ async def produce(session, parts: list[dict], voice: str, q: asyncio.Queue, c: d
         await q.put(b)
 
     try:
-        for i, part in enumerate(parts):
-            text, last = sieve(part["text"]), i == len(parts) - 1
+        async for i, part in each_part(parts):  # 🌱 a growing reply is waited for, part by part
+            text = sieve(part["text"])
+            last = i == len(parts) - 1 and getattr(parts, "done", True)
             take = tr.takes[i] if tr and i < len(tr.takes) else None
             if take:
                 take.fed = text
@@ -494,6 +567,8 @@ async def station(session, parts: list[dict], voice: str, tr=None, events=None):
                                       temp=not voice_trace.is_saved_chat_id(meta.get("chat_id")))
         if tr:
             voice_trace.finish(tr, cut_short=not completed)
+        if isinstance(parts, Growing):
+            parts.end()  # 🌱 cut short or finished: the feed has nowhere to go any more
         voice_task.cancel()
         try:
             await voice_task
@@ -528,11 +603,16 @@ if __name__ != "__main__":
 
     router = APIRouter()
     _tickets: dict[str, dict] = {}
+    _feeds: dict[str, dict] = {}  # 🌱 growing streams' feed capabilities
 
     def _sweep() -> None:
         now = time.monotonic()
         for k in [k for k, v in _tickets.items() if now - v["t"] > TICKET_TTL_S]:
-            _tickets.pop(k, None)
+            entry = _tickets.pop(k, None)
+            if entry and isinstance(entry.get("parts"), Growing):
+                entry["parts"].end()  # never opened: nothing will ever walk it
+        for k in [k for k, v in _feeds.items() if now - v["t"] > FEED_TTL_S or v["parts"].done]:
+            _feeds.pop(k, None)
 
     @router.get("/petal-stream/health")
     async def petal_stream_health():
@@ -548,7 +628,8 @@ if __name__ != "__main__":
         except ValueError:
             raise HTTPException(400, "invalid body") from None
         parts = clean_parts(body.get("parts"))
-        if not parts:
+        growing = body.get("growing") is True
+        if not parts and not growing:
             raise HTTPException(400, "nothing to speak")
         voice = body.get("voice") if isinstance(body.get("voice"), str) else OMNI_MODEL
         _sweep()
@@ -556,9 +637,42 @@ if __name__ != "__main__":
         tr = voice_trace.open_trace(user.id, parts, voice[:128], body.get("meta"))  # 🚩 memory only, until flagged
         meta = body.get("meta") if isinstance(body.get("meta"), dict) else {}
         ch = voice_events.open_channel(ticket, user.id, meta.get("message_id"))  # 📡 memory only, never written
+        if growing:  # 🌱 her voice as she writes: the parts keep coming through the feed
+            parts = Growing(parts)
         _tickets[ticket] = {"t": time.monotonic(), "user": user.id, "parts": parts, "voice": voice[:128], "trace": tr,
                             "events": ch}
-        return {"id": ticket, "trace": tr.id, "events": f"petal-stream/{ticket}/events"}
+        out = {"id": ticket, "trace": tr.id, "events": f"petal-stream/{ticket}/events"}
+        if growing:
+            feed = secrets.token_urlsafe(16)
+            _feeds[feed] = {"t": time.monotonic(), "user": user.id, "parts": parts, "trace": tr}
+            out["feed"] = feed
+        return out
+
+    @router.post("/petal-stream/feed/{feed}")
+    async def petal_stream_feed(feed: str, request: Request, user=Depends(get_verified_user)):
+        """🌱 more of the reply she's writing, for a growing stream (A37)"""
+        _sweep()
+        entry = _feeds.get(feed)
+        if not entry or entry["user"] != user.id:
+            raise HTTPException(404, "no such growing stream (or it ended)")
+        try:
+            body = await request.json()
+        except ValueError:
+            raise HTTPException(400, "invalid body") from None
+        body = body if isinstance(body, dict) else {}
+        g: Growing = entry["parts"]
+        more = clean_parts(body.get("parts"))
+        first = len(g)
+        took = g.feed(more, done=body.get("done") is True)
+        tr = entry.get("trace")
+        if tr is not None:
+            for k, p in enumerate(more[:took]):  # 🚩 the trace keeps one take per sentence, as for a whole reply
+                tr.takes.append(voice_trace.Take(idx=first + k, raw=p["text"], para_end=p["para_end"]))
+            if isinstance(body.get("source"), str):
+                tr.meta["source"] = body["source"][:40000]
+        if g.done:
+            _feeds.pop(feed, None)
+        return {"ok": True, "parts": len(g), "done": g.done}
 
     @router.post("/petal-stream/flag")
     async def petal_stream_flag(request: Request, user=Depends(get_verified_user)):
@@ -606,6 +720,15 @@ if __name__ != "__main__":
             media_type="text/event-stream",
             headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no"},
         )
+
+
+    # 🎧 A37 · the rig's audio route (earphones · speaker), only for her phone's autoplay gate: petal_route.py
+    try:
+        from open_webui.routers.audio.petal_route import router as _route_router
+
+        router.include_router(_route_router)
+    except Exception as e:  # never costs her the stream
+        log.warning("petal stream: the route door didn't mount (%s)", e.__class__.__name__)
 
 
 # ── taste by hand: the same station, written to a file ───────────────────────

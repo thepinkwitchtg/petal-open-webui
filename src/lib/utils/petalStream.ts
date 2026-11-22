@@ -28,6 +28,8 @@ type Play = {
 	onPlaying?: () => void;
 	onEnded?: () => void; // she finished, or someone stopped her
 	onError?: () => void; // the stream broke before she spoke: fall back to sentence clips
+	growing?: boolean; // 🌱 A37 · her voice as she writes: more parts arrive through feedPetalStream
+	onFeed?: (feed: string) => void; // 🌱 the growing stream's feed capability, once it's open
 };
 
 let audio: HTMLAudioElement | null = null;
@@ -329,7 +331,7 @@ export const playPetalStream = async (p: Play): Promise<boolean> => {
 	const res = await fetch(`${AUDIO_API_BASE_URL}/petal-stream`, {
 		method: 'POST',
 		headers: { Authorization: `Bearer ${p.token}`, 'Content-Type': 'application/json' },
-		body: JSON.stringify({ voice: p.voice, parts: p.parts, meta: p.meta })
+		body: JSON.stringify({ voice: p.voice, parts: p.parts, meta: p.meta, ...(p.growing ? { growing: true } : {}) })
 	}).catch(() => null);
 	const unopened = () => {
 		if (!current) voiceNow.set({ state: 'idle', message_id: p.meta?.message_id ?? null, id: null, ended: 'broken' });
@@ -358,6 +360,7 @@ export const playPetalStream = async (p: Play): Promise<boolean> => {
 		spokenMessages.update((s) => new Set(s).add(mid));
 	}
 	const mine = current;
+	if (p.growing && opened?.feed) p.onFeed?.(opened.feed);
 	say('loading');
 	a.addEventListener('playing', () => current === mine && p.onPlaying?.(), { once: true });
 	a.src = `${AUDIO_API_BASE_URL}/petal-stream/${encodeURIComponent(id)}`;
@@ -370,4 +373,52 @@ export const playPetalStream = async (p: Play): Promise<boolean> => {
 		if (current === mine) finish(true, 'broken');
 	}
 	return true;
+};
+
+// 🌱 A37 · more of a reply she's still writing, for a growing stream (POST .../petal-stream/feed/{feed})
+// → the rig's {ok, parts, done}, or null when the stream is gone (cut short, played out, the rig asleep)
+export const feedPetalStream = async (
+	token: string,
+	feed: string,
+	parts: PetalPart[],
+	done: boolean,
+	source?: string
+): Promise<{ ok: boolean; parts: number; done: boolean } | null> => {
+	const res = await fetch(`${AUDIO_API_BASE_URL}/petal-stream/feed/${encodeURIComponent(feed)}`, {
+		method: 'POST',
+		headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+		body: JSON.stringify({ parts, done, ...(source !== undefined ? { source } : {}) })
+	}).catch(() => null);
+	if (!res || !res.ok) return null;
+	return res.json().catch(() => null);
+};
+
+// 🔓 A37 · the phone lets an <audio> play by itself only once a tap has played it: inside her tap (her send),
+// her stream's own <audio> plays a breath of silence, so a reply can be heard later without another tap
+const SILENT = 'data:audio/wav;base64,UklGRsQAAABXQVZFZm10IBAAAAABAAEAQB8AAIA+AAACABAAZGF0YaAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA';
+let unlocked = false;
+export const petalStreamUnlocked = () => unlocked;
+export const unlockPetalStream = () => {
+	if (unlocked || current) return;
+	const a = element();
+	try {
+		a.src = SILENT; // silence itself, unmuted: a muted play would unlock nothing
+		const p = a.play();
+		const done = () => {
+			if (current || a.getAttribute('src') !== SILENT) return; // a real stream took the element meanwhile
+			a.pause();
+			a.removeAttribute('src');
+			a.load();
+			setState('none');
+		};
+		if (p && typeof p.then === 'function')
+			p.then(() => {
+				unlocked = true;
+				done();
+			}).catch(() => done());
+		else {
+			unlocked = true;
+			done();
+		}
+	} catch {}
 };
