@@ -9,6 +9,8 @@
 	// quick · at once, mirrored on each device for the static scripts (utils/petal-type.ts)
 	// A34 · the fusion check (utils/petal-fusion.ts): on by default, 1 in 5 finished replies at first, calming to 1 in
 	// 25 as her moons accumulate; her two numbers ride with each ask, and the line below shows where it stands now
+	// A37 · her voice plays on its own (utils/petal-autoplay.ts): off · after she finishes · as she writes (default),
+	// chosen per device (this browser only); on the phone only with earphones (🎧 by the mic, or the rig's route)
 	import { getContext, onMount } from 'svelte';
 	import type { Writable } from 'svelte/store';
 
@@ -28,6 +30,17 @@
 		type FusionRules
 	} from '$lib/utils/petal-fusion';
 	import Switch from '$lib/components/common/Switch.svelte';
+	import {
+		audioRoute,
+		autoMode,
+		earphones,
+		followRoute,
+		isPhone,
+		modeOf,
+		setAutoMode,
+		setEarphones,
+		setFollowRoute
+	} from '$lib/utils/petal-autoplay';
 
 	import PetalSelect from './PetalSelect.svelte';
 	import UserSettingRow from './UserSettingRow.svelte';
@@ -117,6 +130,24 @@
 	];
 	// A33 · her words, typed in as they appear: how quickly
 	let typing: TypeSpeed = speedOf($settings);
+	// A37 · how her voice comes without a click (this device only)
+	const phone = isPhone();
+	$: autoGroups = [
+		{
+			items: [
+				{ value: 'off', label: $i18n.t('off · only when I tap') },
+				{ value: 'finished', label: $i18n.t('after she finishes') },
+				{ value: 'writing', label: $i18n.t('as she writes · sentence by sentence') }
+			]
+		}
+	];
+	$: routeSays =
+		$audioRoute === 'earphones'
+			? $i18n.t('The rig says: earphones')
+			: $audioRoute === 'speaker'
+				? $i18n.t('The rig says: speaker')
+				: $i18n.t('The rig doesn’t know yet: the 🎧 chip decides');
+
 	$: typingGroups = [
 		{
 			items: [
@@ -198,6 +229,52 @@
 				}}
 			/>
 		</UserSettingRow>
+	</UserSettingSection>
+
+	<UserSettingSection title={$i18n.t('🔈 Voice · heard without a click')}>
+		<UserSettingRow
+			description={phone
+				? $i18n.t(
+						'On this phone she speaks by herself only with earphones in: the 🎧 by the mic says so, one tap. A pick waits for your choice; a new send or scrolling away stops her.'
+					)
+				: $i18n.t(
+						'As she writes: her voice follows the typing, sentence by sentence. A pick waits for your choice; a new send or scrolling away stops her. Chosen for this device only.'
+					)}
+			let:labelId
+		>
+			<span slot="label">{$i18n.t('Autoplay')}</span>
+			<PetalSelect
+				id="petal-autoplay"
+				ariaLabelledby={labelId}
+				value={$autoMode}
+				groups={autoGroups}
+				onChange={(v) => setAutoMode(modeOf(v))}
+			/>
+		</UserSettingRow>
+		{#if phone}
+			<UserSettingRow label={$i18n.t('Earphones in')} let:labelId>
+				<Switch
+					ariaLabelledbyId={labelId}
+					ariaLabel={$i18n.t('Earphones in')}
+					state={$earphones}
+					on:change={(e) => setEarphones(!!e.detail)}
+				/>
+			</UserSettingRow>
+			<UserSettingRow
+				description={`${$i18n.t(
+					'Optional: the rig tells whether your phone plays through earphones or its speaker. It only opens or holds autoplay here.'
+				)}${$followRoute ? ` · ${routeSays}` : ''}`}
+				let:labelId
+			>
+				<span slot="label">{$i18n.t('Follow the rig’s audio route')}</span>
+				<Switch
+					ariaLabelledbyId={labelId}
+					ariaLabel={$i18n.t('Follow the rig’s audio route')}
+					state={$followRoute}
+					on:change={(e) => setFollowRoute(!!e.detail)}
+				/>
+			</UserSettingRow>
+		{/if}
 	</UserSettingSection>
 
 	<UserSettingSection title={$i18n.t('🍒 Picks · two replies, one moment')}>

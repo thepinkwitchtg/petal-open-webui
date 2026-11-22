@@ -31,6 +31,7 @@ import {
 	petalStreamParts,
 	petalStreamAudio,
 	resumePetalStream,
+	stopPetalStream,
 	voiceNow,
 	type VoiceSentence
 } from '$lib/utils/petalStream';
@@ -47,6 +48,9 @@ export type VoiceReply = {
 	speak: () => unknown; // her voice from its first sentence (petal stream, or its fallback)
 	voice: () => string | undefined; // the voice it speaks in
 	content: () => string; // its words as written (a quote said alone finds its part here)
+	// 🌱 A37 · what a growing stream needs to speak it while she writes (its chat, its model's name and picture)
+	meta?: () => { chat_id?: string; model?: string; title?: string; artwork?: string; playbackRate?: number };
+	pick?: () => boolean; // 🍒 one of a pair: her voice waits for the pick (contract 11.6)
 };
 const replies = new Map<string, VoiceReply>();
 // Lily's own messages only lend their words (a quote of hers said alone finds its part here)
@@ -84,6 +88,21 @@ export const replyDone = (id: string) => {
 	doneOnce.add(id);
 	bump();
 };
+
+/** 🌱 A37 · a reply on the page, as it registered itself (autoplay speaks it from here) */
+export const replyOf = (id: string): VoiceReply | undefined => replies.get(id);
+
+/** ⏹ A37 · her voice stops, whatever was speaking: the stream, a quote's line, sentence clips, the browser's own */
+export function stopAllVoice() {
+	stopPetalStream();
+	stopLine();
+	try {
+		(get(audioQueue) as { stop?: () => void } | null)?.stop?.();
+	} catch {}
+	try {
+		if (typeof speechSynthesis !== 'undefined' && speechSynthesis.speaking) speechSynthesis.cancel();
+	} catch {}
+}
 
 // ── her eyes (A31): the reply most in view ──────────────────────────────────────────────────────────
 // one IntersectionObserver on the chat's own scroll box watches every reply on screen and its speaker button,

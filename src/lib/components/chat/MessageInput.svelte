@@ -138,6 +138,7 @@
 	import PetalModeChip from './MessageInput/PetalModeChip.svelte'; // 🌀 the forge's modes, by send
 	import PetalPickArm from './MessageInput/PetalPickArm.svelte'; // 🍒 her ask for a pick (A29)
 	import PetalVoiceBubble from './MessageInput/PetalVoiceBubble.svelte'; // 🎙️ her voice, always at hand (slice A19)
+	import PetalEarChip from './MessageInput/PetalEarChip.svelte'; // 🎧 earphones in · ⏹ stop her voice (A37)
 	import { getChatContext } from '$lib/components/chat/context';
 	import { machineIdOf } from '$lib/utils/machines';
 
@@ -3103,6 +3104,8 @@
 									{/if}
 									<!-- 🍒 petal (A29): her ask for a pick on the next send · nothing here unless she asked -->
 									<PetalPickArm />
+									<!-- 🎧 petal (A37): earphones in (phone) · ⏹ stop her voice, by the mic -->
+									<PetalEarChip />
 
 									{#if isActive && (history.messages[history.currentId]?.user_id ?? $_user?.id) === $_user?.id && prompt === '' && files.length === 0}
 										<div class=" flex items-center">

@@ -63,6 +63,7 @@
 	import { adoptMode, modeToSend } from '$lib/utils/petal-mode'; // 🌀 the mode chip (A15)
 	import { thumbsNudge } from '$lib/utils/petal-thumbs'; // 👍🏻 instant thumbs (A23): waiting verdicts go first
 	import { playReply, speakingNow } from '$lib/utils/petal-voice'; // 🔈 auto-playback in speaker mode (A23)
+	import { askedHere, askedLater, autoAfter, bornHere, effectiveMode, installAutoplay, newSend } from '$lib/utils/petal-autoplay'; // 🔈 A37
 	import { petalDraft } from '$lib/utils/petal-draft'; // 📷 A33 · her draft kept in this browser too
 	import { installPetalCamera } from '$lib/utils/petal-camera'; // 📷 A33 · the camera stays in the page
 	import {
@@ -2395,6 +2396,7 @@
 		console.log('mounted');
 		if (!embedded && appLayout) appLayout.initNewChat = initNewChat;
 		installPetalCamera(); // 📷 A33 · once per page
+		installAutoplay(); // 🔈 A37 · once per page
 		petalDraft.prune();
 		window.addEventListener('message', onMessageHandler);
 		$socket?.on('events', chatEventHandler);
@@ -2407,7 +2409,7 @@
 
 		const audioQueueInstance = new AudioQueue(
 			audioElement,
-			() => $settings.responseAutoPlayback ?? false
+			() => ($settings.responseAutoPlayback ?? false) || effectiveMode() !== 'off' // 🔈 A37
 		);
 		audioQueue.set(audioQueueInstance);
 
@@ -4013,7 +4015,9 @@
 			copyToClipboard(visibleContent);
 		}
 
-		if ($settings.responseAutoPlayback && !$voiceCall && !bridge?.connected) {
+		// 🔈 A37 · Settings → 🌸 Petal → Voice decides (per device): after she finishes, or as she writes when that
+		// voice couldn't take this one (a pick plays only the chosen reply, once she picks)
+		if (!$voiceCall && !bridge?.connected && autoAfter(message.id, message.parentId, history.messages[message.parentId]?.content)) {
 			await tick();
 			const speaker = document.getElementById(`speak-button-${message.id}`);
 			// speaker mode (A23): the row's Read Aloud steps aside for the speaker by her name
@@ -4514,6 +4518,7 @@
 			return { status: 'deferred' as const };
 		}
 		thumbsNudge(); // a verdict still waiting tries now, so Petal can see it in this turn (never waited on)
+		if (!bridgeRequest) newSend(); // 🔈 A37 · a new send of hers stops her voice (and her tap lets the next reply play)
 		const _files = structuredClone(inputFiles);
 
 		chatFiles.push(
@@ -4537,6 +4542,8 @@
 
 		// Create user message
 		let userMessageId = bridgeRequest?.userMessageId ?? uuidv4();
+		if (!bridgeRequest) askedHere(userMessageId); // 🔈 A37 · a reply to it is hers
+		if (queued) askedLater(inputContent); // 🔈 A37 · the backend's queue answers it under a message of its own
 		let userMessage = {
 			id: userMessageId,
 			parentId: history.currentId ?? null,
@@ -5283,6 +5290,9 @@
 			messageIdsList.push({ ...messageIdsList[0], message_id: twinId });
 			history.currentId = first.id;
 		}
+		// 🔈 A37 · replies of her own asking (a pick's two too) are the only ones that may speak by themselves · a send
+		// queued behind a running reply is answered later by the backend: its reply is hers through her message instead
+		if (!$voiceCall && !bridge?.connected && !queued) for (const m of messageIdsList) bornHere(m.message_id);
 		history = history;
 
 		await tick();
