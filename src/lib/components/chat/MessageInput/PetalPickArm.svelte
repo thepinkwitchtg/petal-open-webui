@@ -18,6 +18,8 @@
 
 	const i18n: Writable<any> = getContext('i18n');
 
+	export let shown = true; // 💗 A39 · unpinned: the cherry hides under the heart, its key still asks for a pick
+
 	let root: HTMLElement;
 
 	$: hint = formatChord($keybindings[Shortcut.ASK_PICK] ?? '');
@@ -53,6 +55,7 @@
 </script>
 
 <span bind:this={root} class="ppa-root">
+	{#if shown}
 	<button
 		type="button"
 		class="ppa"
@@ -68,6 +71,7 @@
 	>
 		<span class="ppa-cherry" aria-hidden="true">🍒</span>
 	</button>
+	{/if}
 </span>
 
 <style>

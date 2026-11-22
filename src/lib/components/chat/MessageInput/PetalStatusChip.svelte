@@ -39,8 +39,16 @@
 		writeTrip
 	} from '$lib/utils/petal-markers';
 	import type { TripResult } from '$lib/apis/petal-markers';
+	import { placeSheet } from '$lib/utils/petal-heart';
 
 	export let temporary = false;
+	// 💗 A39 · under the heart: unpinned, the chips hide (the panel, its minute hand and the vow's day still live
+	// here), the heart reads their words from `summary` and opens the panel through `openPanel`
+	export let shown = true;
+	export let summary: { trip: { emoji: string; text: string } | null; vow: { text: string } | null } = {
+		trip: null,
+		vow: null
+	};
 
 	let t = nowS();
 	let timer: ReturnType<typeof setTimeout> | undefined;
@@ -135,6 +143,11 @@
 				? `trip markers: ${$markersError}`
 				: 'what are you on? ✧';
 
+	$: summary = {
+		trip: n || $markersError ? { emoji: chip?.emoji ?? '✧', text: chip ? `${chip.word} · ${chip.left}` : $markersError ? chipTitle : 'nothing set' } : null,
+		vow: vow ? { text: `day ${vowDay} of ${vow.total_days}` } : null
+	};
+
 	// ── the panel ───────────────────────────────────────────────
 	let chipEl: HTMLButtonElement;
 	let vowEl: HTMLButtonElement;
@@ -151,26 +164,20 @@
 		return { destroy: () => node.remove() };
 	}
 
+	// 💗 A39 · one placement with the heart's picker (utils/petal-heart.ts): the phone gets a sheet the screen's width,
+	// held inside what she can see above the bar and the keyboard (the old one counted from the window and slid
+	// off her screen once the keyboard rose); a mouse on a wide screen gets the compact panel by its chip
 	const place = () => {
 		const a = anchorEl ?? chipEl;
 		if (!a) return;
-		const r = a.getBoundingClientRect();
-		const vh = window.visualViewport?.height ?? window.innerHeight;
-		const vw = window.innerWidth;
-		// a mouse on a wide screen gets the compact panel; a phone keeps the thumb-sized one
 		const compact = window.matchMedia?.('(pointer: fine) and (min-width: 641px)').matches;
-		const width = Math.min(compact ? 296 : 352, vw - 16);
-		pos = {
-			width,
-			left: Math.min(Math.max(8, r.left), vw - width - 8),
-			bottom: Math.max(8, window.innerHeight - r.top + 8),
-			maxH: Math.max(220, r.top - 16 - (window.innerHeight - vh))
-		};
+		const p = placeSheet(a, compact ? 296 : 352, a === chipEl || a === vowEl ? 'start' : 'end');
+		pos = { width: p.width, left: p.left, bottom: p.bottom, maxH: p.maxH };
 	};
 
 	const onOutside = (e: PointerEvent) => {
 		const el = e.target as Node;
-		if (panelEl?.contains(el) || chipEl?.contains(el) || vowEl?.contains(el)) return;
+		if (panelEl?.contains(el) || chipEl?.contains(el) || vowEl?.contains(el) || anchorEl?.contains(el)) return;
 		close();
 	};
 	const onKey = (e: KeyboardEvent) => {
@@ -187,6 +194,7 @@
 		document.addEventListener('keydown', onKey, true);
 		window.addEventListener('resize', place);
 		window.visualViewport?.addEventListener('resize', place);
+		window.visualViewport?.addEventListener('scroll', place);
 	};
 	function unlisten() {
 		if (!listening) return;
@@ -195,6 +203,7 @@
 		document.removeEventListener('keydown', onKey, true);
 		window.removeEventListener('resize', place);
 		window.visualViewport?.removeEventListener('resize', place);
+		window.visualViewport?.removeEventListener('scroll', place);
 	}
 
 	const close = () => {
@@ -223,6 +232,23 @@
 	};
 
 	const focusDose = () => doseEl?.focus({ preventScroll: true });
+
+	/** 💗 A39 · the heart opens the panel from where it is (its trip, or the vow's card) */
+	export async function openPanel(anchor: HTMLElement, which: 'trip' | 'vow' = 'trip') {
+		if (open) close();
+		t = nowS();
+		anchorEl = anchor;
+		place();
+		open = true;
+		listen();
+		if (which === 'vow' || current.length || ig) mode = 'view';
+		else {
+			newForm();
+			await tick();
+			focusDose();
+		}
+		refreshMarkers();
+	}
 
 	// 🔥 the vow's chip opens the panel on its card
 	const toggleVow = () => {
@@ -644,7 +670,7 @@
 	};
 </script>
 
-{#if n || $markersError}
+{#if (n || $markersError) && shown}
 	<button
 		type="button"
 		bind:this={chipEl}

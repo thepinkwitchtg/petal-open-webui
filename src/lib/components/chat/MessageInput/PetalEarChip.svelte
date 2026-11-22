@@ -11,6 +11,8 @@
 	import { audioRoute, autoMode, earphones, followRoute, isPhone, setEarphones } from '$lib/utils/petal-autoplay';
 	import { stopAllVoice, voiceUI } from '$lib/utils/petal-voice';
 
+	export let ear = true; // 💗 A39 · unpinned: 🎧 lives under the heart; ⏹ always shows while she speaks
+
 	const i18n: Writable<any> = getContext('i18n');
 	const phone = isPhone();
 
@@ -26,7 +28,7 @@
 	$: speaking = $voiceUI.state !== 'idle';
 </script>
 
-{#if phone && $autoMode !== 'off'}
+{#if ear && phone && $autoMode !== 'off'}
 	<button
 		type="button"
 		class="pec"
