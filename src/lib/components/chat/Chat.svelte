@@ -4306,7 +4306,7 @@
 	) => {
 		if (selectedModels.includes('')) throw new Error($i18n.t('Model not selected'));
 		thumbsNudge(); // a verdict still waiting tries now, so Petal can see it in this turn (never waited on)
-		if (!bridgeRequest) newSend(); // 🔈 A37 · a new send of hers stops her voice (and her tap lets the next reply play)
+		if (!bridgeRequest) newSend($chatId); // 🔈 A37 · A40 · a new send stops the voice speaking for this chat (and her tap lets the next reply play)
 		const _files = structuredClone(inputFiles);
 
 		chatFiles.push(

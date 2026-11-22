@@ -226,6 +226,9 @@ function aside(id: string): boolean {
 	return !!f && f.id !== id && f.ids.includes(id);
 }
 
+/** 🔈 A40 · a reply still being written, outside an open pick, that already shows words: the play button joins it */
+const writingWithWords = (r: VoiceReply) => !r.done() && !r.pair?.() && !!r.content().trim();
+
 /** the newest reply that can be played (with none in view) */
 function newest(): string | null {
 	let last: { id: string; at: number } | null = null;
@@ -274,7 +277,7 @@ function look() {
 		const mine = !!f && f.ids.includes(r.id);
 		if (mine && r.id !== f!.id) continue;
 		const share = mine ? pickShare : (shares.get(r.id) ?? 0);
-		if (share <= 0 || (!r.done() && !mine)) continue;
+		if (share <= 0 || (!r.done() && !mine && !writingWithWords(r))) continue;
 		const s = Math.floor(share * 10 + 1e-6); // by tenths, as the observer sees them
 		if (s > step) [step, tied] = [s, [r.id]];
 		else if (s === step) tied.push(r.id);
@@ -353,10 +356,15 @@ export function speakingNow(): boolean {
 
 // ── the way in: one reply per tap ─────────────────────────────────────────────────────────────────────
 /** her voice from this reply's first sentence (whatever else was playing stops) */
+// 🔈 A40 · a reply still being written plays live: autoplay's growing stream joins it and follows the typing
+let livePlayer: ((id: string) => boolean) | null = null;
+export const setLivePlayer = (f: ((id: string) => boolean) | null) => void (livePlayer = f);
+
 export function playReply(id: string) {
 	const r = replies.get(id);
 	if (!r) return;
 	stopLine();
+	if (!r.done() && livePlayer?.(id)) return;
 	r.speak();
 }
 
