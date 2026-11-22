@@ -341,6 +341,13 @@
 	// name, Settings → Interface → Voice control) and the hotkey (petal-voice)
 	let unregisterVoice = () => {};
 	let registeredVoice = '';
+	// 🍒 A38 · inside an open pick, the pair in the order its cards show (autoplay reads them in turn)
+	const pickPairOf = (m: unknown): [string, string] | null => {
+		const pair = (m as { petal_pick?: { pair?: unknown } } | undefined)?.petal_pick?.pair;
+		return Array.isArray(pair) && pair.length === 2 && pair.every((x) => typeof x === 'string')
+			? [pair[0], pair[1]]
+			: null;
+	};
 	$: if (message?.id && message.id !== registeredVoice && !readOnly) {
 		unregisterVoice();
 		const id = message.id;
@@ -360,7 +367,8 @@
 				artwork: model?.info?.meta?.profile_image_url,
 				playbackRate: $settings.audio?.tts?.playbackRate ?? 1
 			}),
-			pick: () => !!(message as { petal_pick?: unknown } | undefined)?.petal_pick
+			pick: () => !!(message as { petal_pick?: unknown } | undefined)?.petal_pick,
+			pair: () => (pickOpen ? pickPairOf(message) : null)
 		});
 	}
 	$: if (message?.done && message?.id) replyDone(message.id);

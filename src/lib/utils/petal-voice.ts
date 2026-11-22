@@ -51,6 +51,7 @@ export type VoiceReply = {
 	// 🌱 A37 · what a growing stream needs to speak it while she writes (its chat, its model's name and picture)
 	meta?: () => { chat_id?: string; model?: string; title?: string; artwork?: string; playbackRate?: number };
 	pick?: () => boolean; // 🍒 one of a pair: her voice waits for the pick (contract 11.6)
+	pair?: () => [string, string] | null; // 🍒 A38 · shown inside an open pick: both replies, in the order they show
 };
 const replies = new Map<string, VoiceReply>();
 // Lily's own messages only lend their words (a quote of hers said alone finds its part here)

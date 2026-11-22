@@ -63,7 +63,7 @@
 	import { adoptMode, modeToSend } from '$lib/utils/petal-mode'; // 🌀 the mode chip (A15)
 	import { thumbsNudge } from '$lib/utils/petal-thumbs'; // 👍🏻 instant thumbs (A23): waiting verdicts go first
 	import { playReply, speakingNow } from '$lib/utils/petal-voice'; // 🔈 auto-playback in speaker mode (A23)
-	import { askedHere, askedLater, autoAfter, bornHere, effectiveMode, installAutoplay, newSend } from '$lib/utils/petal-autoplay'; // 🔈 A37
+	import { askedHere, askedLater, autoAfter, bornHere, picked, effectiveMode, installAutoplay, newSend } from '$lib/utils/petal-autoplay'; // 🔈 A37
 	import { petalDraft } from '$lib/utils/petal-draft'; // 📷 A33 · her draft kept in this browser too
 	import { installPetalCamera } from '$lib/utils/petal-camera'; // 📷 A33 · the camera stays in the page
 	import {
@@ -3841,6 +3841,7 @@
 	const onPicked = (e: Event) => {
 		const { chatId: id, id: messageId } = (e as CustomEvent).detail ?? {};
 		if (!id || id !== $chatId || !history.messages[messageId]) return;
+		picked(messageId); // 🍒 A38 · her voice reading the pick keeps, stops or switches; after-a-reply plays it when not
 		void afterReply(history.messages[messageId]);
 	};
 	onMount(() => {
