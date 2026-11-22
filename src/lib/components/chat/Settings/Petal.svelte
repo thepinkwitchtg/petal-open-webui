@@ -33,6 +33,7 @@
 	import {
 		audioRoute,
 		autoMode,
+		cuesOf,
 		earphones,
 		followRoute,
 		isPhone,
@@ -205,6 +206,15 @@
 		void loadFusionNow();
 	});
 
+	// 🍒 A38 · her cue words before each side of a pick read aloud (synced; empty: no cue)
+	let cues = cuesOf($settings);
+	const saveCues = () => {
+		cues = cuesOf({ petalVoice: { cues } });
+		const voice = (($settings as Record<string, unknown>)?.petalVoice as Record<string, unknown> | undefined) ?? {};
+		saveSettings({ petalVoice: { ...voice, cues } });
+	};
+	const cueField =
+		'h-7 w-28 rounded-lg border border-gray-100/50 bg-gray-50/40 px-2 text-xs text-gray-700 outline-hidden transition-colors focus:border-blue-400 dark:border-white/[0.04] dark:bg-white/[0.03] dark:text-gray-300 dark:focus:border-blue-500';
 	const field =
 		'h-7 w-16 rounded-lg border border-gray-100/50 bg-gray-50/40 px-2 text-right text-xs text-gray-700 outline-hidden transition-colors focus:border-blue-400 dark:border-white/[0.04] dark:bg-white/[0.03] dark:text-gray-300 dark:focus:border-blue-500';
 </script>
@@ -235,10 +245,10 @@
 		<UserSettingRow
 			description={phone
 				? $i18n.t(
-						'On this phone she speaks by herself only with earphones in: the 🎧 by the mic says so, one tap. A pick waits for your choice; a new send or scrolling away stops her.'
+						'On this phone she speaks by herself only with earphones in: the 🎧 by the mic says so, one tap. A pick is read in turn; a new send or scrolling away stops her.'
 					)
 				: $i18n.t(
-						'As she writes: her voice follows the typing, sentence by sentence. A pick waits for your choice; a new send or scrolling away stops her. Chosen for this device only.'
+						'As she writes: her voice follows the typing, sentence by sentence. A pick is read in turn; a new send or scrolling away stops her. Chosen for this device only.'
 					)}
 			let:labelId
 		>
@@ -250,6 +260,34 @@
 				groups={autoGroups}
 				onChange={(v) => setAutoMode(modeOf(v))}
 			/>
+		</UserSettingRow>
+		<UserSettingRow
+			description={$i18n.t(
+				'While a pick is open she reads both in turn, each after its cue. Your 💗 on the one she’s reading changes nothing; on the other, it plays from its start. Empty: no cue.'
+			)}
+			let:labelId
+		>
+			<span slot="label">{$i18n.t('🍒 Pick cues')}</span>
+			<div class="flex items-center gap-1.5" aria-labelledby={labelId}>
+				<input
+					type="text"
+					maxlength="60"
+					class={cueField}
+					data-petal-cue="one"
+					bind:value={cues.one}
+					aria-label={$i18n.t('Before the first reply')}
+					on:change={saveCues}
+				/>
+				<input
+					type="text"
+					maxlength="60"
+					class={cueField}
+					data-petal-cue="two"
+					bind:value={cues.two}
+					aria-label={$i18n.t('Before the second reply')}
+					on:change={saveCues}
+				/>
+			</div>
 		</UserSettingRow>
 		{#if phone}
 			<UserSettingRow label={$i18n.t('Earphones in')} let:labelId>

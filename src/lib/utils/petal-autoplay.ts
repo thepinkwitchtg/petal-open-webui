@@ -11,6 +11,13 @@
 //    the chosen reply · a new send stops her · scrolled away (or gone from the page) while the page is visible,
 //    she fades and stops; a hidden page or a dark screen never counts as away · one voice across her tabs (the
 //    newest one speaking wins) · stop (⏹ by the mic) and pause (the bubble) are one tap each
+//  · 🍒 A38 · a pick, read aloud: while a pick is open she reads both in turn, each opened by her cue (Settings →
+//    🌸 Petal → Voice, defaults below, empty: no cue): cue one, reply one; cue two, reply two. each follows what
+//    the pick shows (twin streaming types both at one pace, so her voice never tells which one is steered), and
+//    reply two waits its turn even when it was written first; a picture is never read nor waited for.
+//    her 💗 on the reply she's hearing changes nothing (no restart, no gap; the other is simply never read) ·
+//    on the other: it stops at once and the chosen one plays from its start · after both were read through,
+//    nothing replays · a new send, her ⏹, another tab or scrolling away ends the reading
 import { derived, get, writable } from 'svelte/store';
 import { config, settings } from '$lib/stores';
 import { AUDIO_API_BASE_URL } from '$lib/constants';
@@ -125,6 +132,19 @@ export function refreshRoute(force = false): Promise<void> {
 	return routeAsking;
 }
 
+// ── 🍒 A38 · her cue words for a pick read aloud (synced with her settings, `petalVoice.cues`) ───────────────
+export type PickCues = { one: string; two: string };
+export const CUE_DEFAULTS: PickCues = { one: 'pick one', two: 'pick two' };
+const CUE_MAX = 60;
+/** her cue words as saved (a missing one takes its default; an empty one stays empty: no cue) */
+export function cuesOf(s: unknown): PickCues {
+	const raw = ((s as Record<string, unknown> | null)?.petalVoice as Record<string, unknown> | undefined)?.cues;
+	const c = raw && typeof raw === 'object' ? (raw as Record<string, unknown>) : {};
+	const one = typeof c.one === 'string' ? c.one.trim().slice(0, CUE_MAX) : CUE_DEFAULTS.one;
+	const two = typeof c.two === 'string' ? c.two.trim().slice(0, CUE_MAX) : CUE_DEFAULTS.two;
+	return { one, two };
+}
+
 // ── which replies may speak by themselves ───────────────────────────────────────────────────────────────
 const born = new Map<string, number>(); // replies this tab asked for (in memory: a reload forgets them)
 const asked = new Map<string, number>(); // her messages sent from this tab: a reply to one (a queued send's, answered later) is hers too
@@ -219,8 +239,42 @@ type Writing = {
 	finished: boolean; // the reply is fully written
 	chain: Promise<unknown>;
 	timer: ReturnType<typeof setTimeout> | null;
+	lead: string; // 🍒 A38 · her cue, said first (empty: none)
+	pick: PickRead | null; // 🍒 A38 · the pick this turn reads
 };
 let writing: Writing | null = null;
+
+// 🍒 A38 · a pick read aloud: whose turn it is, what each side shows so far, and her 💗 once given
+type PickRead = {
+	a: string;
+	b: string;
+	turn: 0 | 1;
+	chosen: string | null;
+	shows: Record<string, { content: string; finished: boolean }>;
+};
+let reading: PickRead | null = null;
+const readThrough = new Set<string>(); // both sides of a pick read to the end (ids only, in memory)
+export const readingNow = () =>
+	reading ? { a: reading.a, b: reading.b, turn: reading.turn, chosen: reading.chosen } : null;
+
+function begin(id: string, content: string, finished: boolean, lead = '', pick: PickRead | null = null) {
+	const w: Writing = {
+		id,
+		feed: null,
+		opening: false,
+		sent: 0,
+		done: false,
+		content,
+		finished,
+		chain: Promise.resolve(),
+		timer: null,
+		lead,
+		pick
+	};
+	writing = w;
+	handled.add(id);
+	return w;
+}
 export const writingNow = () => (writing ? { id: writing.id, sent: writing.sent, done: writing.done, open: !!writing.feed } : null);
 
 /** ResponseMessage tells each change of a reply's words (while it streams, and once it's done) */
@@ -236,6 +290,8 @@ export function grew(
 	if (!w || w.id !== id) {
 		if (!born.has(id) && !(parentId && asked.has(parentId)) && !(later.size && parentId && claim(parentId, parentText?.())))
 			return; // the cheapest question first: most replies on a page were never asked here
+		const pair = replyOf(id)?.pair?.();
+		if (pair) return pickGrew(id, content, finished, parentId, pair); // 🍒 A38 · an open pick reads both in turn
 		if (finished && content.trim() && !born.has(id)) return lateWhole(id, parentId);
 		if (finished || !content.trim()) return; // a reply that arrives whole is for after-she-finishes
 		if (effectiveMode() !== 'writing' || !mayAuto(id, parentId) || handled.has(id) || !ttsReady() || !petalStreamEnabled())
@@ -244,18 +300,7 @@ export function grew(
 		if (!r || r.pick?.()) return; // 🍒 a pick waits for her choice
 		if (get(voiceUI).state !== 'idle') return why('writing waits: she listens', id); // she's already listening to something she chose
 		why('writing begins', id);
-		w = writing = {
-			id,
-			feed: null,
-			opening: false,
-			sent: 0,
-			done: false,
-			content,
-			finished,
-			chain: Promise.resolve(),
-			timer: null
-		};
-		handled.add(id);
+		w = begin(id, content, finished);
 	}
 	w.content = content;
 	w.finished = finished;
@@ -283,8 +328,12 @@ function flush(w: Writing) {
 	if (w.opening) return; // once it's open, it looks again (the feed can arrive before the stream is in hand)
 	const ready = wholeParts(w.content, w.finished);
 	if (!w.feed) {
-		if (!ready.length) {
-			if (w.finished) letGo(w, false); // nothing she'd say aloud
+		// her cue opens the turn as soon as its reply shows its first words (a picture alone included)
+		if (!ready.length && !(w.lead && (w.content.trim() || w.finished))) {
+			if (w.finished) {
+				letGo(w, false); // nothing she'd say aloud
+				if (w.pick && reading === w.pick) nextTurn(w.pick); // a reply with nothing to say never holds the other
+			}
 			return;
 		}
 		void open(w, ready);
@@ -313,7 +362,7 @@ async function open(w: Writing, ready: ReturnType<typeof wholeParts>) {
 	const opened = await playPetalStream({
 		token: read('token') ?? '',
 		voice: r.voice() ?? '',
-		parts: ready,
+		parts: w.lead ? [{ text: w.lead, para_end: true }, ...ready] : ready,
 		meta: { chat_id: m.chat_id, message_id: w.id, model: m.model, source: w.content },
 		title: m.title,
 		artwork: m.artwork,
@@ -326,6 +375,7 @@ async function open(w: Writing, ready: ReturnType<typeof wholeParts>) {
 			// the stream broke before her first sound: after-she-finishes may still play it
 			if (writing === w) letGo(w, false);
 			handled.delete(w.id);
+			if (w.pick && reading === w.pick) reading = null; // 🍒 a broken voice reads no further
 		}
 	});
 	w.opening = false;
@@ -338,6 +388,7 @@ async function open(w: Writing, ready: ReturnType<typeof wholeParts>) {
 	if (!opened || !w.feed) {
 		letGo(w, false);
 		handled.delete(w.id); // never opened: after-she-finishes gets its chance
+		if (w.pick && reading === w.pick) reading = null;
 		return;
 	}
 	markHeard(w.id);
@@ -351,6 +402,88 @@ function letGo(w: Writing, keepHandled: boolean) {
 	w.timer = null;
 	if (!keepHandled) handled.delete(w.id);
 	if (writing === w) writing = null;
+}
+
+// ── 🍒 A38 · a pick, read aloud ─────────────────────────────────────────────────────────────────────────────
+const turnOf = (p: PickRead) => (p.turn ? p.b : p.a);
+
+function pickGrew(id: string, content: string, finished: boolean, parentId: string | null | undefined, [a, b]: [string, string]) {
+	if (!reading || reading.a !== a) {
+		if (readThrough.has(a)) return;
+		if (effectiveMode() === 'off' || !ttsReady() || !petalStreamEnabled()) return;
+		if (!mayAuto(a, parentId) || handled.has(a) || handled.has(b)) return; // heard, or taken, already
+		if (get(voiceUI).state !== 'idle' || writing) return why('pick waits: she listens', a); // she chose something to hear
+		reading = { a, b, turn: 0, chosen: null, shows: {} };
+		why('pick read begins', a);
+	}
+	reading.shows[id] = { content, finished };
+	pickTurn(reading);
+}
+
+/** the turn's reply begins once it shows its first words (after she finishes: once it's written); the other waits */
+function pickTurn(p: PickRead) {
+	if (reading !== p || p.chosen) return;
+	const id = turnOf(p);
+	if (writing) return; // a turn is open (its words reach it through grew), or a turn just ended
+	if (get(voiceUI).state !== 'idle') return;
+	const got = p.shows[id];
+	if (!got) return;
+	if (!replyOf(id)?.pair?.()) return void (reading = null); // the pick closed or dissolved: no other turn
+	const mode = effectiveMode();
+	if (mode === 'off') return void (reading = null);
+	if (mode === 'finished' && !got.finished) return;
+	if (!got.content.trim() && !got.finished) return;
+	const cues = cuesOf(get(settings));
+	why(p.turn ? 'pick turn two' : 'pick turn one', id);
+	flush(begin(id, got.content, got.finished, p.turn ? cues.two : cues.one, p));
+}
+
+/** a turn ended by itself (her voice reached its end): the other's turn, unless her 💗 already chose */
+function nextTurn(p: PickRead) {
+	if (reading !== p) return;
+	if (p.chosen || p.turn === 1) {
+		if (!p.chosen) {
+			readThrough.add(p.a);
+			readThrough.add(p.b);
+		}
+		why(p.chosen ? 'pick read ends with her choice' : 'pick read through', p.a);
+		reading = null;
+		return;
+	}
+	p.turn = 1;
+	pickTurn(p); // and again once the page's voice says idle (its stores settle one after the other)
+}
+
+/** her 💗 (Chat, the moment she picks): did her voice take care of it? (after-she-finishes plays it when not)
+ *  · the one she's hearing (its cue included): nothing changes · the other speaking, opening or waiting: it stops
+ *    at once and the chosen one plays from its start · both read through already: nothing replays */
+export function picked(id: string): boolean {
+	const p = reading;
+	if (p && (id === p.a || id === p.b)) {
+		const ui = get(voiceUI);
+		const hearing = writing?.pick === p ? writing.id : ui.state !== 'idle' ? ui.message_id : null;
+		if (hearing === id) {
+			p.chosen = id;
+			handled.add(id);
+			watchAway(id);
+			why('picked the one she hears', id);
+			return true;
+		}
+		reading = null;
+		if (writing) letGo(writing, true);
+		if (ui.state !== 'idle') stopAllVoice();
+		const content = replyOf(id)?.content() ?? p.shows[id]?.content ?? '';
+		why('picked the other: from its start', id);
+		markHeard(id);
+		flush(begin(id, content, true));
+		return true;
+	}
+	if (readThrough.has(id)) {
+		handled.add(id);
+		why('picked after both were read: nothing replays', id);
+		return true;
+	}
+	return false;
 }
 
 /** a reply to a send of hers that was queued behind a running reply: the backend answers it later and the page
@@ -379,6 +512,7 @@ export function autoAfter(id: string, parentId?: string | null, parentText?: str
 /** a new send of hers: whatever her voice was saying stops (and her tap lets the next reply play) */
 export function newSend() {
 	why('new send');
+	reading = null;
 	unlockPetalStream();
 	if (writing) letGo(writing, true);
 	if (get(voiceUI).state !== 'idle') stopAllVoice();
@@ -413,24 +547,39 @@ function back() {
 	awayTimer = null;
 }
 
+/** where her reply is drawn now: inside an open pick, the whole pick (the phone shows one side at a time) */
+const awayTarget = (id: string): HTMLElement | null => {
+	const el = replyOf(id)?.root() ?? null;
+	return (el?.closest('[data-petal-pick]') as HTMLElement | null) ?? el;
+};
+
 function watchAway(id: string) {
 	clearAway();
 	if (typeof IntersectionObserver === 'undefined') return;
 	awayId = id;
-	const el = replyOf(id)?.root();
-	if (el) {
+	let watched: HTMLElement | null = null;
+	// 🍒 A38 · her reply drawn again (a pick closing, the list keyed again) is watched where it is now: the card it
+	// left is detached, which an observer reports as out of view, and that is not her scrolling away
+	const follow = () => {
+		if (awayId !== id) return;
+		const el = awayTarget(id);
+		if (el === watched && el?.isConnected) return;
+		awayIO?.disconnect();
+		awayIO = null;
+		watched = el;
+		if (!el || !el.isConnected) return void soonAway(); // gone from the page (the chat changed under her)
+		back();
 		awayIO = new IntersectionObserver((entries) => {
 			const e = entries[entries.length - 1];
 			if (!e || awayId !== id) return;
+			if (!(e.target as HTMLElement).isConnected || e.target !== watched) return follow();
 			if (e.isIntersecting) back();
 			else soonAway();
 		});
 		awayIO.observe(el);
-	}
-	// the chat changed under her (the reply left the page): away too
-	unReplies = voiceReplies.subscribe(() => {
-		if (awayId === id && !replyOf(id)) soonAway();
-	});
+	};
+	follow();
+	unReplies = voiceReplies.subscribe(() => queueMicrotask(follow));
 }
 
 /** her voice fades over FADE_MS and stops (only the stream's <audio> can fade; anything else just stops) */
@@ -495,12 +644,21 @@ export function installAutoplay() {
 	voiceNow.subscribe((v) => {
 		if (v.state !== 'idle') return;
 		// she ended (played out, stopped, broken): the writing voice and the away watch let go of it
-		if (writing && (!v.message_id || v.message_id === writing.id) && (writing.feed || !writing.opening))
-			letGo(writing, true);
+		const ended = writing && (!v.message_id || v.message_id === writing.id) && (writing.feed || !writing.opening) ? writing : null;
+		if (ended) letGo(ended, true);
+		// 🍒 A38 · a pick's turn: reached its end → the other's turn · stopped, faded, broken → the reading ends
+		if (reading && v.message_id === turnOf(reading) && (!ended || ended.pick === reading)) {
+			if (v.ended === 'natural') nextTurn(reading);
+			else {
+				why('pick read stops', reading.a);
+				reading = null;
+			}
+		}
 		if (awayId && get(voiceUI).state === 'idle') clearAway();
 	});
 	voiceUI.subscribe((ui) => {
 		if (ui.state === 'idle' && awayId && !fading) clearAway();
+		if (ui.state === 'idle' && reading && !writing) pickTurn(reading); // 🍒 the next turn, once she's quiet
 	});
 	// the rig's audio route, while she follows it on the phone and the page is visible: no clock at all otherwise
 	let routeClock: ReturnType<typeof setInterval> | null = null;
@@ -529,6 +687,7 @@ export function installAutoplay() {
 				follow: get(followRoute),
 				route: get(audioRoute),
 				writing: writingNow(),
+				pick: readingNow(),
 				voice: get(voiceUI), // ids and states only
 				volume: petalStreamAudio()?.volume ?? null
 			};

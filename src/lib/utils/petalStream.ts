@@ -178,6 +178,11 @@ export const petalStreamEnabled = () => {
 	}
 };
 
+// 🍒 A38 · a picture isn't words: she never reads one (a markdown image's alt text, an <img> tag), nor waits for it
+const PICTURES = [/!\[[^\]]*\]\([^)]*\)/g, /<img\b[^>]*>/gi];
+export const withoutPictures = (content: string) =>
+	PICTURES.reduce((c, re) => c.replace(re, (m) => (m ? '\u0000' : m)), content).replace(/[ \t]*\u0000[ \t]*/g, ' ');
+
 // paragraphs first (so the stream knows where the longer pauses go), then sentences, both cut
 // by OWUI's own cleaner so markdown, code and details are handled exactly as before
 export const petalStreamParts = (
@@ -185,6 +190,7 @@ export const petalStreamParts = (
 	split: (content: string, splitOn: string) => string[]
 ): PetalPart[] => {
 	const parts: PetalPart[] = [];
+	content = withoutPictures(content);
 	const paras = split(content, 'paragraphs');
 	for (const para of paras.length ? paras : [content]) {
 		const sentences = split(para, 'punctuation').filter((s) => s.trim());
