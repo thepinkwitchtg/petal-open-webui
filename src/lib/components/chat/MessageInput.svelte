@@ -142,6 +142,8 @@
 	import PetalPickArm from './MessageInput/PetalPickArm.svelte'; // 🍒 her ask for a pick (A29)
 	import PetalVoiceBubble from './MessageInput/PetalVoiceBubble.svelte'; // 🎙️ her voice, always at hand (slice A19)
 	import PetalEarChip from './MessageInput/PetalEarChip.svelte'; // 🎧 earphones in · ⏹ stop her voice (A37)
+	import PetalHeart from './MessageInput/PetalHeart.svelte'; // 💗 every Petal control under one heart (A39)
+	import { heartPins } from '$lib/utils/petal-heart';
 	import { getChatContext } from '$lib/components/chat/context';
 
 	const { models, temporary, getCurrentDirectory } = getChatContext();
@@ -978,6 +980,29 @@
 	};
 	let petalPinnedIds: string[] = [];
 	$: petalPinnedIds = (toggleFilters ?? []).filter((f) => petalEmojiOf(f)).map((f) => f.id);
+	// 💗 A39 · her pinned filters live under the heart (on or off in this chat, their sliders); 📌 keeps one on the bar
+	let petalTrip: { trip: { emoji: string; text: string } | null; vow: { text: string } | null } = { trip: null, vow: null };
+	let petalStatusChip: { openPanel?: (anchor: HTMLElement, which?: 'trip' | 'vow') => void } | null = null;
+	type PetalToggle = { id: string; has_user_valves?: boolean; [k: string]: any };
+	$: petalHeartFilters = ((toggleFilters ?? []) as PetalToggle[])
+		.filter((f: PetalToggle) => petalEmojiOf(f))
+		.map((f: PetalToggle) => ({
+			id: f.id,
+			emoji: petalEmojiOf(f) ?? '',
+			name: resolveLocalizedFunction(f, $localizedFunctions, $i18n.language),
+			on: (selectedFilterIds ?? []).includes(f.id),
+			valves: !!f.has_user_valves && ($_user?.role === 'admin' || ($_user?.permissions?.chat?.valves ?? true))
+		}));
+	const petalHeartFilter = (id: string, what: 'toggle' | 'valves') => {
+		if (what === 'valves') {
+			selectedValvesType = 'function';
+			selectedValvesItemId = id;
+			showValvesModal = true;
+		} else
+			selectedFilterIds = (selectedFilterIds ?? []).includes(id)
+				? selectedFilterIds.filter((x) => x !== id)
+				: [...(selectedFilterIds ?? []), id];
+	};
 	let petalChipIds: string[] = [];
 	$: petalChipIds = [
 		...petalPinnedIds,
@@ -2818,7 +2843,12 @@
 											<!-- 🌙 petal (A13): 💗 her pinned Heartstrings lead (order-first), then 🍄 what she's
 											     on, then 🔥 her vow, then everything else · one row, so the order holds -->
 											<div class="flex gap-1.5 shrink-0" style="order: -9000">
-												<PetalStatusChip temporary={$temporary || isTemporaryChatId(chatId)} />
+												<PetalStatusChip
+													bind:this={petalStatusChip}
+													bind:summary={petalTrip}
+													shown={$heartPins.includes('trip')}
+													temporary={$temporary || isTemporaryChatId(chatId)}
+												/>
 											</div>
 										{/if}
 										{#if showInputSelections && (selectedToolIds ?? []).length > 0 && $visibleControls['chat.selected_tools']}
@@ -2871,7 +2901,7 @@
 											{@const filter = toggleFilters.find((f) => f.id === filterId)}
 											{@const petalEmoji = petalEmojiOf(filter)}
 											{@const filterOn = selectedFilterIds.includes(filterId)}
-											{#if filter && (petalEmoji || showInputSelections) && $visibleControls['chat.selected_filters']}
+											{#if filter && (petalEmoji ? $heartPins.includes(`filter:${filterId}`) : showInputSelections) && $visibleControls['chat.selected_filters']}
 												<Tooltip
 													className={petalEmoji ? 'flex order-first' : 'flex'}
 													content={resolveLocalizedFunction(
@@ -3090,13 +3120,23 @@
 									/>
 
 									{#if $_user?.role === 'admin'}
-										<!-- 🌀 petal (A15): the mode chip, by send · nothing here unless the forge declares modes -->
-										<PetalModeChip chatId={chatId || null} />
+										<!-- 🌀 petal (A15): the mode chip, by send · on the bar when pinned (A39), its key always -->
+										<PetalModeChip chatId={chatId || null} shown={$heartPins.includes('mode')} />
 									{/if}
-									<!-- 🍒 petal (A29): her ask for a pick on the next send · nothing here unless she asked -->
-									<PetalPickArm />
-									<!-- 🎧 petal (A37): earphones in (phone) · ⏹ stop her voice, by the mic -->
-									<PetalEarChip />
+									<!-- 🍒 petal (A29): her ask for a pick on the next send · on the bar when pinned (A39), its key always -->
+									<PetalPickArm shown={$heartPins.includes('pick')} />
+									<!-- 💗 petal (A39): every Petal control under one heart -->
+									<PetalHeart
+										chatId={chatId || null}
+										admin={$_user?.role === 'admin'}
+										filters={petalHeartFilters}
+										onFilter={petalHeartFilter}
+										trip={petalTrip.trip}
+										vow={petalTrip.vow}
+										onTrip={(which, anchor) => petalStatusChip?.openPanel?.(anchor, which)}
+									/>
+									<!-- 🎧 petal (A37): earphones in (phone, pinned by default) · ⏹ stop her voice, by the mic -->
+									<PetalEarChip ear={$heartPins.includes('ear')} />
 
 									{#if isActive && (history.messages[history.currentId]?.user_id ?? $_user?.id) === $_user?.id && prompt === '' && files.length === 0}
 										<div class=" flex items-center">

@@ -18,6 +18,7 @@
 	import { askPick } from '$lib/utils/petal-pick';
 
 	export let chatId: string | null = null;
+	export let shown = true; // 💗 A39 · unpinned: the chip hides under the heart, its key still steps the mode
 
 	let root: HTMLElement;
 	let turned = 0; // her steps: the turn plays once per step, never on load or when the chat changes
@@ -78,7 +79,7 @@
 </script>
 
 <span bind:this={root} class="pmc-root">
-	{#if current}
+	{#if current && shown}
 		<button
 			type="button"
 			class="pmc"
