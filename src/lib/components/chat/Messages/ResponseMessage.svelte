@@ -392,6 +392,8 @@
 		});
 	}
 	$: if (message?.done && message?.id) replyDone(message.id);
+	// 🌊 A41 · words she spoke on her own (Petal Stream): marked by her name, never continued or regenerated as a reply
+	$: streamed = (message as { petal_stream?: { profile?: string } } | undefined)?.petal_stream ?? null;
 	// 🔈 A37 · each change of her words, for the voice that speaks as she writes (it decides; nothing runs when off)
 	const parentOf = (m: unknown) => (m as { parentId?: string | null } | undefined)?.parentId ?? null;
 	const parentWords = () => history?.messages?.[parentOf(message) ?? '']?.content; // read only when asked (a queued send of hers)
@@ -883,6 +885,8 @@
 						<span class="truncate text-base-500">{selectedModelName}</span>
 					{/if}
 					</Name>
+					{#if streamed}<span class="text-xs opacity-70 select-none" data-petal-stream-mark
+							title={`${$i18n.t('she spoke on her own')} · ${streamed.profile ?? ''}`}>🌊</span>{/if}
 					<!-- 🔈 petal (A19b): the speaker by her name, when it's her chosen voice control -->
 					{#if speakerByName}
 						<PetalPlayButton id={message.id} />
@@ -1803,7 +1807,7 @@
 										</Tooltip>
 									{/if}
 
-									{#if !pickOpen && canBranch && isLastMessage && ($user?.role === 'admin' || ($user?.permissions?.chat?.continue_response ?? true))}
+									{#if !pickOpen && !streamed && canBranch && isLastMessage && ($user?.role === 'admin' || ($user?.permissions?.chat?.continue_response ?? true))}
 										<Tooltip content={$i18n.t('Continue Response')} placement="bottom">
 											<button
 												aria-label={$i18n.t('Continue Response')}
@@ -1837,7 +1841,7 @@
 								{/if}
 
 								{#if (!readOnly && (!message.user_id || message.user_id === $user?.id)) || writeAccess}
-									{#if !pickOpen && ($user?.role === 'admin' || ($user?.permissions?.chat?.regenerate_response ?? true))}
+									{#if !pickOpen && !streamed && ($user?.role === 'admin' || ($user?.permissions?.chat?.regenerate_response ?? true))}
 										{#if $settings?.regenerateMenu ?? true}
 											<button
 												type="button"

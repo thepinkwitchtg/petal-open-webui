@@ -294,6 +294,7 @@ export function grew(
 	if (typeof window === 'undefined' || !id) return;
 	let w = writing;
 	if (!w || w.id !== id) {
+		if (streamed.has(id)) return finished && content.trim() ? streamWhole(id) : undefined; // 🌊 A41 · she spoke on her own
 		if (!born.has(id) && !(parentId && asked.has(parentId)) && !(later.size && parentId && claim(parentId, parentText?.())))
 			return; // the cheapest question first: most replies on a page were never asked here
 		const pair = replyOf(id)?.pair?.();
@@ -512,6 +513,42 @@ export function autoAfter(id: string, parentId?: string | null, parentText?: str
 	why('after: yes', id);
 	markHeard(id);
 	return true;
+}
+
+// ── 🌊 A41 · her stream: words she wrote on her own, in a chat opened to it (utils/petal-lounge.ts) ──────────────
+/** a profile's voice: on (spoken when her autoplay is on) · off (text only) · always (spoken even when autoplay is
+ *  off; the phone still waits for earphones, the way autoplay does) */
+export type StreamVoice = 'on' | 'off' | 'always';
+const streamed = new Map<string, StreamVoice>(); // her stream's words landed on this page, waiting to show (ids only)
+/** the page that asked tells each landing: her voice reads it once it shows (grew) */
+export function streamArrived(id: string, voice: StreamVoice) {
+	if (voice === 'off') return why('stream: text only', id);
+	streamed.set(id, voice);
+	if (streamed.size > 50) streamed.delete(streamed.keys().next().value as string);
+	why('stream arrived', id);
+	const r = replyOf(id);
+	if (r?.done() && r.content().trim()) streamWhole(id); // already showing
+}
+/** her autoplay's say for a stream message (pure: the tests read it) */
+export function streamMay(voice: StreamVoice, mode: AutoMode, phoneGate: AutoMode): boolean {
+	if (voice === 'off') return false;
+	return voice === 'always' ? phoneGate !== 'off' : mode !== 'off';
+}
+function streamWhole(id: string) {
+	const voice = streamed.get(id);
+	if (!voice) return;
+	streamed.delete(id);
+	if (heard.includes(id)) return why('stream: heard already', id);
+	const gate = decide('finished', isPhone(), get(earphones), get(followRoute), get(audioRoute));
+	if (!streamMay(voice, effectiveMode(), gate))
+		return why(voice === 'always' ? 'stream stays: no earphones here' : 'stream stays: autoplay is off', id);
+	if (!ttsReady() || !petalStreamEnabled()) return why('stream stays: no voice here', id);
+	if (get(voiceUI).state !== 'idle' && !mayTakeOver()) return why('stream waits: she listens', id); // her tap keeps it
+	why('stream speaks', id);
+	takeOver();
+	markHeard(id);
+	handled.add(id);
+	playReply(id);
 }
 
 /** 🔈 A40 · the voice a send in another chat may hand over to that send's reply (null: none) */

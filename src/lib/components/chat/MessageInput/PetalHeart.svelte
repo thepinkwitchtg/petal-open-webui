@@ -4,8 +4,9 @@
 
 <script lang="ts">
 	// 💗 the heart by send (slice A39) — one tap opens the picker where every Petal control lives: 🌀 the mode,
-	// 🍒 the next reply's pick, 🎧 her voice, 🌙 the trip window (🔥 her vow), 🌕 the fusion check and her pinned
-	// filters (💗 heartstrings: on or off in this chat, and its sliders). deeper menus where a control has more
+	// 🍒 the next reply's pick, 🎧 her voice, 🌊 her stream (A41: Petal speaks on her own in this chat, the way a
+	// profile of hers says), 🌙 the trip window (🔥 her vow), 🌕 the fusion check and her pinned filters (💗
+	// heartstrings: on or off in this chat, and its sliders). deeper menus where a control has more
 	// to it (the modes, the voice's three ways). 📌 keeps one or two of them on the bar beside the heart (her
 	// choice, per device · utils/petal-heart.ts). a tiny dot on the heart when a non-default mode or a pick is on.
 	//  · the phone: a sheet the screen's width, above the keyboard, rows a thumb can reach (44 px)
@@ -23,6 +24,15 @@
 	import { heartOpen, heartPins, placeSheet, togglePin, type HeartPin, type Place } from '$lib/utils/petal-heart';
 	import { keepMode, leadOf, modeOf, modes, modeTick } from '$lib/utils/petal-mode';
 	import { askPick, pickAsked, pickAskWhy } from '$lib/utils/petal-pick';
+	import {
+		loadLoungeShelf,
+		loungeOn,
+		loungeShelf,
+		loungeTurnOff,
+		loungeTurnOn,
+		plantLoungeDemos,
+		type LoungeProfile
+	} from '$lib/utils/petal-lounge';
 	import { stopAllVoice, voiceUI } from '$lib/utils/petal-voice';
 
 	type PinnedFilter = { id: string; emoji: string; name: string; on: boolean; valves: boolean };
@@ -41,14 +51,17 @@
 
 	let btn: HTMLButtonElement;
 	let sheet: HTMLDivElement;
-	let view: 'main' | 'mode' | 'voice' = 'main';
+	let view: 'main' | 'mode' | 'voice' | 'stream' = 'main';
 	let place: Place = { phone: false, left: 8, width: 320, bottom: 64, maxH: 480 };
 
 	$: open = $heartOpen === me;
 	$: current = $modeTick >= 0 ? modeOf($modes, chatId) : null;
 	$: lead = leadOf($modes);
 	$: offMode = !!(current && lead && current.key !== lead.key);
-	$: dot = offMode || $pickAsked;
+	$: stream = chatId ? ($loungeOn[chatId] ?? null) : null; // 🌊 A41 · this chat's stream, when it's open to her
+	$: dot = offMode || $pickAsked || !!stream?.on;
+	$: shelf = $loungeShelf;
+	$: unplanted = (shelf?.demos ?? []).filter((d) => !d.planted);
 	$: routed = $followRoute && ($audioRoute === 'earphones' || $audioRoute === 'speaker');
 	$: inEars = routed ? $audioRoute === 'earphones' : $earphones;
 	$: speaking = $voiceUI.state !== 'idle';
@@ -64,7 +77,8 @@
 	$: title = [
 		$i18n.t('Petal'),
 		offMode && current ? `${current.emoji} ${current.name}`.trim() : '',
-		$pickAsked ? $i18n.t('next reply: a pick') : ''
+		$pickAsked ? $i18n.t('next reply: a pick') : '',
+		stream?.on ? `🌊 ${stream.title ?? stream.profile ?? ''}`.trim() : ''
 	]
 		.filter(Boolean)
 		.join(' · ');
@@ -160,6 +174,38 @@
 		close();
 		onTrip(which, btn);
 	};
+	// 🌊 A41 · her stream: a profile of hers turns it on for this chat only · off is one tap (here, on the 🌊 chip, or Esc)
+	const openStream = () => {
+		void loadLoungeShelf();
+		void go('stream');
+	};
+	const streamOn = async (name: string) => {
+		if (!chatId) return;
+		await loungeTurnOn(chatId, name);
+		void go('main');
+	};
+	const streamOff = async () => {
+		if (chatId && stream?.on) await loungeTurnOff(chatId);
+		void go('main');
+	};
+	const plantDemo = async (name: string) => {
+		await plantLoungeDemos([name]);
+		await tick();
+		replace();
+	};
+	const every = (min: number | undefined) =>
+		min === undefined ? '' : min < 1 ? `${Math.round(min * 60)} s` : min < 90 ? `${Math.round(min)} min` : `${Math.round(min / 6) / 10} h`;
+	const subOf = (p: LoungeProfile) =>
+		p.problems?.length
+			? `⚠ ${p.problems[0]}`
+			: [
+					`≈ ${every(p.mean_min)}`,
+					p.voice === 'off' ? $i18n.t('text only') : p.voice === 'always' ? $i18n.t('voice, always') : $i18n.t('voice'),
+					p.quiet ? `${$i18n.t('quiet')} ${p.quiet}` : ''
+				]
+					.filter(Boolean)
+					.join(' · ');
+
 	const toSettings = () => {
 		close();
 		showSettings.set('petal');
@@ -251,6 +297,28 @@
 				{/if}
 			</div>
 
+			{#if admin}
+				<div class="phh-row" data-petal-heart-row="stream">
+					<button type="button" class="phh-go" data-petal-heart-go aria-pressed={!!stream?.on} on:click={openStream}>
+						<span class="phh-ico" aria-hidden="true">🌊</span>
+						<span class="phh-main">
+							<span class="phh-name"
+								>{stream?.on ? `${stream.emoji ?? ''} ${stream.title ?? stream.profile ?? ''}`.trim() : $i18n.t('her stream')}</span
+							>
+							<span class="phh-sub"
+								>{stream?.on
+									? $i18n.t('she speaks on her own here')
+									: chatId
+										? $i18n.t('off in this chat')
+										: $i18n.t('opens once this chat exists')}</span
+							>
+						</span>
+						<span class="phh-more" aria-hidden="true">›</span>
+					</button>
+					<span class="phh-pin-gap" aria-hidden="true"></span>
+				</div>
+			{/if}
+
 			{#if admin && trip}
 				<div class="phh-row" data-petal-heart-row="trip">
 					<button type="button" class="phh-go" data-petal-heart-go on:click={() => toTrip('trip')}>
@@ -327,6 +395,51 @@
 					</button>
 				</div>
 			{/each}
+		{:else if view === 'stream'}
+			<button type="button" class="phh-back" data-petal-heart-go on:click={() => go('main')}>‹ {$i18n.t('her stream')}</button>
+			<div class="phh-row" data-petal-heart-row="stream:off">
+				<button type="button" class="phh-go" data-petal-heart-go aria-pressed={!stream?.on} on:click={streamOff}>
+					<span class="phh-ico" aria-hidden="true">·</span>
+					<span class="phh-main">
+						<span class="phh-name">{$i18n.t('off')}</span>
+						<span class="phh-sub">{$i18n.t('she speaks when you write')}</span>
+					</span>
+					<span class="phh-check" aria-hidden="true">{!stream?.on ? '✓' : ''}</span>
+				</button>
+			</div>
+			{#if shelf === null}
+				<div class="phh-note">{$i18n.t('reading your folder…')}</div>
+			{/if}
+			{#each shelf?.profiles ?? [] as p (p.name)}
+				<div class="phh-row" data-petal-heart-row="stream:{p.name}">
+					<button type="button" class="phh-go" data-petal-heart-go aria-pressed={stream?.profile === p.name}
+						disabled={!chatId || !p.ok} on:click={() => streamOn(p.name)}>
+						<span class="phh-ico phh-emoji" aria-hidden="true">{p.emoji}</span>
+						<span class="phh-main">
+							<span class="phh-name">{p.title}</span>
+							<span class="phh-sub">{subOf(p)}</span>
+						</span>
+						<span class="phh-check" aria-hidden="true">{stream?.profile === p.name ? '✓' : ''}</span>
+					</button>
+				</div>
+			{/each}
+			{#each unplanted as d (d.name)}
+				<div class="phh-row" data-petal-heart-row="stream:demo:{d.name}">
+					<button type="button" class="phh-go" data-petal-heart-go data-petal-lounge-demo={d.name} on:click={() => plantDemo(d.name)}>
+						<span class="phh-ico phh-emoji" aria-hidden="true">{d.emoji}</span>
+						<span class="phh-main">
+							<span class="phh-name">{d.title}</span>
+							<span class="phh-sub">{$i18n.t('a demo · copy it into your folder')}</span>
+						</span>
+						<span class="phh-more" aria-hidden="true">＋</span>
+					</button>
+				</div>
+			{/each}
+			{#if shelf}
+				<div class="phh-note">
+					{shelf.profiles.length ? '' : `${$i18n.t('your folder holds no profile yet')} · `}{shelf.folder} · {$i18n.t('Esc or 🌊 turns it off')}
+				</div>
+			{/if}
 		{:else}
 			<button type="button" class="phh-back" data-petal-heart-go on:click={() => go('main')}>‹ {$i18n.t('her voice')}</button>
 			{#each ways as w (w.value)}
@@ -617,6 +730,13 @@
 		flex: none;
 		opacity: 0.75;
 		font-size: 0.92em;
+	}
+	.phh-note {
+		padding: 0.35rem 0.55rem 0.15rem;
+		font-size: 0.74em;
+		line-height: 1.35;
+		opacity: 0.5;
+		overflow-wrap: anywhere;
 	}
 	.phh-foot {
 		flex: none;
