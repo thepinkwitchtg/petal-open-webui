@@ -35,6 +35,7 @@ the core lives in utils/petal_lounge.py (her profiles, the spiral rhythm, the sl
 """
 
 import asyncio
+import json
 import copy
 import logging
 import re
@@ -273,6 +274,26 @@ async def _reload(chat_id: str, message_id: str, user) -> None:
         log.warning(f'🌊 stream: the reload did not go out ({type(e).__name__})')
 
 
+def _reason_of(body) -> str:
+    """the error's own reason (vLLM / OWUI shapes), one line, never the request"""
+    try:
+        if isinstance(body, (bytes, bytearray)):
+            body = body.decode('utf-8', 'replace')
+        if isinstance(body, str):
+            try:
+                body = json.loads(body)
+            except Exception:
+                return ' '.join(body.split())[:300]
+        if isinstance(body, dict):
+            e = body.get('error', body.get('detail', body.get('message')))
+            if isinstance(e, dict):
+                e = e.get('message') or e.get('detail') or e
+            return ' '.join(str(e).split())[:300]
+        return type(body).__name__
+    except Exception as x:
+        return f'unreadable ({type(x).__name__})'
+
+
 async def _resting() -> bool:
     from open_webui.utils import petal_thanks as T
 
@@ -441,7 +462,9 @@ async def speak(request: Request, form: SpeakForm, user=Depends(get_admin_user))
             return {'status': 'error', 'why': type(e).__name__}
         code, body = T._unwrap(res)
         if code >= 400:
-            return {'status': 'error', 'why': f'the model answered {code}'}
+            reason = _reason_of(body)
+            log.warning(f'🌊 stream: the model answered {code} · {reason}')
+            return {'status': 'error', 'why': f'the model answered {code} · {reason[:200]}'}
         try:
             raw = (body['choices'][0].get('message') or {}).get('content')
         except (KeyError, IndexError, TypeError, AttributeError):
