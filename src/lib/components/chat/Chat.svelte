@@ -64,6 +64,7 @@
 	import { thumbsNudge } from '$lib/utils/petal-thumbs'; // 👍🏻 instant thumbs (A23): waiting verdicts go first
 	import { playReply, speakingNow } from '$lib/utils/petal-voice'; // 🔈 auto-playback in speaker mode (A23)
 	import { askedHere, askedLater, autoAfter, bornHere, picked, effectiveMode, installAutoplay, newSend } from '$lib/utils/petal-autoplay'; // 🔈 A37
+	import { watchLounge } from '$lib/utils/petal-lounge'; // 🌊 A41 · Petal Stream: she speaks on her own
 	import { petalDraft } from '$lib/utils/petal-draft'; // 📷 A33 · her draft kept in this browser too
 	import { installPetalCamera } from '$lib/utils/petal-camera'; // 📷 A33 · the camera stays in the page
 	import {
@@ -3836,6 +3837,32 @@
 		}
 		return visibleContent;
 	};
+
+	// 🌊 A41 · Petal Stream: this chat's side of the lounge (utils/petal-lounge.ts) · her words land here, under the
+	// leaf they answer (a saved chat's are on the rig already, and every open page reloads it)
+	const lounge = watchLounge({
+		chatId: () => $chatId || null,
+		history: () => history,
+		busy: () =>
+			generating ? 'a reply runs' : taskIds?.length ? 'a task runs' : $voiceCall ? 'a voice call'
+				: history.currentId && openPick(history, history.currentId) ? 'a pick waits' : null,
+		model: () => selectedModels?.[0] || null,
+		shown: () => !!messagesContainerElement && messagesContainerElement.offsetParent !== null,
+		land: (message, parentId) => {
+			if (!message?.id || !history.messages[parentId]) return false;
+			if (!history.messages[message.id]) {
+				history.messages[message.id] = message as any;
+				const parent = history.messages[parentId];
+				parent.childrenIds = [...new Set([...(parent.childrenIds ?? []), message.id])];
+				if (history.currentId === parentId) history.currentId = message.id;
+				history = history;
+				autoScrollToBottom();
+			}
+			return true;
+		}
+	});
+	$: (history, lounge.poke(prompt));
+	onDestroy(() => lounge.drop());
 
 	// 🍒 A29 · her pick (PetalPick): the chosen reply does what a finished reply does, once
 	const onPicked = (e: Event) => {
