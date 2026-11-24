@@ -9,6 +9,16 @@ home: $PETAL_APP_DATA/trip-markers/   (default ~/Gardens/Documents/Petal-App-Dat
     substances.json   lily's own table · written once on first run, never overwritten
     settings.json     knobs (integration_from …) · written once on first run, never overwritten
 
+W-MICRO · two shapes her table may hold (hers to fill, never planted, never rewritten):
+    a substance's `integration_above`   a trip opens an integration window only when its dose
+                                        (strain-adjusted, the tiers' number) is above it · at or under
+                                        it the trip goes active → over, no window
+    a tier's `integration_tail_h`       how long that tier's integration lasts after the trip ends
+                                        (the settings knob integration_tail_h, for that tier alone)
+    a microdose is a tier like any other: a band whose `from` sits under her lowest one, e.g.
+        "integration_above": 0.3,
+        "tiers": [{"from": 0.1, "label": "micro", "integration_tail_h": 1}, {"from": 3.5, …}, …]
+
 reading rule: replay the file in order, applying `amend` and `void` by `ref`.
 derived phases (peak · active · integration · over) are computed on read, never typed.
 ✧ an `orbit` (slice A11, the primary gesture) carries its outcome open (null) until she says
@@ -59,6 +69,7 @@ from pathlib import Path
 from typing import Any, Iterable, Optional
 
 SCHEMA_NOTE = 'petal trip markers · contract 1'
+MICRO = 1   # W-MICRO · the shapes this core reads: a substance's integration_above · a tier's integration_tail_h
 
 # lily's table, exactly as frozen in contract 1 — planted once, then hers to tune by hand
 SUBSTANCES_DEFAULT: dict = {
@@ -389,6 +400,12 @@ def profile(substance: str, dose: Any, table: dict, settings: dict, strain: Opti
         if crossed:
             t = max(crossed, key=lambda t: float(t['from']))
             out['tier'] = {'label': t.get('label'), 'from': t['from'], 'has_note': bool(t.get('petal_note'))}
+            if _num(t.get('integration_tail_h')) is not None and _num(t.get('integration_tail_h')) >= 0:
+                out['tier']['integration_tail_h'] = float(t['integration_tail_h'])   # W-MICRO · her tier's own length
+    above = _num(entry.get('integration_above'))
+    if above is not None:   # W-MICRO · at or under her threshold, the trip opens no integration window
+        out['integration_above'] = above
+        out['integrates'] = n is None or n > above
     return out
 
 
@@ -505,11 +522,14 @@ class View:
         anchor = anchor_id(s['id'])
         integ_open = integ_close = None
         closed_by = None
-        if end is not None:
+        integrates = prof.get('integrates', True)   # W-MICRO · under her integration_above: active → over
+        tail_h = (prof['tier'] or {}).get('integration_tail_h')
+        tail_h = float(st.get('integration_tail_h', 72)) if tail_h is None else tail_h
+        if end is not None and integrates:
             if expected is not None:
                 integ_open = taken + prof['integration_from'] * (expected - taken)
             integ_open = end if integ_open is None else min(integ_open, end)
-            integ_close = end + float(st.get('integration_tail_h', 72)) * H
+            integ_close = end + tail_h * H
             hand = [int(e['at']) for e in self.refs('integration.end', anchor) if e.get('via') != 'auto']
             if hand and min(hand) < integ_close:
                 integ_close, closed_by = min(hand), 'manual'
@@ -549,8 +569,11 @@ class View:
             'peak': peak,
             'integration': None if integ_open is None else {
                 'id': anchor, 'opens_at': integ_open, 'closes_at': integ_close, 'closed_by': closed_by,
-                'empty': integ_open >= integ_close,
+                'empty': integ_open >= integ_close, 'tail_h': tail_h,
             },
+            # W-MICRO · why a trip opened no window: numbers only (her threshold, the dose it read)
+            'no_integration': None if integrates else {'integration_above': prof['integration_above'],
+                                                       'dose_eff': prof['dose_eff']},
             'amended': bool(s.get('_amends')),
             'harvested': {p: (lambda h: {'id': h['id'], 'at': h['at'], 'folder': h.get('folder'),
                                          'window': h.get('window')} if h else None)(
@@ -1789,6 +1812,43 @@ def _self_test() -> None:
         check(not [e for e in settle(g3, t_now + 9 * D_)[1] if e['kind'] == 'vow.end'], 'and never twice')
         st4 = stats(build(g3), b0 - D_, t_now + 9 * D_, t_now + 9 * D_)
         check(st4['vows'] == {'started': 2, 'released': 1, 'fulfilled': 1} and numbers_only(st4), 'stats: vows by how they ended, numbers only')
+
+    # W-MICRO · a microdose is a tier · integration follows the dose (stand-in numbers, never hers)
+    with tempfile.TemporaryDirectory() as d:
+        gm = Garden(Path(d) / 'trip-markers')
+        gm.ensure()
+        TM = json.loads(json.dumps(SUBSTANCES_DEFAULT))
+        TM['mushrooms']['integration_above'] = 0.3
+        TM['mushrooms']['tiers'].insert(0, {'from': 0.1, 'label': 'micro', 'integration_tail_h': 1})
+        gm.substances_path.write_text(json.dumps(TM))
+        before = gm.substances_path.read_bytes()
+        TT, SS = gm.table(), gm.settings()
+        pm = profile('mushrooms', 0.23, TT, SS, 'b+')
+        check(pm['tier']['label'] == 'micro' and pm['integrates'] is False, 'micro: 0.23 g resolves to micro, under the threshold')
+        check(profile('mushrooms', 0.23, SUBSTANCES_DEFAULT, SS)['tier'] is None, 'the contract table alone: no tier for 0.23 g')
+        check(profile('mushrooms', 0.3, TT, SS)['integrates'] is False and profile('mushrooms', 0.31, TT, SS)['integrates'],
+              'integration only above her threshold (at it: none)')
+        check(profile('mushrooms', 5, TT, SS)['tier'].get('integration_tail_h') is None, 'a tier without its own length: none set')
+        tm = 2_000_000_000
+        lo = write(gm, {'kind': 'status.start', 'via': 'owui', 'substance': 'mushrooms', 'dose': '0.23', 'taken_at': tm}, now=tm)['id']
+        tl = [t for t in build(gm).timelines() if t['id'] == lo][0]
+        check(tl['integration'] is None and tl['no_integration'] == {'integration_above': 0.3, 'dose_eff': 0.23},
+              'under the threshold: no window, the numbers say why')
+        check([phase_at(tl, tm + x * H) for x in (1, 4, 6, 30)] == ['peak', 'active', 'over', 'over'], 'peak, active → over, no integration')
+        _, wm = settle(gm, tm + 7 * H)
+        check([e['kind'] for e in wm] == ['status.end'], 'the reader writes the end, and no integration line')
+        t2 = tm + 2 * D_
+        hi = write(gm, {'kind': 'status.start', 'via': 'owui', 'substance': 'mushrooms', 'dose': '0.4', 'taken_at': t2}, now=t2)['id']
+        tl2 = [t for t in build(gm).timelines() if t['id'] == hi][0]
+        check(tl2['tier']['label'] == 'micro' and tl2['integration']['closes_at'] == tl2['end'] + H and tl2['integration']['tail_h'] == 1,
+              'above it: a window, its tier’s own 1 h after the end')
+        check([phase_at(tl2, tl2['end'] + x) for x in (-1, 0, H - 1, H)] == ['active', 'integration', 'integration', 'over'],
+              'a 1 h integration, then over')
+        t3 = tm + 4 * D_
+        big = write(gm, {'kind': 'status.start', 'via': 'owui', 'substance': 'mushrooms', 'dose': '4', 'taken_at': t3}, now=t3)['id']
+        tl3 = [t for t in build(gm).timelines() if t['id'] == big][0]
+        check(tl3['integration']['closes_at'] == tl3['end'] + 72 * H and tl3['no_integration'] is None, 'a tier with no length of its own: the knob (72 h)')
+        check(gm.substances_path.read_bytes() == before and gm.ensure()['planted'] == [], 'her table is never rewritten')
 
     print(f'🌙 petal markers core · self-test · {ok} checks bloomed, none wilted')
 
