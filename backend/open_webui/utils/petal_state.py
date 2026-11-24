@@ -424,7 +424,7 @@ async def apply(request, form_data: dict, user, metadata: dict, model: Optional[
         notes = conversation_notes(chain, climaxes, ratings, tpl, see, orbits)
 
     messages = form_data.get('messages') or []
-    user_idx = [i for i, m in enumerate(messages) if m.get('role') == 'user']
+    user_idx = [i for i, m in enumerate(messages) if m.get('role') == 'user' and not m.get('petal_floor')]  # 🌊 A43
     placed = []
     for n in notes:
         j = n['answer_from_end']

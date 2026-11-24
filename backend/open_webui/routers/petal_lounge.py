@@ -3,8 +3,9 @@ petal_lounge 🌊 — Petal Stream (slice A41 · the lounge): Petal speaks on he
 
 the core lives in utils/petal_lounge.py (her profiles, the spiral rhythm, the slots, the state). this door:
 
-    GET  /api/v1/petal/stream/profiles            → { profiles: [summary…], demos: [{name, title, emoji, planted}], folder }
-    POST /api/v1/petal/stream/plant  { names? }   → the demos she asked for, copied into her folder (never over hers)
+    GET  /api/v1/petal/stream/profiles            → { profiles: [summary…], asleep: n, folder } (awake ones only;
+                                                    chats left on with a sleeping or gone profile are turned off)
+    GET  /api/v1/petal/stream/knobs               → { text } the knobs reference, shown in the 💗 (never copied)
     POST /api/v1/petal/stream/state  { chat_id, page, visible, leaf }        → this chat's stream (+ when she may speak)
     POST /api/v1/petal/stream/on     { chat_id, profile, page, visible, leaf } → on, for this chat only
     POST /api/v1/petal/stream/off    { chat_id }                               → off
@@ -12,7 +13,9 @@ the core lives in utils/petal_lounge.py (her profiles, the spiral rhythm, the sl
          → { status: 'spoke', message, parent_id, state } · or { status, state? } with status one of
            wait (not yet: her rhythm) · quiet (a quiet window) · busy (a reply runs, or one is owed) · speaking
            (she is already writing here) · not_lead (another page leads) · resting (the gentle stop) · yielded (the
-           chat moved on while she wrote: her next message ends the turn) · empty · error · off · gone
+           chat moved on while she wrote: her next message ends the turn) · empty · error · stopped (three model
+           errors in a row: nothing asked until her md changes or the stream is turned on again) · off · gone ·
+           asleep (enabled: false)
 
 - **the page asks, the rig decides.** the page (src/lib/utils/petal-lounge.ts) keeps a timer to `due_at` and
   holds while she types (when the profile says wait), while a reply runs, while her voice plays; the rig checks
@@ -43,6 +46,8 @@ import time
 from typing import Optional
 from uuid import uuid4
 
+import os
+
 import aiohttp
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
@@ -55,8 +60,9 @@ log = logging.getLogger(__name__)
 router = APIRouter()
 
 PAGE_OK = re.compile(r'^[A-Za-z0-9_-]{4,48}$')
-TURNS_MAX = 200
-TURN_CHARS = 20000
+TURNS_MAX = 2000  # a temporary chat's branch, as the page holds it (A43: the full branch)
+TURN_CHARS = 100000
+RESERVE = 2048  # tokens kept free for her words when a long branch is trimmed ($PETAL_STREAM_RESERVE)
 
 _LEADS: dict = {}  # chat_id → (page, at): the last page she looked at
 _SPEAKING: set = set()  # chats she is writing in right now
@@ -85,10 +91,12 @@ class SpeakForm(StateForm):
     model: Optional[str] = None
     typing: bool = False
     turns: Optional[list] = None  # temporary chats only: the page holds their messages
-
-
-class PlantForm(BaseModel):
-    names: Optional[list[str]] = None
+    # A43 · what a normal send of this chat carries from the page (Chat.svelte), so her turn is built the same way
+    filter_ids: Optional[list[str]] = None  # the filters she has on in this chat
+    variables: Optional[dict] = None  # the page's prompt variables (the time, her name, her place…)
+    mode: Optional[str] = None  # the 🌀 mode chip's pick for this chat
+    system: Optional[str] = None  # temporary chats only: the chat's system prompt, held by the page
+    params: Optional[dict] = None  # temporary chats only: the chat's params, held by the page
 
 
 # ── small helpers ─────────────────────────────────────────────────────────────────────────────────────
@@ -130,6 +138,8 @@ def _state_out(chat_id: str, saved: bool, st: Optional[dict], prof: Optional[dic
         return out
     if not prof:
         return {**out, 'on': False, 'gone': st.get('profile')}
+    if not prof.get('enabled', True):
+        return {**out, 'on': False, 'asleep': prof['name']}
     s = L.summary(prof)
     out.update(
         profile=prof['name'],
@@ -137,9 +147,13 @@ def _state_out(chat_id: str, saved: bool, st: Optional[dict], prof: Optional[dic
         emoji=prof['emoji'],
         voice=prof['voice'],
         typing=s['typing'],
-        turns=prof['turns'],
         spoke=int(st.get('spoke') or 0),
+        passed=int(st.get('passed') or 0),
         problems=prof['problems'],
+        ignored=prof.get('ignored') or [],
+        mtime=prof.get('mtime'),
+        stopped=L.stopped(st, prof.get('mtime')),
+        errors=int(st.get('errors') or 0),
     )
     now = time.time() if now is None else now
     key = L.key_bytes()
@@ -150,7 +164,7 @@ def _state_out(chat_id: str, saved: bool, st: Optional[dict], prof: Optional[dic
     if not _leaf_ready(leaf):
         out.update(due_at=None, waiting='a reply' if leaf and leaf.id else 'a message')
         return out
-    anchor = max(float(leaf.at or 0), float(st.get('on_at') or 0))
+    anchor = L.anchor_of(leaf.at, st)
     d = L.due(key, n, anchor, prof, label)
     due_at, gap = d['due_at'], d['gap']
     if q:  # inside a quiet window now: never before it ends, and then a fresh gap
@@ -179,30 +193,6 @@ def _worker_request(app) -> Request:
     request = Request(scope)
     request.state.petal_caller = L.CALLER  # utils/headers.py: User-Agent petal-open-webui/stream
     return request
-
-
-async def _render_ground(template: str, user, hidden: bool) -> str:
-    from open_webui.utils import petal_thanks as T
-    from open_webui.utils.payload import resolve_system_prompt
-
-    if not template or not template.strip():
-        return ''
-    template = T._FORGE_SLOTS.sub('', template)
-    if hidden:
-        template = T._hide_hour(template)
-    return ((await resolve_system_prompt(template, {'variables': {}, 'chat_variables': {}}, user)) or '').strip()
-
-
-async def _card(model_id: str, user, hidden: bool, chat_system: str = '') -> str:
-    """her ground: the card's system prompt, then this chat's own system prompt when it has one (§11.10: the card +
-    her chat system), rendered as hush and thanks render the card (forge slots stripped, the hour per the forge)"""
-    from open_webui.models.models import Models
-
-    card = await Models.get_model_by_id(model_id)
-    params = card.params.model_dump() if card and card.params else {}
-    template = params.get('system') if isinstance(params.get('system'), str) else ''
-    parts = [await _render_ground(template, user, hidden), await _render_ground(chat_system or '', user, hidden)]
-    return '\n\n'.join(p for p in parts if p)
 
 
 def _temp_branch(turns: Optional[list]) -> list[dict]:
@@ -257,7 +247,10 @@ async def _insert(app, chat_id: str, user, leaf_id: str, message: dict) -> bool:
             row.current_message_id = message['id']
             row.updated_at = int(time.time())
             await db.commit()
-        await ChatMessages.upsert_message(message['id'], chat_id, user.id, message)
+        # 🌊 A43 · the row knows it's a stream message (the stamp stays in the history JSON): a later request's replay
+        # places the spoke-first line before it without reading the whole chat
+        row = {**message, 'meta': {**(message.get('meta') or {}), 'petal_spoke_first': True}}
+        await ChatMessages.upsert_message(message['id'], chat_id, user.id, row)
     return True
 
 
@@ -272,6 +265,159 @@ async def _reload(chat_id: str, message_id: str, user) -> None:
         )
     except Exception as e:  # the asking page has her words already; the others see them on their next open
         log.warning(f'🌊 stream: the reload did not go out ({type(e).__name__})')
+
+
+def _window(models: dict, model_id: str) -> Optional[int]:
+    """her window in tokens: the model list's max_model_len (vLLM lists it; a card reads its base model's),
+    else $PETAL_STREAM_WINDOW, else unknown (nothing trimmed until the model says otherwise)"""
+    seen, mid = set(), model_id
+    while mid and mid not in seen and len(seen) < 4:
+        seen.add(mid)
+        entry = models.get(mid) or {}
+        for src in (entry, entry.get('openai') or {}):
+            v = src.get('max_model_len') if isinstance(src, dict) else None
+            if isinstance(v, (int, float)) and not isinstance(v, bool) and v > 0:
+                return int(v)
+        mid = ((entry.get('info') or {}).get('base_model_id')) if isinstance(entry.get('info'), dict) else None
+    try:
+        v = int(os.environ.get('PETAL_STREAM_WINDOW') or 0)
+        return v if v > 0 else None
+    except ValueError:
+        return None
+
+
+def _reserve(form_data: dict) -> int:
+    """the room kept for her words when a long branch is trimmed: a normal reply's own max_tokens when her card
+    or chat sets one, else $PETAL_STREAM_RESERVE, else RESERVE"""
+    for k in ('max_tokens', 'max_completion_tokens'):
+        v = form_data.get(k)
+        if isinstance(v, int) and not isinstance(v, bool) and v > 0:
+            return v
+    try:
+        v = int(os.environ.get('PETAL_STREAM_RESERVE') or 0)
+        return v if v > 0 else RESERVE
+    except ValueError:
+        return RESERVE
+
+
+def _ran(form_data: dict) -> list:
+    return list(((form_data.get('metadata') or {}).get('petal_stream') or {}).get('filters') or [])
+
+
+def _with_images(messages: list[dict]) -> list[dict]:
+    """a user message's image files as image_url parts, the way OWUI's own replay builds them"""
+    from open_webui.utils.misc import is_raster_image_content_type
+
+    for message in messages:
+        image_files = [
+            f
+            for f in message.get('files', []) or []
+            if isinstance(f, dict) and (f.get('type') == 'image' or is_raster_image_content_type(f.get('content_type')))
+        ]
+        if message.get('role') == 'user' and image_files and isinstance(message.get('content', ''), str):
+            message['content'] = [
+                {'type': 'text', 'text': message.get('content', '')},
+                *[{'type': 'image_url', 'image_url': {'url': f['url']}} for f in image_files if f.get('url')],
+            ]
+    return messages
+
+
+async def _turn(request, wreq, user, form, model_id: str, models: dict, chat_id: str, saved: bool, leaf_id: str,
+                chat_system: str, chat_params: dict, branch: list, profile: str = '') -> tuple[dict, str]:
+    """her stream turn, built the way a normal reply is (main.chat_completion → process_chat_payload →
+    petal_state): her card and the chat's system prompt, her filters' inlets, the full branch, the page's
+    variables, her mode · nothing is saved by it: no message id, no session, no task (her eyes and OWUI's
+    bookkeeping see no reply to keep) · → (form_data, the card's own system prompt, for the window's count)"""
+    from open_webui.models.config import Config
+    from open_webui.models.models import Models
+    from open_webui.utils import petal_state
+    from open_webui.utils.filter import get_sorted_filter_ids
+    from open_webui.utils.middleware import load_messages_from_db, process_chat_payload
+    from open_webui.utils.misc import merge_model_params
+
+    model = models.get(model_id) or request.app.state.MODELS.get(model_id)
+    if not model:
+        raise LookupError('model')
+    card = await Models.get_model_by_id(model_id)
+    card_params = card.params.model_dump() if card and card.params else {}
+    card_system = card_params.get('system') if isinstance(card_params.get('system'), str) else ''
+
+    # the params, as main merges them: global defaults · her card · her settings · this chat
+    ui = (user.settings.ui if getattr(user, 'settings', None) else None) or {}
+    defaults = copy.deepcopy(await Config.get('models.default_params', {}) or {})
+    model_info_params = merge_model_params(defaults, card_params)
+    model_info_params.pop('model_controls', None)
+    request_params = {
+        **(ui.get('params') if isinstance(ui.get('params'), dict) else {}),
+        **{k: v for k, v in (chat_params or {}).items() if k != 'system'},
+    }
+    request_params = {k: v for k, v in request_params.items() if v is not None and k != 'model_controls'}
+    params = merge_model_params(model_info_params, request_params)
+
+    # the chat's system prompt, as the page sends it with a normal turn (the card's own joins it at the door)
+    system = chat_system or (ui.get('system') if isinstance(ui.get('system'), str) else '')
+    if saved:
+        history = await load_messages_from_db(chat_id, leaf_id) or []
+    else:
+        history = [{k: v for k, v in m.items() if k in ('role', 'content', L.STAMP)} for m in branch]
+    messages = ([{'role': 'system', 'content': system}] if system else []) + _with_images(history)
+
+    variables = form.variables if isinstance(form.variables, dict) else {}
+    filter_ids = [f for f in (form.filter_ids or []) if isinstance(f, str)][:64]
+    mode = form.mode.strip()[:64] if isinstance(form.mode, str) and form.mode.strip() else None
+    metadata = {
+        'model_id': model_id,
+        'tool_approval_resume': None,
+        'user_id': user.id,
+        'user_agent': L.CALLER,
+        'client_ip': '127.0.0.1',
+        'internal': False,
+        'chat_id': chat_id,
+        'message_id': None,  # no reply placeholder: nothing of OWUI's keeps this request
+        'user_message': None,
+        'user_message_id': None,  # the branch is given, never re-read (no compaction runs for her stream)
+        'assistant_message_id': None,
+        'regeneration_message_id': None,
+        'session_id': None,
+        'petal_mode': mode,
+        'petal_turn': None,
+        'petal_stream': {'profile': profile, 'leaf': leaf_id, 'filters': []},  # a filter may tell her turn apart
+        'automation_id': None,
+        'folder_id': None,
+        'filter_ids': filter_ids,
+        'tool_ids': None,
+        'files': None,
+        'features': {},
+        'variables': variables,
+        'chat_variables': {},
+        'chat_context': {'messages': [m for m in messages if m.get('role') == 'system'], 'params': {}, 'chat_variables': {}},
+        'model': model,
+        'params': {
+            'stream_delta_chunk_size': None,
+            'reasoning_tags': None,
+            'compact_token_threshold': None,
+            'function_calling': params.get('function_calling') or 'native',
+            'tool_approval_mode': None,
+            'model_controls': {},
+        },
+    }
+    try:
+        metadata['petal_stream']['filters'] = list(await get_sorted_filter_ids(wreq, model, filter_ids))
+    except Exception:
+        pass
+    form_data = {'model': model_id, 'messages': messages, 'stream': False, 'params': params, 'metadata': metadata}
+    wreq.state.metadata = metadata
+    form_data, metadata, _events, _paused = await process_chat_payload(wreq, form_data, user, metadata, model)
+    if saved:  # her state reads the branch up to the leaf (notes before her messages, as any turn)
+        metadata['user_message_id'] = leaf_id
+    try:
+        await petal_state.apply(wreq, form_data, user, metadata, model)
+    except Exception as e:
+        log.warning(f'🌊 stream: petal state skipped ({type(e).__name__})')  # her state never breaks a turn
+    metadata['user_message_id'] = None
+    form_data['metadata'] = metadata
+    wreq.state.metadata = metadata
+    return form_data, card_system
 
 
 def _reason_of(body) -> str:
@@ -294,6 +440,16 @@ def _reason_of(body) -> str:
         return f'unreadable ({type(x).__name__})'
 
 
+def _failed(chat_id: str, saved: bool, prof: dict, why: str, lead: bool, leaf) -> dict:
+    """a model error, counted · the third in a row (her md unchanged) stops her trying"""
+    n = L.note_error(chat_id, saved, why, prof.get('mtime'))
+    st = L.chat_state(chat_id, saved)
+    out = {'status': 'stopped' if n >= L.ERRORS_STOP else 'error', 'why': why, 'errors': n}
+    if st:
+        out['state'] = _state_out(chat_id, saved, st, prof, leaf, lead)
+    return out
+
+
 async def _resting() -> bool:
     from open_webui.utils import petal_thanks as T
 
@@ -305,22 +461,29 @@ async def _resting() -> bool:
 
 
 # ── the door ──────────────────────────────────────────────────────────────────────────────────────────
+def _sweep() -> int:
+    """chats left on with a profile she put to sleep (enabled: false) or took away: turned off · → how many"""
+    awake = {p['name'] for p in L.list_profiles()}
+    n = 0
+    for chat_id, saved, name in L.chats_on():
+        if name not in awake:
+            L.turn_off(chat_id, saved)
+            _LEADS.pop(chat_id, None)
+            n += 1
+    return n
+
+
 @router.get('/stream/profiles')
 async def profiles(user=Depends(get_admin_user)):
     found = await asyncio.to_thread(L.list_profiles)
-    return {'profiles': [L.summary(p) for p in found], 'demos': await asyncio.to_thread(L.demos), 'folder': _folder()}
+    asleep = await asyncio.to_thread(L.list_profiles, True)
+    await asyncio.to_thread(_sweep)
+    return {'profiles': [L.summary(p) for p in found], 'asleep': len(asleep), 'folder': _folder()}
 
 
-@router.post('/stream/plant')
-async def plant(form: PlantForm, user=Depends(get_admin_user)):
-    done = await asyncio.to_thread(L.plant, form.names)
-    found = await asyncio.to_thread(L.list_profiles)
-    return {
-        **done,
-        'profiles': [L.summary(p) for p in found],
-        'demos': await asyncio.to_thread(L.demos),
-        'folder': _folder(),
-    }
+@router.get('/stream/knobs')
+async def knobs(user=Depends(get_admin_user)):
+    return {'text': await asyncio.to_thread(L.knobs), 'folder': _folder()}
 
 
 @router.post('/stream/state')
@@ -331,7 +494,10 @@ async def state(form: StateForm, user=Depends(get_admin_user)):
     st = L.chat_state(form.chat_id, saved)
     lead = _lead(form.chat_id, form.page, form.visible)
     prof = await asyncio.to_thread(L.load_profile, st['profile']) if st else None
-    return _state_out(form.chat_id, saved, st, prof, form.leaf, lead)
+    out = _state_out(form.chat_id, saved, st, prof, form.leaf, lead)
+    if st and not out['on']:  # a profile gone or asleep: the chat goes off (never deleted, only off)
+        L.turn_off(form.chat_id, saved)
+    return out
 
 
 @router.post('/stream/on')
@@ -343,6 +509,8 @@ async def turn_on(form: OnForm, user=Depends(get_admin_user)):
     prof = await asyncio.to_thread(L.load_profile, form.profile)
     if not prof:
         raise HTTPException(status_code=404, detail='no such profile in her folder')
+    if not prof.get('enabled', True):
+        raise HTTPException(status_code=409, detail='that profile sleeps (enabled: false)')
     saved = is_saved_chat_id(form.chat_id)
     st = L.turn_on(form.chat_id, prof['name'], saved)
     lead = _lead(form.chat_id, form.page, True)  # turning it on is a look
@@ -377,6 +545,12 @@ async def speak(request: Request, form: SpeakForm, user=Depends(get_admin_user))
     if not prof:
         L.turn_off(chat_id, saved)
         return {'status': 'gone', 'state': {'chat_id': chat_id, 'on': False, 'gone': st['profile']}}
+    if not prof.get('enabled', True):
+        L.turn_off(chat_id, saved)
+        return {'status': 'asleep', 'state': {'chat_id': chat_id, 'on': False, 'asleep': prof['name']}}
+    halt = L.stopped(st, prof.get('mtime'))
+    if halt:
+        return {'status': 'stopped', 'why': halt['why'], 'state': _state_out(chat_id, saved, st, prof, form.leaf, lead)}
     if chat_id in _SPEAKING:
         return {'status': 'speaking'}
     now = time.time()
@@ -408,8 +582,9 @@ async def speak(request: Request, form: SpeakForm, user=Depends(get_admin_user))
             if form.leaf and form.leaf.id == leaf_id and form.leaf.at:
                 anchor = max(anchor, float(form.leaf.at))
             wanted = form.model or next(iter((chat.chat or {}).get('models') or []), None)
-            chat_system = ((chat.chat or {}).get('params') or {}).get('system')
-            chat_system = chat_system if isinstance(chat_system, str) else ''
+            chat_params = (chat.chat or {}).get('params') or {}
+            chat_params = chat_params if isinstance(chat_params, dict) else {}
+            chat_system = chat_params.get('system') if isinstance(chat_params.get('system'), str) else ''
             page_leaf = Leaf(id=leaf_id, at=anchor, role='assistant', done=True)
         else:
             if not _leaf_ready(form.leaf):
@@ -418,9 +593,10 @@ async def speak(request: Request, form: SpeakForm, user=Depends(get_admin_user))
             branch = _temp_branch(form.turns)
             anchor = float(form.leaf.at or 0)
             wanted = form.model
-            chat_system = ''  # a temporary chat's own system prompt stays on its page
+            chat_params = form.params if isinstance(form.params, dict) else {}  # held by the page (contract 0)
+            chat_system = form.system if isinstance(form.system, str) else ''
             page_leaf = form.leaf
-        anchor = max(anchor, float(st.get('on_at') or 0))
+        anchor = L.anchor_of(anchor, st)
 
         key = L.key_bytes()
         n, label = L.draw_n(saved)
@@ -430,7 +606,7 @@ async def speak(request: Request, form: SpeakForm, user=Depends(get_admin_user))
         if await _resting():
             return {'status': 'resting'}
 
-        # ── her request ──
+        # ── her request: a normal turn, then the floor ──
         from open_webui.utils.chat import generate_chat_completion
 
         wreq = _worker_request(request.app)
@@ -439,42 +615,77 @@ async def speak(request: Request, form: SpeakForm, user=Depends(get_admin_user))
         if not model_id:
             return {'status': 'error', 'why': 'no model to ask'}
         hidden = await asyncio.to_thread(T._hour_hidden)
-        card = await _card(model_id, user, hidden, chat_system)
         facts = await asyncio.to_thread(L.facts_for, prof, branch, now, hidden_hour=hidden, typing=bool(form.typing))
-        msgs, peek = L.assemble(prof, card, L.recent_turns(branch, prof['turns']), facts)
-        lo, hi = prof['length']
-        payload = {
-            'model': model_id,
-            'messages': msgs,
-            'stream': False,
-            'max_tokens': hi * 4 + 48,  # room for her words in any script; fit() keeps the range
-            'chat_template_kwargs': {'enable_thinking': False},  # thinking is off, everywhere
-            'metadata': {'task': 'petal_stream', 'task_body': {}, 'chat_id': None},  # OWUI saves nothing of it
-        }
-        if prof.get('temperature') is not None:
-            payload['temperature'] = prof['temperature']
-        if prof.get('top_p') is not None:
-            payload['top_p'] = prof['top_p']
+        note, peek = await asyncio.to_thread(L.floor_note, prof, facts)
         try:
-            res = await generate_chat_completion(wreq, form_data=payload, user=user, bypass_system_prompt=True)
+            form_data, card_system = await _turn(
+                request, wreq, user, form, model_id, models, chat_id, saved, leaf_id, chat_system, chat_params, branch,
+                prof['name'],
+            )
         except Exception as e:
-            log.warning(f'🌊 stream: the model call failed ({type(e).__name__})')
-            return {'status': 'error', 'why': type(e).__name__}
-        code, body = T._unwrap(res)
-        if code >= 400:
+            log.warning(f'🌊 stream: her turn could not be built ({type(e).__name__})')
+            return _failed(chat_id, saved, prof, f'her turn could not be built · {type(e).__name__}', lead, form.leaf)
+        if note:
+            form_data['messages'].append({'role': 'user', 'content': note, L.FLOOR_MARK: 'floor'})
+        form_data.pop('tools', None)  # her stream speaks in words: no tool loop rides on it
+        form_data.pop('tool_choice', None)
+        form_data['stream'] = False
+        form_data['chat_template_kwargs'] = {**(form_data.get('chat_template_kwargs') or {}), 'enable_thinking': False}
+        if prof.get('temperature') is not None:
+            form_data['temperature'] = prof['temperature']
+        if prof.get('top_p') is not None:
+            form_data['top_p'] = prof['top_p']
+        full = copy.deepcopy(form_data['messages'])
+        window = _window(models, model_id)
+        reserve = _reserve(form_data)
+        per = L.CHARS_PER_TOKEN
+        budget = (window - reserve - L.tokens_of({'content': card_system}, per)) if window else None
+        form_data['messages'], left_out, est = L.trim(copy.deepcopy(full), budget, per)
+        res = None
+        for attempt in (0, 1):
+            try:
+                res = await generate_chat_completion(wreq, form_data=form_data, user=user)
+            except Exception as e:
+                log.warning(f'🌊 stream: the model call failed ({type(e).__name__})')
+                return _failed(chat_id, saved, prof, type(e).__name__, lead, form.leaf)
+            code, body = T._unwrap(res)
+            if code < 400:
+                break
             reason = _reason_of(body)
+            seen = L.context_refusal(reason) if attempt == 0 else None
+            if seen:  # the model counted: trimmed again by her own numbers, asked once more
+                window, used = seen
+                total = est + L.tokens_of({'content': card_system}, per)
+                per = per * min(1.0, total / max(used, 1)) if used > total else per * 0.8
+                budget = window - reserve - L.tokens_of({'content': card_system}, per)
+                form_data['messages'], left_out, est = L.trim(copy.deepcopy(full), budget, per)
+                log.info(f'🌊 stream: her window is {window} tokens · trimmed again ({left_out} left out)')
+                continue
             log.warning(f'🌊 stream: the model answered {code} · {reason}')
-            return {'status': 'error', 'why': f'the model answered {code} · {reason[:200]}'}
+            return _failed(chat_id, saved, prof, f'the model answered {code} · {reason[:200]}', lead, form.leaf)
         try:
             raw = (body['choices'][0].get('message') or {}).get('content')
         except (KeyError, IndexError, TypeError, AttributeError):
             raw = None
-        text, info = L.fit(L.clean(raw), lo, hi)
-        if not text:
-            return {'status': 'empty'}
+        text = L.clean(raw)
+        L.clear_errors(chat_id, saved)
+        at = time.time()
+        peek = {**peek, 'left_out': left_out, 'window': window, 'tokens': est, 'filters': _ran(form_data)}
+        record = {'at': int(at), 'gap': d['gap'], 'ph': d['ph'], 'fp': d['fp'], 'profile': prof['name'],
+                  'left_out': left_out}
+
+        # ── she let it pass: nothing lands, the gap starts over ──
+        if L.is_pass(text):
+            L.spoke(chat_id, saved, {**record, 'words': 0, 'passed_at': at}, passed=True)
+            st_now = L.chat_state(chat_id, saved) or st
+            return {
+                'status': 'passed',
+                'left_out': left_out,
+                'state': _state_out(chat_id, saved, st_now, prof, page_leaf, lead),
+                'peek': peek,
+            }
 
         # ── her words land ──
-        at = time.time()
         message = {
             'id': str(uuid4()),
             'parentId': leaf_id,
@@ -486,11 +697,14 @@ async def speak(request: Request, form: SpeakForm, user=Depends(get_admin_user))
             'modelIdx': 0,
             'timestamp': int(at),
             'done': True,
-            L.STAMP: L.stamp(prof, at, d['gap']),
+            L.STAMP: L.stamp(prof, at, d['gap'], L.in_a_row(branch)),
         }
+        if isinstance(body.get('usage'), dict):  # the same Info as any reply
+            message['usage'] = body['usage']
         if saved and not await _insert(request.app, chat_id, user, leaf_id, message):
             return {'status': 'yielded'}
-        L.spoke(chat_id, saved, {**info, 'at': int(at), 'gap': d['gap'], 'ph': d['ph'], 'fp': d['fp'], 'profile': prof['name']})
+        words = L.count_words(text)
+        L.spoke(chat_id, saved, {**record, 'words': words})
         if saved:
             await _reload(chat_id, message['id'], user)
         st_now = L.chat_state(chat_id, saved) or st
@@ -499,8 +713,9 @@ async def speak(request: Request, form: SpeakForm, user=Depends(get_admin_user))
             'status': 'spoke',
             'message': message,
             'parent_id': leaf_id,
+            'left_out': left_out,
             'state': nxt,
-            'peek': {**peek, 'words': info['words'], 'fitted_from': info['fitted_from'], 'short': info['short']},
+            'peek': {**peek, 'words': words},
         }
     finally:
         _SPEAKING.discard(chat_id)

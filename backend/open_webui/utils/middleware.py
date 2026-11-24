@@ -82,6 +82,7 @@ from open_webui.socket.main import (
 )
 from open_webui.tasks import append_response_stream, clear_response_stream, save_response_stream
 from open_webui.utils import petal_pick  # 🍒 A29 · a pick's second reply never acts
+from open_webui.utils import petal_lounge  # 🌊 A43 · the spoke-first line
 from open_webui.utils.access_control import has_permission
 from open_webui.utils.access_control.files import get_owner_accessible_folder_files
 from open_webui.utils.access_control.folders import has_folder_access
@@ -1908,9 +1909,45 @@ async def load_messages_from_db(chat_id: str, message_id: str) -> Optional[list[
         if skills_create and skills_create.get('original_text') == get_content_from_message(msg):
             set_last_user_message_content(skills_create['expanded_text'], [msg])
 
+    streamed = await _petal_stream_ids(chat_id, messages_map, db_messages)
     return [
-        {k: v for k, v in msg.items() if k in MESSAGE_REPLAY_KEYS} for msg in db_messages if not is_empty_reply(msg)
+        {
+            **{k: v for k, v in msg.items() if k in MESSAGE_REPLAY_KEYS},
+            # 🌊 A43 · a stream message is flagged (never its stamp): petal_lounge.mark() places the one spoke-first
+            # line before it and takes the flag off
+            **({petal_lounge.STAMP: True} if msg.get('id') in streamed else {}),
+        }
+        for msg in db_messages
+        if not is_empty_reply(msg)
     ]
+
+
+async def _petal_stream_ids(chat_id: str, messages_map: dict, db_messages: list[dict]) -> set:
+    """🌊 A43 · which messages of this branch are her stream messages. the stamp lives in the chat's history JSON,
+    not in its message rows: a row written by the stream carries `meta.petal_spoke_first` (exact, no extra read);
+    an assistant message under an assistant (where a stream message, or a timer's, lands) without it is
+    looked up once in the history JSON (stream messages written before A43)"""
+    ids = {
+        m.get('id')
+        for m in db_messages
+        if isinstance(m.get(petal_lounge.STAMP), dict) or ((m.get('meta') or {}).get('petal_spoke_first') is True)
+    }
+    unsure = [
+        m.get('id')
+        for m in db_messages
+        if m.get('role') == 'assistant'
+        and m.get('id') not in ids
+        and ((messages_map or {}).get(m.get('parentId')) or {}).get('role') == 'assistant'
+    ]
+    if unsure:
+        try:
+            chat = await Chats.get_chat_by_id(chat_id)
+            history = ((chat.chat or {}).get('history') or {}).get('messages') or {} if chat else {}
+            ids |= {mid for mid in unsure if isinstance((history.get(mid) or {}).get(petal_lounge.STAMP), dict)}
+        except Exception as e:
+            log.warning(f'🌊 stream messages not looked up ({type(e).__name__})')
+    ids.discard(None)
+    return ids
 
 
 def get_reasoning_format(model: dict) -> str | None:
@@ -2167,6 +2204,13 @@ async def process_chat_payload(request, form_data, user, metadata, model):
 
     if regeneration_prompt:
         form_data['messages'].append({'role': 'user', 'content': regeneration_prompt})
+
+    # 🌊 A43 · she knows she spoke first: one never-shown line before each of her stream messages (saved chats flag
+    # them in the replay, a temporary chat's page sends the flag), in every later request, stream or normal
+    try:
+        petal_lounge.mark(form_data.get('messages'))
+    except Exception as e:
+        log.warning(f'🌊 the spoke-first line skipped ({type(e).__name__})')
 
     filter_functions = (
         await get_filter_functions(request, model, metadata.get('filter_ids', [])) if ENABLE_FUNCTIONS else []
