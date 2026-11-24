@@ -14,7 +14,7 @@
 	//    the controls work as ever (Ctrl+Space, Ctrl+Alt+P) whether their chips are pinned or not
 	//  · nothing moves at rest: the sheet settles in once when it opens (none with reduced motion), then rests
 	import { getContext, onDestroy, tick } from 'svelte';
-	import type { Writable } from 'svelte/store';
+	import { get, type Writable } from 'svelte/store';
 
 	import { updateUserSettings } from '$lib/apis/users';
 	import { formatChord, keybindings, Shortcut } from '$lib/shortcuts';
@@ -25,13 +25,18 @@
 	import { keepMode, leadOf, modeOf, modes, modeTick } from '$lib/utils/petal-mode';
 	import { askPick, pickAsked, pickAskWhy } from '$lib/utils/petal-pick';
 	import {
+		lastOf,
+		loadLoungeKnobs,
 		loadLoungeShelf,
 		loungeOn,
+		loungeSheet,
 		loungeShelf,
+		loungeShelfError,
+		loungeStatus,
 		loungeTurnOff,
 		loungeTurnOn,
-		plantLoungeDemos,
-		type LoungeProfile
+		type LoungeProfile,
+		type LoungeStatus
 	} from '$lib/utils/petal-lounge';
 	import { stopAllVoice, voiceUI } from '$lib/utils/petal-voice';
 
@@ -51,7 +56,7 @@
 
 	let btn: HTMLButtonElement;
 	let sheet: HTMLDivElement;
-	let view: 'main' | 'mode' | 'voice' | 'stream' = 'main';
+	let view: 'main' | 'mode' | 'voice' | 'stream' | 'knobs' = 'main';
 	let place: Place = { phone: false, left: 8, width: 320, bottom: 64, maxH: 480 };
 
 	$: open = $heartOpen === me;
@@ -61,7 +66,47 @@
 	$: stream = chatId ? ($loungeOn[chatId] ?? null) : null; // 🌊 A41 · this chat's stream, when it's open to her
 	$: dot = offMode || $pickAsked || !!stream?.on;
 	$: shelf = $loungeShelf;
-	$: unplanted = (shelf?.demos ?? []).filter((d) => !d.planted);
+	$: shelfError = $loungeShelfError;
+	$: line = chatId && stream?.on ? ($loungeStatus[chatId] ?? null) : null;
+	// 🌊 A42 · the sheet keeps this chat's looks going while it's open (and visible), and a clock for "next in 42s"
+	$: sheetFor = open && (view === 'stream' || view === 'knobs') && chatId ? chatId : null;
+	$: if (sheetFor) loungeSheet.set(sheetFor);
+	else if (chatId && get(loungeSheet) === chatId) loungeSheet.set(null);
+	let nowS = Date.now() / 1000;
+	let clock: ReturnType<typeof setInterval> | null = null;
+	$: if (open && view === 'stream' && line?.kind === 'next') {
+		if (!clock) clock = setInterval(() => (nowS = Date.now() / 1000), 1000);
+	} else if (clock) {
+		clearInterval(clock);
+		clock = null;
+	}
+	const hhmm = (s: number) => new Date(s * 1000).toTimeString().slice(0, 5);
+	const lineOf = (l: LoungeStatus | null, now: number): string => {
+		if (!l) return '';
+		const last = lastOf(l.last); // A43 · spoke · she let it pass · old turns left out
+		if (l.kind === 'next') {
+			const s = Math.max(0, Math.round((l.at ?? now) - now));
+			const next = s ? `${$i18n.t('next in')} ${s < 120 ? `${s}s` : `${Math.round(s / 60)} min`}` : $i18n.t('any moment now');
+			return last ? `${$i18n.t(last)} · ${next}` : next;
+		}
+		if (l.kind === 'waiting' && last) return `${$i18n.t(last)} · ${$i18n.t('waiting for a reply')}`;
+		if (l.kind === 'held') return `${$i18n.t('held')}: ${l.why ?? ''}`;
+		if (l.kind === 'writing') return $i18n.t('she is writing…');
+		if (l.kind === 'resting') return $i18n.t('resting');
+		if (l.kind === 'waiting') return $i18n.t('waiting for a reply');
+		if (l.kind === 'quiet') return `${$i18n.t('quiet until')} ${hhmm(l.at ?? now)}`;
+		if (l.kind === 'lead') return $i18n.t('another page leads');
+		if (l.kind === 'stopped') return `${$i18n.t('stopped after 3 model errors')} · ${l.why ?? ''} · ${$i18n.t('she tries again once the profile changes or you turn it on again')}`;
+		return l.why ?? '';
+	};
+	let knobs: string | null = null;
+	const openKnobs = async () => {
+		knobs = null;
+		void go('knobs');
+		knobs = (await loadLoungeKnobs()) ?? $i18n.t("couldn't reach the rig");
+		await tick();
+		replace();
+	};
 	$: routed = $followRoute && ($audioRoute === 'earphones' || $audioRoute === 'speaker');
 	$: inEars = routed ? $audioRoute === 'earphones' : $earphones;
 	$: speaking = $voiceUI.state !== 'idle';
@@ -156,6 +201,8 @@
 	}
 	$: if (!open && listening) unlisten(); // another heart opened
 	onDestroy(() => {
+		if (clock) clearInterval(clock);
+		if ($loungeSheet === chatId) loungeSheet.set(null);
 		unlisten();
 		if ($heartOpen === me) heartOpen.set(null);
 	});
@@ -174,7 +221,7 @@
 		close();
 		onTrip(which, btn);
 	};
-	// 🌊 A41 · her stream: a profile of hers turns it on for this chat only · off is one tap (here, on the 🌊 chip, or Esc)
+	// 🌊 A41 · her stream: a profile of hers turns it on for this chat only · off here, or Esc
 	const openStream = () => {
 		void loadLoungeShelf();
 		void go('stream');
@@ -188,8 +235,8 @@
 		if (chatId && stream?.on) await loungeTurnOff(chatId);
 		void go('main');
 	};
-	const plantDemo = async (name: string) => {
-		await plantLoungeDemos([name]);
+	const retryShelf = async () => {
+		await loadLoungeShelf();
 		await tick();
 		replace();
 	};
@@ -407,7 +454,20 @@
 					<span class="phh-check" aria-hidden="true">{!stream?.on ? '✓' : ''}</span>
 				</button>
 			</div>
-			{#if shelf === null}
+			{#if line}
+				<div class="phh-note phh-status" data-petal-lounge-status={line.kind}>{lineOf(line, nowS)}</div>
+			{/if}
+			{#if shelfError}
+				<div class="phh-row" data-petal-heart-row="stream:retry">
+					<button type="button" class="phh-go" data-petal-heart-go on:click={retryShelf}>
+						<span class="phh-ico" aria-hidden="true">↻</span>
+						<span class="phh-main">
+							<span class="phh-name" data-petal-lounge-error>{shelfError}</span>
+							<span class="phh-sub">{$i18n.t('try again')}</span>
+						</span>
+					</button>
+				</div>
+			{:else if shelf === null}
 				<div class="phh-note">{$i18n.t('reading your folder…')}</div>
 			{/if}
 			{#each shelf?.profiles ?? [] as p (p.name)}
@@ -423,23 +483,26 @@
 					</button>
 				</div>
 			{/each}
-			{#each unplanted as d (d.name)}
-				<div class="phh-row" data-petal-heart-row="stream:demo:{d.name}">
-					<button type="button" class="phh-go" data-petal-heart-go data-petal-lounge-demo={d.name} on:click={() => plantDemo(d.name)}>
-						<span class="phh-ico phh-emoji" aria-hidden="true">{d.emoji}</span>
+			{#if shelf}
+				<div class="phh-note" data-petal-lounge-folder>
+					{shelf.profiles.length ? '' : `${$i18n.t('your folder holds no profile yet')} · `}{shelf.folder}{shelf.asleep
+						? ` · ${shelf.asleep} ${$i18n.t('asleep')} (enabled: false)`
+						: ''}{shelf.profiles.some((p) => p.ignored?.length) ? ` · ${$i18n.t('place and turns are read no more: she reads the whole chat, your words ride in the floor note')}` : ''} · {$i18n.t('Esc turns it off')}
+				</div>
+				<div class="phh-row" data-petal-heart-row="stream:knobs">
+					<button type="button" class="phh-go" data-petal-heart-go on:click={openKnobs}>
+						<span class="phh-ico" aria-hidden="true">📖</span>
 						<span class="phh-main">
-							<span class="phh-name">{d.title}</span>
-							<span class="phh-sub">{$i18n.t('a demo · copy it into your folder')}</span>
+							<span class="phh-name">{$i18n.t('the knobs')}</span>
+							<span class="phh-sub">{$i18n.t('what a profile can say')}</span>
 						</span>
-						<span class="phh-more" aria-hidden="true">＋</span>
+						<span class="phh-more" aria-hidden="true">›</span>
 					</button>
 				</div>
-			{/each}
-			{#if shelf}
-				<div class="phh-note">
-					{shelf.profiles.length ? '' : `${$i18n.t('your folder holds no profile yet')} · `}{shelf.folder} · {$i18n.t('Esc or 🌊 turns it off')}
-				</div>
 			{/if}
+		{:else if view === 'knobs'}
+			<button type="button" class="phh-back" data-petal-heart-go on:click={() => go('stream')}>‹ {$i18n.t('the knobs')}</button>
+			<pre class="phh-knobs" data-petal-lounge-knobs>{knobs ?? $i18n.t('reading…')}</pre>
 		{:else}
 			<button type="button" class="phh-back" data-petal-heart-go on:click={() => go('main')}>‹ {$i18n.t('her voice')}</button>
 			{#each ways as w (w.value)}
@@ -730,6 +793,18 @@
 		flex: none;
 		opacity: 0.75;
 		font-size: 0.92em;
+	}
+	.phh-knobs {
+		margin: 0;
+		padding: 0.4rem 0.55rem 0.6rem;
+		font-size: 0.72em;
+		line-height: 1.45;
+		white-space: pre-wrap;
+		overflow-wrap: anywhere;
+		opacity: 0.85;
+	}
+	.phh-status {
+		opacity: 0.8;
 	}
 	.phh-note {
 		padding: 0.35rem 0.55rem 0.15rem;

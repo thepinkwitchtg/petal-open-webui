@@ -122,6 +122,12 @@ async def dispatch_chat_completion(
     request.state.bypass_filter = bypass_filter
     request.state.bypass_system_prompt = bypass_system_prompt
 
+    # 🌊 A43 · the floor's marks never leave (its words do): petal_lounge.wire()
+    if isinstance(form_data.get('messages'), list):
+        from open_webui.utils.petal_lounge import wire
+
+        form_data['messages'] = wire(form_data['messages'])
+
     if hasattr(request.state, 'metadata'):
         if 'metadata' not in form_data:
             form_data['metadata'] = request.state.metadata

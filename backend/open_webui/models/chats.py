@@ -1154,12 +1154,16 @@ class ChatTable:
 
         parent_id = message.get('parentId')
         child_ids = [child_id for child_id in (message.get('childrenIds') or []) if child_id in messages]
-        grandchild_ids = [
-            grandchild_id
-            for child_id in child_ids
-            for grandchild_id in (messages.get(child_id, {}).get('childrenIds') or [])
-            if grandchild_id in messages
-        ]
+        if isinstance(message.get('petal_stream'), dict):
+            # 🌊 A42 · words Petal spoke on her own are a turn of one: only they go, their children are re-linked
+            grandchild_ids, child_ids = child_ids, []
+        else:
+            grandchild_ids = [
+                grandchild_id
+                for child_id in child_ids
+                for grandchild_id in (messages.get(child_id, {}).get('childrenIds') or [])
+                if grandchild_id in messages
+            ]
 
         if parent_id in messages:
             messages[parent_id]['childrenIds'] = [

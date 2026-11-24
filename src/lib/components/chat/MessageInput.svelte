@@ -140,7 +140,6 @@
 	import PetalVoiceBubble from './MessageInput/PetalVoiceBubble.svelte'; // 🎙️ her voice, always at hand (slice A19)
 	import PetalEarChip from './MessageInput/PetalEarChip.svelte'; // 🎧 earphones in · ⏹ stop her voice (A37)
 	import PetalHeart from './MessageInput/PetalHeart.svelte'; // 💗 every Petal control under one heart (A39)
-	import PetalLoungeChip from './MessageInput/PetalLoungeChip.svelte'; // 🌊 her stream, on: one tap turns it off (A41)
 	import { heartPins } from '$lib/utils/petal-heart';
 	import { getChatContext } from '$lib/components/chat/context';
 	import { machineIdOf } from '$lib/utils/machines';
@@ -3119,8 +3118,7 @@
 										onTrip={(which, anchor) => petalStatusChip?.openPanel?.(anchor, which)}
 									/>
 									{#if $models !== null}
-										<PetalLoungeChip chatId={chatId || null} />
-									<div class="flex min-w-0 max-w-[10rem] items-center sm:max-w-[13rem]">
+										<div class="flex min-w-0 max-w-[10rem] items-center sm:max-w-[13rem]">
 											<ModelSelector
 												bind:this={modelSelector}
 												multipleEnabled={multipleModels}

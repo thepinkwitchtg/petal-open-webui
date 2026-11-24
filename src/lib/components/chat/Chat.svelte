@@ -4033,6 +4033,18 @@
 	const lounge = watchLounge({
 		chatId: () => $chatId || null,
 		history: () => history,
+		// 🌊 A43 · her turn is built like a normal send: the filters on here, the page's variables, her mode
+		turn: () => ({
+			filter_ids: $config?.features?.enable_functions ? [...selectedFilterIds] : [],
+			variables: { ...getPromptVariables($user?.name, undefined, $user?.email) },
+			mode: modeToSend($chatId || null) ?? null,
+			system: (params as Record<string, any>)?.system || $settings?.system || '',
+			params: {
+				...$settings?.params,
+				...Object.fromEntries(Object.entries(params ?? {}).filter(([, value]) => value !== null)),
+				stop: getStopTokens()
+			}
+		}),
 		busy: () =>
 			generating ? 'a reply runs' : taskIds?.length ? 'a task runs' : $voiceCall ? 'a voice call'
 				: history.currentId && openPick(history, history.currentId) ? 'a pick waits' : null,
@@ -5584,7 +5596,8 @@
 						contextSummary: message?.contextSummary,
 						content: message?.merged?.content ?? message.content,
 						model: message.model,
-						meta: message.meta
+						meta: message.meta,
+						...(message.petal_stream ? { petal_stream: true } : {}) // 🌊 A43 · the spoke-first line
 					};
 				})
 				.filter(

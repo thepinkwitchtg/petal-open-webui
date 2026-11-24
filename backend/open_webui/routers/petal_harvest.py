@@ -5,7 +5,8 @@ The frontend already filters + renders the chats; this router only plants the fi
 so it doesn't depend on OWUI's chat model internals and survives upstream merges.
 
 Root folder: $PETAL_HARVEST_DIR
-  default → ~/Gardens/Documents/Petal-App-Data/open-webui/harvests
+  default → $PETAL_APP_DATA/petal-open-webui/harvests (the fork's one home, A42; what an older fork left in
+  Petal-App-Data/open-webui/ moves there once at boot: utils/petal_home.py)
 Admin-only: nobody else on the instance can write to the garden.
 """
 
@@ -22,12 +23,14 @@ from open_webui.utils.auth import get_admin_user
 log = logging.getLogger(__name__)
 router = APIRouter()
 
-HARVEST_ROOT = Path(
-    os.environ.get(
-        'PETAL_HARVEST_DIR',
-        '~/Gardens/Documents/Petal-App-Data/open-webui/harvests',
-    )
-).expanduser()
+from open_webui.utils import petal_home
+
+try:  # once, at boot: the old folder's files come home (never overwritten)
+    petal_home.settle()
+except Exception as e:
+    log.warning(f"🏡 the fork's home: the move did not finish ({type(e).__name__})")
+
+HARVEST_ROOT = Path(os.environ.get('PETAL_HARVEST_DIR') or (petal_home.home() / 'harvests')).expanduser()
 
 _BAD = re.compile(r'[\\:*?"<>|\x00-\x1f]')
 

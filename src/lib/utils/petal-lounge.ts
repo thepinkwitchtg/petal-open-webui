@@ -3,15 +3,17 @@
 // reply runs or a pick waits, whether her voice is playing, which page she's looking at. each Chat watches its own
 // chat: one timer, to the moment her rhythm says, and then one ask, unless something holds it back. the rig checks
 // everything again before a word is written.
-//  · per chat: off by default · a profile chosen in the 💗 turns it on for that chat only · one tap on the 🌊
-//    chip beside the heart, or Esc, turns it off
+//  · per chat: off by default · a profile chosen in the 💗 turns it on for that chat only (the heart's dot says
+//    so) · off in the 💗, or Esc · A42: no chip, no demos; the sheet says why (the rig unreachable, the status of
+//    this chat's stream), she stops trying after three model errors in a row, and her md's edits land within 20 s
 //  · holds (the page's): a reply running or owed · a pick still open · her voice playing (any chat) · a voice call ·
 //    her typing, while the profile says wait (until a few seconds after her last key)
 //  · the lead: the last page she looked at speaks · a visible page claims it with every call; a hidden page that
 //    lost it waits until she looks at it again (so the PC in the other room never speaks for the phone in her hand)
 //  · a stream message lands through its Chat (a temporary chat's lives on the page only); her voice reads it when
 //    the profile and her autoplay agree (petal-autoplay · streamArrived)
-//  · nothing runs at rest: no timer while no chat is open to her stream; a held turn looks again every 1.5 s
+//  · nothing runs at rest: no timer while no chat is open to her stream; a held turn looks again every 1.5 s;
+//    the 20 s look (her md's mtime) exists only while the page is visible and a stream is on or the sheet is open
 import { get, writable } from 'svelte/store';
 
 import { WEBUI_API_BASE_URL } from '$lib/constants';
@@ -27,15 +29,15 @@ export type LoungeProfile = {
 	ok: boolean;
 	mean_min?: number;
 	spread?: number;
-	length?: [number, number];
+	length?: [number, number] | null; // a hint in the floor note (A43), null when unset
 	quiet?: string;
 	voice?: LoungeVoice;
 	typing?: LoungeTyping;
 	words?: number;
+	ignored?: string[]; // knobs she wrote that are read no more (A43: place · turns)
 	problems?: string[];
 };
-export type LoungeDemo = { name: string; title: string; emoji: string; planted: boolean };
-export type LoungeShelf = { profiles: LoungeProfile[]; demos: LoungeDemo[]; folder: string };
+export type LoungeShelf = { profiles: LoungeProfile[]; asleep: number; folder: string };
 export type LoungeState = {
 	chat_id: string;
 	on: boolean;
@@ -45,9 +47,10 @@ export type LoungeState = {
 	emoji?: string;
 	voice?: LoungeVoice;
 	typing?: LoungeTyping;
-	turns?: number;
 	spoke?: number;
+	passed?: number;
 	problems?: string[];
+	ignored?: string[];
 	n?: number;
 	fp?: string;
 	quiet_until?: number | null;
@@ -55,7 +58,40 @@ export type LoungeState = {
 	gap?: number;
 	waiting?: string;
 	gone?: string;
+	asleep?: string;
+	mtime?: number | null;
+	stopped?: { errors: number; why: string } | null;
+	errors?: number;
 };
+/** one line for the sheet, while a stream is on: what she is doing, or why not */
+export type LoungeStatus = {
+	kind: 'next' | 'held' | 'writing' | 'resting' | 'waiting' | 'quiet' | 'refused' | 'stopped' | 'lead';
+	why?: string;
+	at?: number; // seconds: the due moment (next) or the quiet's end (quiet)
+	last?: LoungeLast | null; // what her last ask came to (A43), until the chat moves on
+};
+/** her last ask, told on the line: she spoke, or let it pass · and how many old turns her window left out */
+export type LoungeLast = { kind: 'spoke' | 'passed'; left: number };
+/** the turn a normal send of this chat would carry from the page (A43): her filters, the page's variables, her
+ * mode · a temporary chat's system prompt and params too (its page holds them) */
+export type LoungeTurn = {
+	filter_ids?: string[];
+	variables?: Record<string, unknown>;
+	mode?: string | null;
+	system?: string;
+	params?: Record<string, unknown>;
+};
+/** "spoke · 12 old turns left out" · "she let it pass" (words only; the sheet adds the next moment) */
+export function lastOf(last: LoungeLast | null | undefined): string {
+	if (!last) return '';
+	const head = last.kind === 'spoke' ? 'spoke' : 'she let it pass';
+	return last.left > 0 ? `${head} · ${last.left} old turn${last.left === 1 ? '' : 's'} left out` : head;
+}
+/** the model's refusal, in her words: "the model refused · 400 · <reason>" */
+export function refusedOf(why: string | undefined): string {
+	const m = /^the model answered (\d+)(?: · (.*))?$/s.exec(why ?? '');
+	return m ? ['the model refused', m[1], m[2]].filter(Boolean).join(' · ') : `the model refused · ${why ?? ''}`.trim();
+}
 type Msg = {
 	id: string;
 	parentId?: string | null;
@@ -75,6 +111,7 @@ export type LoungeHost = {
 	model: () => string | null;
 	shown: () => boolean; // this chat is on screen (the tab she's on)
 	land: (message: Msg, parentId: string) => boolean; // her words, into the chat's history
+	turn?: () => LoungeTurn; // A43 · what a normal send would carry (filters, variables, mode…)
 };
 
 const HOLD_MS = 1500;
@@ -93,8 +130,14 @@ export const PAGE = (() => {
 
 /** the chats open to her stream on this page (on ones only), for the 💗 row and the 🌊 chip */
 export const loungeOn = writable<Record<string, LoungeState>>({});
-/** what her folder holds (and the demos she can copy), read when the 💗 opens its stream view */
+/** what her folder holds, read when the 💗 opens its stream view */
 export const loungeShelf = writable<LoungeShelf | null>(null);
+/** why her folder couldn't be read ("couldn't reach the rig · 404"), null when it was */
+export const loungeShelfError = writable<string | null>(null);
+/** the chat whose stream sheet is open in the 💗 (its looks keep running while visible) */
+export const loungeSheet = writable<string | null>(null);
+/** each chat's line, while its stream is on */
+export const loungeStatus = writable<Record<string, LoungeStatus>>({});
 /** a chat she is writing in right now (between the ask and her words) */
 export const loungeWriting = writable<Record<string, boolean>>({});
 
@@ -104,6 +147,15 @@ const why = (what: string, id?: string | null) => {
 	trail.push(`${Math.round(performance.now())} ${what}${id ? ' ' + id.slice(0, 8) : ''}`);
 	if (trail.length > 80) trail.shift();
 };
+
+function setStatus(chatId: string, st: LoungeStatus | null) {
+	loungeStatus.update((all) => {
+		const next = { ...all };
+		if (st) next[chatId] = st;
+		else delete next[chatId];
+		return next;
+	});
+}
 
 async function call<T>(path: string, body?: unknown): Promise<T> {
 	const res = await fetch(`${WEBUI_API_BASE_URL}/petal/stream/${path}`, {
@@ -115,12 +167,14 @@ async function call<T>(path: string, body?: unknown): Promise<T> {
 		body: body === undefined ? undefined : JSON.stringify(body)
 	});
 	if (!res.ok) throw new Error(`${res.status}`);
+	if (!(res.headers?.get?.('content-type') ?? 'application/json').includes('json')) throw new Error(`${res.status} · not the rig`); // an old backend answers unknown paths with the page
 	return res.json();
 }
 
 const visible = () => typeof document !== 'undefined' && document.visibilityState === 'visible';
 
 function setOn(chatId: string, st: LoungeState | null) {
+	if (!st?.on) setStatus(chatId, null);
 	loungeOn.update((all) => {
 		const next = { ...all };
 		if (st?.on) next[chatId] = st;
@@ -196,8 +250,11 @@ class Watcher {
 	refreshing: Promise<void> | null = null;
 	asking = false;
 	backoff = 0;
+	backoffUntil = 0; // ms: after resting · an error · empty words, no ask before this (the 20 s look never shortens it)
 	lostLead = false;
 	dropped = false;
+	sticky: LoungeStatus | null = null; // resting · refused: kept until her next ask says otherwise
+	last: LoungeLast | null = null; // spoke · passed (A43): told on the line until the chat moves on
 
 	constructor(host: LoungeHost) {
 		this.host = host;
@@ -235,6 +292,7 @@ class Watcher {
 		if (key === this.leafKey) return;
 		const was = this.leafKey;
 		this.leafKey = key;
+		this.last = null; // the chat moved on: what her last ask came to is no news any more
 		if (m && m.role === 'assistant' && m.done !== false && was.startsWith(`${id}:`)) this.doneSeen.set(id, Date.now()); // she saw it finish here
 		if (this.doneSeen.size > 50) this.doneSeen.delete(this.doneSeen.keys().next().value as string);
 		if (this.state?.on) void this.refresh();
@@ -249,6 +307,9 @@ class Watcher {
 		this.leafKey = '';
 		this.lostLead = false;
 		this.backoff = 0;
+		this.backoffUntil = 0;
+		this.sticky = null;
+		this.last = null;
 		if (chat) void this.refresh();
 	}
 
@@ -262,7 +323,22 @@ class Watcher {
 		this.state = st;
 		if (typeof st.lead === 'boolean') this.lostLead = !st.lead;
 		setOn(this.chat, st);
+		this.say();
 		this.schedule();
+	}
+
+	/** the sheet's line, from what the rig said last */
+	say(over?: LoungeStatus) {
+		const st = this.state;
+		if (!this.chat || !st?.on) return;
+		if (over) return setStatus(this.chat, over);
+		if (this.sticky && !st.stopped) return setStatus(this.chat, this.sticky);
+		if (st.stopped) return setStatus(this.chat, { kind: 'stopped', why: refusedOf(st.stopped.why) });
+		if (this.lostLead) return setStatus(this.chat, { kind: 'lead' });
+		if (st.quiet_until) return setStatus(this.chat, { kind: 'quiet', at: st.quiet_until });
+		const last = this.last ? { last: this.last } : {};
+		if (st.due_at == null) return setStatus(this.chat, { kind: 'waiting', ...last });
+		setStatus(this.chat, { kind: 'next', at: st.due_at, ...last });
 	}
 
 	refresh(): Promise<void> {
@@ -287,9 +363,10 @@ class Watcher {
 
 	schedule() {
 		this.clear();
-		if (this.dropped || !this.state?.on) return;
-		const d = delayOf(this.state.due_at, Date.now());
+		if (this.dropped || !this.state?.on || this.state.stopped) return; // stopped: her md's change wakes it (the 20 s look)
+		let d = delayOf(this.state.due_at, Date.now());
 		if (d === null) return; // a reply runs or is owed: the next poke looks again
+		d = Math.max(d, this.backoffUntil - Date.now());
 		if (this.lostLead && !visible()) return; // she looks elsewhere: visibility brings it back
 		this.timer = setTimeout(() => this.tick(), d);
 	}
@@ -309,6 +386,7 @@ class Watcher {
 		});
 		if (hold) {
 			why(`held: ${hold}`, this.chat);
+			this.say({ kind: 'held', why: hold });
 			if (hold === 'another page leads') return;
 			this.timer = setTimeout(() => this.tick(), HOLD_MS);
 			return;
@@ -324,15 +402,30 @@ class Watcher {
 		if (!leaf) return;
 		this.asking = true;
 		setWriting(chat, true);
+		this.sticky = null;
+		this.say({ kind: 'writing' });
 		why('asks', chat);
 		const temp = chat.startsWith('temporary:') || chat.startsWith('local:');
 		const turns = temp
 			? branchOf(this.host.history())
-					.slice(-Math.min(200, (st.turns ?? 16) + 8))
+					.slice(-2000)
 					.filter((m) => m.role === 'user' || m.role === 'assistant')
 					.map((m) => ({ role: m.role, content: textOf(m), timestamp: m.timestamp, stream: !!m.petal_stream }))
 			: undefined;
-		type Answer = { status: string; message?: Msg; parent_id?: string; state?: LoungeState; why?: string };
+		let turn: LoungeTurn = {};
+		try {
+			turn = this.host.turn?.() ?? {};
+		} catch {
+			turn = {};
+		}
+		type Answer = {
+			status: string;
+			message?: Msg;
+			parent_id?: string;
+			state?: LoungeState;
+			why?: string;
+			left_out?: number;
+		};
 		let res: Answer | null = null;
 		try {
 			res = await call<Answer>('speak', {
@@ -342,7 +435,11 @@ class Watcher {
 				leaf,
 				model: this.host.model(),
 				typing: Date.now() - this.typedAt < TYPING_NOW_MS,
-				turns
+				turns,
+				filter_ids: turn.filter_ids,
+				variables: turn.variables,
+				mode: turn.mode ?? undefined,
+				...(temp ? { system: turn.system, params: turn.params } : {})
 			});
 		} catch {
 			res = null;
@@ -355,15 +452,28 @@ class Watcher {
 		why(status + (res?.why ? `: ${res.why}` : ''), chat);
 		if (status === 'spoke' && res?.message && res.parent_id) {
 			this.backoff = 0;
+			this.backoffUntil = 0;
 			this.lostLead = false;
 			const landed = this.host.land(res.message, res.parent_id);
 			if (landed) streamArrived(res.message.id, st.voice ?? 'on');
 			this.leafKey = `${res.message.id}:assistant:true`;
 			this.doneSeen.set(res.message.id, Date.now());
+			this.last = { kind: 'spoke', left: res.left_out ?? 0 };
 			return this.adopt(res.state ?? null);
 		}
+		if (status === 'passed') {
+			// A43 · she let the moment pass: nothing landed, her gap starts over (never an error)
+			this.backoff = 0;
+			this.backoffUntil = 0;
+			this.last = { kind: 'passed', left: res?.left_out ?? 0 };
+			return this.adopt(res?.state ?? null);
+		}
 		if (status === 'wait' || status === 'quiet') return this.adopt(res?.state ?? null);
-		if (status === 'off' || status === 'gone') {
+		if (status === 'stopped') {
+			if (res?.state) this.adopt(res.state);
+			return this.say({ kind: 'stopped', why: refusedOf(res?.why) });
+		}
+		if (status === 'off' || status === 'gone' || status === 'asleep') {
 			this.state = res?.state ?? { chat_id: chat, on: false };
 			setOn(chat, null);
 			return this.clear();
@@ -372,8 +482,19 @@ class Watcher {
 			this.lostLead = true;
 			return this.retry(LEAD_MS);
 		}
-		if (status === 'busy' || status === 'speaking' || status === 'yielded') return this.retry(BUSY_MS);
+		if (status === 'busy' || status === 'speaking' || status === 'yielded') {
+			this.say(res?.why?.includes('owed') ? { kind: 'waiting' } : { kind: 'held', why: res?.why ?? status });
+			return this.retry(BUSY_MS);
+		}
 		this.backoff = Math.min(FAR_MS, this.backoff ? this.backoff * 2 : 30000); // resting · empty · error
+		this.sticky =
+			status === 'resting'
+				? { kind: 'resting' }
+				: status === 'error'
+					? { kind: 'refused', why: refusedOf(res?.why) }
+					: { kind: 'held', why: status === 'empty' ? 'her words came back empty' : status };
+		this.say(this.sticky);
+		this.backoffUntil = Date.now() + this.backoff;
 		this.clear();
 		this.timer = setTimeout(() => this.tick(), this.backoff);
 	}
@@ -406,17 +527,18 @@ export async function loadLoungeShelf(): Promise<LoungeShelf | null> {
 	try {
 		const shelf = await call<LoungeShelf>('profiles');
 		loungeShelf.set(shelf);
+		loungeShelfError.set(null);
 		return shelf;
-	} catch {
+	} catch (e) {
+		loungeShelfError.set(`couldn't reach the rig · ${(e as Error)?.message || 'no answer'}`);
 		return null;
 	}
 }
 
-export async function plantLoungeDemos(names?: string[]): Promise<LoungeShelf | null> {
+/** the knobs reference (the fork's own page of it, shown in place) */
+export async function loadLoungeKnobs(): Promise<string | null> {
 	try {
-		const shelf = await call<LoungeShelf & { planted: string[] }>('plant', { names });
-		loungeShelf.set(shelf);
-		return shelf;
+		return (await call<{ text: string }>('knobs')).text;
 	} catch {
 		return null;
 	}
@@ -430,6 +552,9 @@ export async function loungeTurnOn(chatId: string, profile: string): Promise<Lou
 		why(`on · ${profile}`, chatId);
 		if (w) {
 			w.lostLead = false;
+			w.sticky = null;
+			w.backoff = 0;
+			w.backoffUntil = 0;
 			w.adopt(st);
 		} else setOn(chatId, st);
 		return st;
@@ -454,6 +579,29 @@ export async function loungeTurnOff(chatId: string): Promise<void> {
 	} catch {}
 }
 
+// ── the 20 s look: her md's edits land (state carries its mtime) · only while visible, and only for a stream that's
+// on or the sheet that's open; never while hidden ──────────────────────────────────────────────────────────────
+export const LOOK_MS = 20000;
+let looking: ReturnType<typeof setInterval> | null = null;
+function look() {
+	if (!needLook()) return stopLooking();
+	const sheet = get(loungeSheet);
+	for (const w of watchers) {
+		if (w.chat && !w.asking && (w.state?.on || sheet === w.chat)) void w.refresh();
+	}
+	if (sheet) void loadLoungeShelf();
+}
+/** only while needed: visible, and a stream on (in a chat this page watches) or the sheet open · at rest, no timer */
+const needLook = () => visible() && (!!get(loungeSheet) || Object.keys(get(loungeOn)).length > 0);
+function startLooking() {
+	if (!needLook()) return stopLooking();
+	if (!looking) looking = setInterval(look, LOOK_MS);
+}
+function stopLooking() {
+	if (looking) clearInterval(looking);
+	looking = null;
+}
+
 // ── installed once by the page ───────────────────────────────────────────────────────────────────────────
 let installed = false;
 // something else Esc is for: a dialog, a menu, the heart's sheet, the input's suggestions (a / command, a mention)
@@ -465,9 +613,12 @@ function install() {
 	if (installed || typeof window === 'undefined') return;
 	installed = true;
 	document.addEventListener('visibilitychange', () => {
-		if (!visible()) return;
+		if (!visible()) return stopLooking();
 		for (const w of watchers) if (w.chat) void w.refresh(); // she looks here: this page leads again
+		startLooking();
 	});
+	loungeOn.subscribe(() => startLooking()); // a stream on or off, a sheet open or closed: the look follows
+	loungeSheet.subscribe(() => startLooking());
 	window.addEventListener('focus', () => {
 		for (const w of watchers) if (w.chat && w.lostLead) void w.refresh();
 	});

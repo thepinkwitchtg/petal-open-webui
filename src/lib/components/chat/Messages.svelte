@@ -488,12 +488,14 @@
 	const deleteMessage = async (messageId) => {
 		const messageToDelete = history.messages[messageId];
 		const parentMessageId = messageToDelete.parentId;
-		const childMessageIds = messageToDelete.childrenIds ?? [];
+		// 🌊 A42 · words Petal spoke on her own are a turn of one: only they go, their children are re-linked
+		const single = !!messageToDelete.petal_stream;
+		const childMessageIds = single ? [] : (messageToDelete.childrenIds ?? []);
 
 		// Collect all grandchildren
-		const grandchildrenIds = childMessageIds.flatMap(
-			(childId) => history.messages[childId]?.childrenIds ?? []
-		);
+		const grandchildrenIds = single
+			? (messageToDelete.childrenIds ?? [])
+			: childMessageIds.flatMap((childId) => history.messages[childId]?.childrenIds ?? []);
 
 		// Update parent's children
 		if (parentMessageId && history.messages[parentMessageId]) {

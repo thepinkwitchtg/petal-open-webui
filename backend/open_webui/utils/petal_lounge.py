@@ -5,9 +5,11 @@ not the voice's growing stream (routers/audio/petal_stream.py): that one reads h
 how a stream message is voiced.
 
   · her profiles · md files in Petal-App-Data/petal-open-webui/stream/<name>.md (hers, never in the repo):
-    a little frontmatter (length · mean · spread · quiet · voice · typing · turns · place · tide …), then her
-    words. the three demos (lounge · affirmations · sing) live in petal_stream_demos/ and reach her folder
-    only when she asks for them (plant): nothing plants on its own
+    a little frontmatter (length · mean · spread · quiet · voice · typing · tide · enabled …), then her words:
+    the profile's purpose, which rides in the floor note (A43). `place` and `turns` are accepted and read no
+    more: a stream turn is a normal turn, the full branch, and the profile's words always ride in the floor note. the fork ships no profile and plants nothing (A42): the knobs are told in
+    petal_stream_knobs.md, which the 💗 shows in place and nothing copies. `enabled: false` puts a profile to
+    sleep: hidden from the sheet, turned off in any chat that had it, never deleted
   · the rhythm · each gap is drawn the spiral way her other rhythms draw theirs (contracts ch11): a keyed
     uniform (HMAC-SHA256) → an exponential around her mean (spread 1 is that pure draw, 0 a steady beat) →
     a zero-mean tilt toward a key-derived spiral of two arms, read at the local phase of the gap's start and
@@ -16,8 +18,13 @@ how a stream message is voiced.
   · the slots · facts only, never a sentence of instruction (ANA-TONE): {{since_last_spoke}}
     {{since_she_wrote}} {{local_time}} {{her_date}} {{user}} {{min_words}} {{max_words}} {{in_a_row}}
     {{typing}} {{profile}}. a line whose fact is empty right now stays unsaid; a line holding an unknown
-    slot is skipped and named; her card (with the chat's own system prompt, when it has one) is a part code
-    places on top, which her words may place themselves ({{part:card}}) or decline ({{part:card|none}})
+    slot is skipped and named. her card is no part of it any more: a stream turn gets the whole system prompt
+    of a normal turn (A43), so {{part:card}} is let go and named
+  · the floor (A43) · the words around it live in md: petal_stream_floor.md (shipped) or her copy
+    stream-floor.md beside stream.json (hers wins whole; a section left out speaks with the shipped words, an
+    emptied one stays silent). `## floor` is the note at the very end of a stream request (user-shaped, never
+    saved, never shown); `## spoke first` is the one line placed before each stream message in later requests.
+    both are marked `petal_floor` on the way and the mark is taken off at the wire (wire())
   · the state · which chats are open to her stream: saved chats in stream.json (600), temporary chats in
     memory only (contract 0). a numbers-only line per utterance in stream-spoken.jsonl (saved chats only:
     when, the draw, the gap, the fingerprint, the profile's name, a word count; never a chat id, never words)
@@ -42,8 +49,8 @@ from pathlib import Path
 
 CALLER = 'petal-open-webui/stream'  # utils/headers.py names the worker at the wellspring
 STAMP = 'petal_stream'  # top level on the message, never in meta: {profile, at, gap}
-DEMOS_DIR = Path(__file__).with_name('petal_stream_demos')
-DEMOS = ('lounge', 'affirmations', 'sing')
+KNOBS = Path(__file__).with_name('petal_stream_knobs.md')  # the knobs, told once (never copied to her folder)
+ERRORS_STOP = 3  # model errors in a row before she stops trying (until the md changes or the stream is turned on again)
 
 GRID = 256  # the tilted inverse CDF's resolution
 TILT = 0.35  # the spiral's tilt (ch11's value)
@@ -53,17 +60,19 @@ MAX_RATIO = 345 / 69  # its ceiling: five means
 DAY_MIN = 1440.0
 
 DEFAULTS = {  # numbers and switches only: a profile's words are never defaulted
-    'length': (6, 40),
+    'length': None,  # A43: a hint in the floor note, only when she sets one (never a cut)
     'mean': 9.0,
     'spread': 1.0,
     'tide': DAY_MIN,
     'voice': 'on',
     'typing': ('wait', 12.0),
-    'turns': 16,
-    'place': 'end',
 }
 VOICES = ('on', 'off', 'always')
-PLACES = ('end', 'system')
+IGNORED = ('place', 'turns')  # A43: accepted, read no more (the floor note always carries her words · the full branch)
+FLOOR = Path(__file__).with_name('petal_stream_floor.md')  # the floor's shipped words (her copy: floor_path())
+FLOOR_SECTIONS = ('floor', 'spoke first')
+FLOOR_MARK = 'petal_floor'  # on the floor note and the spoke-first lines between the pipeline's steps, off at the wire
+PASS = '(pass)'  # {{pass}}: the marker the floor note offers
 NAME_OK = re.compile(r'^[A-Za-z0-9][A-Za-z0-9 _.-]{0,47}$')
 FACTS = (
     'since_last_spoke',
@@ -77,6 +86,7 @@ FACTS = (
     'typing',
     'profile',
 )
+FLOOR_SLOTS = FACTS + ('words', 'pass')
 ALIASES = {'USER_NAME': 'user'}  # §11.10: an older spelling still speaks
 
 
@@ -99,6 +109,10 @@ def state_path() -> Path:
 
 def spoken_path() -> Path:
     return home() / 'stream-spoken.jsonl'
+
+
+def floor_path() -> Path:
+    return home() / 'stream-floor.md'
 
 
 def _ready(d: Path) -> Path:
@@ -359,14 +373,14 @@ def parse(text: str, name: str) -> dict:
     problems: list[str] = []
     p: dict = {'name': name, 'title': keys.get('title') or name, 'emoji': keys.get('emoji') or '🌊'}
 
-    lo, hi = DEFAULTS['length']
+    length = DEFAULTS['length']
     if 'length' in keys:
         m = re.match(r'^\s*(\d+)\s*(?:-|–|—|to)\s*(\d+)\s*(?:words?)?\s*$', keys['length'], re.I)
         if m and 0 < int(m.group(1)) <= int(m.group(2)):
-            lo, hi = int(m.group(1)), int(m.group(2))
+            length = (int(m.group(1)), int(m.group(2)))
         else:
             problems.append('length: write it as 6-40 (words)')
-    p['length'] = (lo, hi)
+    p['length'] = length  # a hint in the floor note, never a cut (A43)
 
     mean = minutes_of(keys['mean']) if 'mean' in keys else DEFAULTS['mean']
     if mean is None or mean <= 0:
@@ -422,22 +436,7 @@ def parse(text: str, name: str) -> dict:
             typing = ('wait', rest * 60 if rest is not None else DEFAULTS['typing'][1])
     p['typing'] = typing
 
-    turns = DEFAULTS['turns']
-    if 'turns' in keys:
-        try:
-            turns = int(keys['turns'])
-            if not 0 <= turns <= 200:
-                raise ValueError
-        except ValueError:
-            problems.append('turns: a number from 0 to 200')
-            turns = DEFAULTS['turns']
-    p['turns'] = turns
-
-    place = (keys.get('place') or DEFAULTS['place']).lower()
-    if place not in PLACES:
-        problems.append('place: end · system')
-        place = DEFAULTS['place']
-    p['place'] = place
+    p['ignored'] = [k for k in IGNORED if k in keys]  # accepted, read no more (A43)
 
     for k, a, b in (('temperature', 0.0, 2.5), ('top_p', 0.0, 1.0)):
         p[k] = None
@@ -450,6 +449,12 @@ def parse(text: str, name: str) -> dict:
             except ValueError:
                 problems.append(f'{k}: a number from {a:g} to {b:g}')
 
+    enabled = (keys.get('enabled') or 'true').strip().lower()
+    if enabled not in ('true', 'yes', 'on', 'false', 'no', 'off'):
+        problems.append('enabled: true · false')
+        enabled = 'true'
+    p['enabled'] = enabled in ('true', 'yes', 'on')
+
     words = _COMMENTS.sub('', body).strip('\n')
     p['words'] = words.strip() and words  # '' means silent: no words of hers, and none of code's either
     p['problems'] = problems
@@ -460,8 +465,9 @@ def _name_ok(name: str) -> bool:
     return bool(NAME_OK.match(name or '')) and not name.startswith('.')
 
 
-def list_profiles() -> list[dict]:
-    """her folder, *.md only (dotfiles and subfolders never read), by name"""
+def list_profiles(asleep: bool = False) -> list[dict]:
+    """her folder, *.md only (dotfiles and subfolders never read), by name · the ones she put to sleep
+    (enabled: false) only when asked for"""
     d = profiles_dir()
     out = []
     try:
@@ -473,9 +479,12 @@ def list_profiles() -> list[dict]:
         if not _name_ok(name) or not f.is_file():
             continue
         try:
-            out.append(parse(f.read_text(encoding='utf-8'), name))
+            p = parse(f.read_text(encoding='utf-8'), name)
+            p['mtime'] = f.stat().st_mtime
         except Exception as e:
-            out.append({'name': name, 'title': name, 'emoji': '🌊', 'broken': type(e).__name__, 'problems': []})
+            p = {'name': name, 'title': name, 'emoji': '🌊', 'broken': type(e).__name__, 'problems': [], 'enabled': True}
+        if p.get('enabled', True) != asleep:
+            out.append(p)
     return out
 
 
@@ -484,7 +493,9 @@ def load_profile(name: str) -> dict | None:
         return None
     f = profiles_dir() / f'{name}.md'
     try:
-        return parse(f.read_text(encoding='utf-8'), name)
+        p = parse(f.read_text(encoding='utf-8'), name)
+        p['mtime'] = f.stat().st_mtime
+        return p
     except Exception:
         return None
 
@@ -500,74 +511,46 @@ def summary(p: dict) -> dict:
         'ok': True,
         'mean_min': round(p['rhythm']['mean'], 3),
         'spread': p['rhythm']['spread'],
-        'length': list(p['length']),
+        'length': list(p['length']) if p['length'] else None,
         'quiet': p['quiet_text'],
         'voice': p['voice'],
+        'ignored': p.get('ignored') or [],
         'typing': {'mode': p['typing'][0], 'rest_s': p['typing'][1]},
         'words': len(re.findall(r'\S+', p['words'] or '')),
         'problems': p['problems'],
     }
 
 
-def demos() -> list[dict]:
-    """the shipped demos, and whether her folder already holds a file of that name"""
-    d = profiles_dir()
-    out = []
-    for name in DEMOS:
-        f = DEMOS_DIR / f'{name}.md'
-        if not f.is_file():
-            continue
-        p = parse(f.read_text(encoding='utf-8'), name)
-        out.append({'name': name, 'title': p['title'], 'emoji': p['emoji'], 'planted': (d / f'{name}.md').exists()})
-    return out
-
-
-def plant(names: list[str] | None = None) -> dict:
-    """copy the demos she asked for into her folder (600, the folder 700) · never over a file of hers"""
-    wanted = [n for n in (names or DEMOS) if n in DEMOS]
-    planted, kept = [], []
-    d = _ready(profiles_dir())
-    for name in wanted:
-        src, dst = DEMOS_DIR / f'{name}.md', d / f'{name}.md'
-        if not src.is_file():
-            continue
-        if dst.exists():
-            kept.append(name)
-            continue
-        fd = os.open(dst, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-        with os.fdopen(fd, 'w', encoding='utf-8') as f:
-            f.write(src.read_text(encoding='utf-8'))
-        planted.append(name)
-    return {'planted': planted, 'kept': kept}
+def knobs() -> str:
+    """the knobs reference (shipped with the fork, shown in the 💗 as it is, never copied to her folder)"""
+    try:
+        return KNOBS.read_text(encoding='utf-8')
+    except OSError:
+        return ''
 
 
 # ── the slots ─────────────────────────────────────────────────────────────────────────────────────────
 _SLOT = re.compile(r'\{\{\s*([^{}]+?)\s*\}\}')
 
 
-def render(words: str, facts: dict, card: str = '') -> tuple[str, str, list[str]]:
-    """her words with today's facts → (text, card_by, debug) · card_by: 'code' (it goes on top) · 'her' (placed
-    where she wrote {{part:card}}) · 'declined' ({{part:card|none}}) · 'none' (no card to place)"""
+def render(words: str, facts: dict, slots: tuple = FACTS) -> tuple[str, list[str]]:
+    """words with today's facts → (text, debug) · a line whose fact is empty right now stays unsaid · a line
+    holding an unknown slot is skipped and named · {{part:…}} is let go and named (A43: the card rides in the
+    system prompt of a normal turn, so there is no part left to place here)"""
     debug: list[str] = []
-    by = 'code' if card else 'none'
     if not words:
-        return '', by, debug
+        return '', debug
     lines_out = []
     for line in words.split('\n'):
         out, drop = line, False
         for m in list(_SLOT.finditer(line)):
             raw = m.group(1)
             name = ALIASES.get(raw, raw)
-            if name in ('part:card', 'part:card|none'):
-                if name == 'part:card|none':
-                    by = 'declined'
-                    out = out.replace(m.group(0), '', 1)
-                else:
-                    if by != 'declined':
-                        by = 'her' if card else by
-                    out = out.replace(m.group(0), card if card else '', 1)
+            if name.startswith('part:'):
+                debug.append(f'let go: {{{{{raw}}}}} (her card rides in the system prompt now)')
+                out = out.replace(m.group(0), '', 1)
                 continue
-            if name not in FACTS:
+            if name not in slots:
                 debug.append(f'skipped a line: {{{{{raw}}}}} is not a slot here')
                 drop = True
                 break
@@ -582,33 +565,194 @@ def render(words: str, facts: dict, card: str = '') -> tuple[str, str, list[str]
             if out.strip() or not line.strip():
                 lines_out.append(out)
     text = re.sub(r'\n{3,}', '\n\n', '\n'.join(lines_out)).strip()
-    return text, by, debug
+    return text, debug
 
 
-def assemble(profile: dict, card: str, turns: list[dict], facts: dict) -> tuple[list[dict], dict]:
-    """the request's messages: her card (a part code places on top) · the chat's recent turns · her words (at
-    the end, or inside the system message with place: system) → (messages, peek)"""
-    text, by, debug = render(profile.get('words') or '', facts, card)
-    top = card if by == 'code' else ''
-    msgs: list[dict] = []
-    if profile.get('place') == 'system':
-        system = '\n\n'.join(x for x in (top, text) if x)
-        if system:
-            msgs.append({'role': 'system', 'content': system})
-        msgs += turns
-    else:
-        if top:
-            msgs.append({'role': 'system', 'content': top})
-        msgs += turns
-        if text:
-            msgs.append({'role': 'system', 'content': text})
-    return msgs, {'card': by, 'words': bool(text), 'turns': len(turns), 'debug': debug}
+# ── the floor (A43) ───────────────────────────────────────────────────────────────────────────────────
+_FLOOR_MEMO: dict = {'key': None, 'doc': None}
+_SECTION = re.compile(r'^##[ \t]+(.+?)[ \t]*$', re.M)
+
+
+def _sections(text: str) -> dict:
+    """'## name' sections of an md (comments dropped) → {name: words} · the words before the first heading
+    are no section"""
+    text = _COMMENTS.sub('', text or '')
+    out: dict = {}
+    heads = list(_SECTION.finditer(text))
+    for i, h in enumerate(heads):
+        end = heads[i + 1].start() if i + 1 < len(heads) else len(text)
+        name = h.group(1).strip().lower()
+        if name in FLOOR_SECTIONS and name not in out:
+            out[name] = text[h.end():end].strip('\n')
+    return out
+
+
+def _mtime(p: Path) -> float | None:
+    try:
+        return p.stat().st_mtime
+    except OSError:
+        return None
+
+
+def floor_words() -> dict:
+    """{section: (words, by)} · by 'yours' (her copy holds the section: an empty one stays silent) · 'shipped'"""
+    key = (_mtime(FLOOR), _mtime(floor_path()), str(floor_path()))
+    if _FLOOR_MEMO['key'] == key and _FLOOR_MEMO['doc'] is not None:
+        return _FLOOR_MEMO['doc']
+    try:
+        shipped = _sections(FLOOR.read_text(encoding='utf-8'))
+    except OSError:
+        shipped = {}
+    try:
+        hers = _sections(floor_path().read_text(encoding='utf-8')) if key[1] is not None else {}
+    except OSError:
+        hers = {}
+    doc = {}
+    for name in FLOOR_SECTIONS:
+        if name in hers:
+            words = hers[name]
+            doc[name] = (words if words.strip() else '', 'yours')
+        else:
+            doc[name] = (shipped.get(name, ''), 'shipped')
+    _FLOOR_MEMO.update(key=key, doc=doc)
+    return doc
+
+
+def floor_note(profile: dict, facts: dict) -> tuple[str, dict]:
+    """the note at the very end of a stream request → (text, peek) · her profile's words ride inside it
+    ({{words}}), its length as a hint, the pass marker offered · '' when her floor is silent"""
+    words, wdebug = render(profile.get('words') or '', facts)
+    fw, by = floor_words()['floor']
+    text, fdebug = render(fw, {**facts, 'words': words, 'pass': PASS}, FLOOR_SLOTS)
+    return text, {'floor': by, 'words': bool(words), 'debug': wdebug + fdebug}
+
+
+def spoke_first_line(t: float | None = None) -> str:
+    """the one line before each stream message in later requests ('' when she silenced it)"""
+    words, _by = floor_words()['spoke first']
+    text, _ = render(words, {'user': today_name(t)}, FLOOR_SLOTS)
+    return text.split('\n', 1)[0].strip() if text else ''
+
+
+def mark(messages: list) -> int:
+    """the spoke-first line before each stream message (a message carrying `petal_stream`, the replay's flag of
+    the stamp), the flag taken off · in place → how many lines were placed"""
+    if not isinstance(messages, list) or not any(isinstance(m, dict) and m.get(STAMP) for m in messages):
+        return 0
+    line = spoke_first_line()
+    out, n = [], 0
+    for m in messages:
+        if isinstance(m, dict) and STAMP in m:
+            flagged = m.pop(STAMP)
+            if flagged and line and m.get('role') == 'assistant':
+                out.append({'role': 'user', 'content': line, FLOOR_MARK: 'spoke_first'})
+                n += 1
+        out.append(m)
+    messages[:] = out
+    return n
+
+
+def wire(messages):
+    """the floor's marks taken off before a request leaves (the words stay)"""
+    if not isinstance(messages, list):
+        return messages
+    return [{k: v for k, v in m.items() if k != FLOOR_MARK} if isinstance(m, dict) and FLOOR_MARK in m else m
+            for m in messages]
+
+
+def is_pass(text: str) -> bool:
+    """she let the moment pass: nothing, only whitespace or punctuation, or the marker the floor offered"""
+    import unicodedata
+
+    t = (text or '').replace(PASS, ' ')
+    if re.sub(r'[\W_]+', '', t).lower() == 'pass':  # *pass* · [pass] · Pass.
+        return True
+    for ch in t:
+        if ch.isspace():
+            continue
+        cat = unicodedata.category(ch)
+        if cat[0] == 'P' or cat in ('Sm', 'Sk', 'Cf'):
+            continue
+        return False
+    return True
+
+
+# ── her window (A43, until compression lands) ─────────────────────────────────────────────────────────
+CHARS_PER_TOKEN = 3.0  # a careful guess (prose is ~4, her emoji and French run lower); the model's own count wins
+IMAGE_TOKENS = 1000
+
+
+def tokens_of(message: dict, per: float = CHARS_PER_TOKEN) -> int:
+    content = message.get('content')
+    n = 6
+    if isinstance(content, list):
+        for part in content:
+            if isinstance(part, dict) and part.get('type') in ('image_url', 'image', 'input_image'):
+                n += IMAGE_TOKENS
+            elif isinstance(part, dict):
+                n += math.ceil(len(str(part.get('text') or part.get('content') or '')) / per)
+    elif isinstance(content, str):
+        n += math.ceil(len(content) / per)
+    if message.get('tool_calls'):
+        n += math.ceil(len(json.dumps(message['tool_calls'], ensure_ascii=False)) / per)
+    return n
+
+
+def trim(messages: list, budget: int | None, per: float = CHARS_PER_TOKEN) -> tuple[list, int, int]:
+    """oldest turns first, until the request fits `budget` tokens · never the system prompt, never the last
+    message of hers, never the floor note · a spoke-first line goes with the message it stands before, a tool
+    result with its call · → (messages, turns left out, tokens estimated)"""
+    est = sum(tokens_of(m, per) for m in messages)
+    if not budget or est <= budget:
+        return messages, 0, est
+    keep = [True] * len(messages)
+    last_hers = max((i for i, m in enumerate(messages) if m.get('role') == 'user' and not m.get(FLOOR_MARK)), default=-1)
+    protected = {i for i, m in enumerate(messages) if m.get('role') == 'system' and i == 0}
+    protected |= {last_hers} if last_hers >= 0 else set()
+    protected |= {i for i, m in enumerate(messages) if m.get(FLOOR_MARK) == 'floor'}
+    # units: a spoke-first line + the message after it · an assistant's tool calls + their results
+    units, i = [], 0
+    while i < len(messages):
+        j = i + 1
+        if messages[i].get(FLOOR_MARK) == 'spoke_first':
+            j = i + 2
+        if j <= len(messages) and messages[j - 1].get('tool_calls'):
+            while j < len(messages) and messages[j].get('role') == 'tool':
+                j += 1
+        units.append(list(range(i, min(j, len(messages)))))
+        i = j
+    left = 0
+    for unit in units:
+        if est <= budget:
+            break
+        if any(k in protected for k in unit):
+            continue
+        for k in unit:
+            keep[k] = False
+            est -= tokens_of(messages[k], per)
+        left += sum(1 for k in unit if not messages[k].get(FLOOR_MARK) and messages[k].get('role') != 'tool')
+    kept = [m for m, k in zip(messages, keep) if k]
+    while len(kept) > 1 and kept[0].get('role') == 'system' and kept[1].get('role') == 'tool':
+        kept.pop(1)  # a tool result whose call was left out
+    return kept, left, max(est, 0)
+
+
+_CTX = re.compile(r'maximum context length is (\d+) tokens.*?(?:requested|has|resulted in) (\d+) tokens(?: \((\d+) in the messages)?', re.S | re.I)
+
+
+def context_refusal(reason: str) -> tuple[int, int] | None:
+    """vLLM's "maximum context length is X tokens … (Y in the messages …)" → (X, Y), else None"""
+    m = _CTX.search(reason or '')
+    if not m:
+        return None
+    window = int(m.group(1))
+    used = int(m.group(3) or m.group(2))
+    return window, used
 
 
 # ── her words, measured ───────────────────────────────────────────────────────────────────────────────
 _THINK = re.compile(r'<think>.*?</think>', re.S | re.I)
 _DETAILS = re.compile(r'<details\b[^>]*>.*?</details>', re.S | re.I)
-_END = re.compile(r'[.!?…~。！？]+[)"”’\]*_]*(?=\s|$)')
 _WORD = re.compile(r'\S+')
 
 
@@ -627,27 +771,6 @@ def clean(raw) -> str:
 
 def count_words(text: str) -> int:
     return len(_WORD.findall(text or ''))
-
-
-def fit(text: str, lo: int, hi: int) -> tuple[str, dict]:
-    """at most hi words, cut at the last sentence that ends inside them (else at the hi-th word) · fewer than lo
-    is measured, never re-asked (a guard measures before it re-asks)"""
-    n = count_words(text)
-    info = {'words': n, 'fitted_from': None, 'short': n < lo}
-    if n <= hi:
-        return text, info
-    cut = None
-    for m in _END.finditer(text):
-        if count_words(text[: m.end()]) <= hi:
-            cut = m.end()
-        else:
-            break
-    if cut is None:
-        words = list(_WORD.finditer(text))
-        cut = words[hi - 1].end()
-    out = text[:cut].rstrip()
-    info.update(words=count_words(out), fitted_from=n, short=count_words(out) < lo)
-    return out, info
 
 
 # ── the rhythm: the spiral way ────────────────────────────────────────────────────────────────────────
@@ -850,24 +973,35 @@ def draw_n(saved: bool) -> tuple[int, str]:
         return int(_read().get('n') or 0), 'stream:gap'
 
 
-def spoke(chat_id: str, saved: bool, record: dict) -> int:
-    """one utterance landed: the draw advances (and, for a saved chat, one numbers-only line is kept)"""
+def spoke(chat_id: str, saved: bool, record: dict, passed: bool = False) -> int:
+    """one utterance landed, or she let the moment pass (A43): the draw advances either way (and, for a saved
+    chat, one numbers-only line is kept) · a pass counts no word and starts the gap over from now"""
     with _LOCK:
         if not saved:
             _TEMP_N['n'] += 1
             s = _TEMP.get(chat_id)
             if s:
-                s['spoke'] = int(s.get('spoke') or 0) + 1
+                if passed:
+                    s['passed_at'] = round(float(record.get('passed_at') or record.get('at') or time.time()), 3)
+                    s['passed'] = int(s.get('passed') or 0) + 1
+                else:
+                    s['spoke'] = int(s.get('spoke') or 0) + 1
             return _TEMP_N['n']
         doc = _read()
         doc['n'] = int(doc.get('n') or 0) + 1
         s = doc['chats'].get(chat_id)
         if isinstance(s, dict):
-            s['spoke'] = int(s.get('spoke') or 0) + 1
+            if passed:
+                s['passed_at'] = round(float(record.get('passed_at') or record.get('at') or time.time()), 3)
+                s['passed'] = int(s.get('passed') or 0) + 1
+            else:
+                s['spoke'] = int(s.get('spoke') or 0) + 1
         _save(doc)
         n = doc['n']
-    line = {k: record.get(k) for k in ('at', 'gap', 'ph', 'fp', 'profile', 'words', 'fitted_from', 'short')}
+    line = {k: record.get(k) for k in ('at', 'gap', 'ph', 'fp', 'profile', 'words', 'left_out')}
     line['n'] = n
+    if passed:
+        line['passed'] = 1
     try:
         _ready(spoken_path().parent)
         fd = os.open(spoken_path(), os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
@@ -876,6 +1010,57 @@ def spoke(chat_id: str, saved: bool, record: dict) -> int:
     except OSError:
         pass
     return n
+
+
+def _entry(doc_or_temp: dict, chat_id: str) -> dict | None:
+    s = doc_or_temp.get(chat_id)
+    return s if isinstance(s, dict) else None
+
+
+def note_error(chat_id: str, saved: bool, why: str, mtime: float | None) -> int:
+    """one more model error in a row for this chat (the profile's mtime kept beside it) → the count"""
+    with _LOCK:
+        doc = _read() if saved else None
+        s = _entry(doc['chats'] if saved else _TEMP, chat_id)
+        if s is None:
+            return 0
+        if s.get('error_mtime') != mtime:  # her md moved since the last one: a fresh count
+            s['errors'] = 0
+        s['errors'] = int(s.get('errors') or 0) + 1
+        s['error_why'] = str(why)[:300]
+        s['error_mtime'] = mtime
+        if saved:
+            _save(doc)
+        return s['errors']
+
+
+def clear_errors(chat_id: str, saved: bool) -> None:
+    with _LOCK:
+        doc = _read() if saved else None
+        s = _entry(doc['chats'] if saved else _TEMP, chat_id)
+        if s is None or not s.get('errors'):
+            return
+        for k in ('errors', 'error_why', 'error_mtime'):
+            s.pop(k, None)
+        if saved:
+            _save(doc)
+
+
+def stopped(st: dict | None, mtime: float | None) -> dict | None:
+    """she stopped trying: three model errors in a row, and the profile unchanged since the last one"""
+    if not st or int(st.get('errors') or 0) < ERRORS_STOP:
+        return None
+    if mtime is not None and st.get('error_mtime') is not None and mtime != st.get('error_mtime'):
+        return None  # her md moved: she tries again
+    return {'errors': int(st['errors']), 'why': st.get('error_why') or ''}
+
+
+def chats_on() -> list[tuple[str, bool, str]]:
+    """(chat_id, saved, profile) for every chat open to her stream"""
+    with _LOCK:
+        out = [(c, True, s.get('profile')) for c, s in _read()['chats'].items() if isinstance(s, dict)]
+        out += [(c, False, s.get('profile')) for c, s in _TEMP.items()]
+    return out
 
 
 def forget_temp() -> None:
@@ -897,20 +1082,11 @@ def text_of(message: dict) -> str:
     return _DETAILS.sub('', _THINK.sub('', content)).strip()
 
 
-def recent_turns(branch: list[dict], count: int) -> list[dict]:
-    """the last `count` messages of the branch, user and assistant only, as text (stream messages included:
-    they are hers too)"""
-    if count <= 0:
-        return []
-    out = []
-    for m in branch:
-        role = m.get('role')
-        if role not in ('user', 'assistant'):
-            continue
-        text = text_of(m)
-        if text:
-            out.append({'role': role, 'content': text})
-    return out[-count:]
+def anchor_of(leaf_at: float | None, st: dict | None) -> float:
+    """where her next gap is drawn from: the leaf's time, the moment the stream was turned on, or the moment
+    she last let one pass (A43: a pass starts the gap over), whichever is latest"""
+    st = st or {}
+    return max(float(leaf_at or 0), float(st.get('on_at') or 0), float(st.get('passed_at') or 0))
 
 
 def in_a_row(branch: list[dict]) -> int:
@@ -944,7 +1120,8 @@ def last_times(branch: list[dict]) -> tuple[float | None, float | None]:
 
 def facts_for(profile: dict, branch: list[dict], now: float, *, hidden_hour: bool, typing: bool) -> dict:
     spoke_at, wrote_at = last_times(branch)
-    lo, hi = profile['length']
+    lo, hi = profile.get('length') or ('', '')
+    row = in_a_row(branch)
     return {
         'since_last_spoke': since(now - spoke_at) if spoke_at else '',
         'since_she_wrote': since(now - wrote_at) if wrote_at else '',
@@ -953,11 +1130,14 @@ def facts_for(profile: dict, branch: list[dict], now: float, *, hidden_hour: boo
         'user': today_name(now),
         'min_words': str(lo),
         'max_words': str(hi),
-        'in_a_row': str(in_a_row(branch)),
+        'in_a_row': str(row) if row else '',
         'typing': 'typing' if typing else '',
         'profile': profile.get('title') or profile.get('name') or '',
     }
 
 
-def stamp(profile: dict, at: float, gap: float) -> dict:
-    return {'profile': profile['name'], 'at': int(at), 'gap': round(float(gap), 3)}
+def stamp(profile: dict, at: float, gap: float, in_a_row_before: int = 0) -> dict:
+    """the saved message's mark that she spoke first (A43): which profile, when, after which gap, and how many
+    stream messages of hers already stood since the last message of {{user}}"""
+    return {'profile': profile['name'], 'at': int(at), 'gap': round(float(gap), 3), 'first': True,
+            'in_a_row': int(in_a_row_before) + 1}
