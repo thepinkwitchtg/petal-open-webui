@@ -14,6 +14,17 @@ import { writable } from 'svelte/store';
 import { AUDIO_API_BASE_URL } from '$lib/constants';
 
 export type PetalPart = { text: string; para_end: boolean };
+// 🧵 A45 · a reply the rig follows for her voice (it reads the reply as it's written, so a sleeping page starves
+// nothing): its id and chat, the cue said before it (🍒 A38), whether it waits to be written whole, the page's copy
+// when it has no other home (a temporary chat's stream message)
+export type FollowSegment = {
+	message_id: string;
+	chat_id?: string | null;
+	lead?: string;
+	whole?: boolean;
+	text?: string;
+	finished?: boolean;
+};
 // 🚩 who she was speaking for: kept beside the stream on the rig (memory only) until flagged
 export type PetalMeta = { chat_id?: string; message_id?: string; model?: string; source?: string };
 
@@ -30,6 +41,7 @@ type Play = {
 	onError?: () => void; // the stream broke before she spoke: fall back to sentence clips
 	growing?: boolean; // 🌱 A37 · her voice as she writes: more parts arrive through feedPetalStream
 	onFeed?: (feed: string) => void; // 🌱 the growing stream's feed capability, once it's open
+	follow?: FollowSegment[]; // 🧵 A45 · the rig feeds it from these replies, the page never does
 };
 
 let audio: HTMLAudioElement | null = null;
@@ -45,6 +57,8 @@ let current: {
 	started: boolean;
 	onEnded?: () => void;
 	onError?: () => void;
+	marks: { start: number; message_id: string }[]; // 🧵 A45 · where each followed reply begins on the player's clock
+	keep?: string; // 🧵 A45 · her 💗 on this reply: the player ends where the next one begins
 } | null = null;
 
 // 🚩 the voice black box: the rig keeps her last few streams; these let you flag one
@@ -104,6 +118,9 @@ export function voiceEvent(raw: unknown, type?: string): VoiceEvent | null {
 function passVoiceEvent(raw: unknown, type: string, stream: string) {
 	const e = voiceEvent(raw, type);
 	if (!e || !current || stream !== current.id) return;
+	if (e.type === 'sentence' && e.message_id) noteReply(e.message_id, e.start);
+	if (!current) return; // 🧵 A45 · her 💗's end came with it
+	if (e.type === 'sentence' && current.keep && e.message_id && e.message_id !== current.keep) return; // past her 💗
 	for (const fn of voiceListeners) {
 		try {
 			fn(e, current.id);
@@ -111,6 +128,42 @@ function passVoiceEvent(raw: unknown, type: string, stream: string) {
 			console.warn('🎙️ voice follower:', err);
 		}
 	}
+}
+
+/** 🧵 A45 · a followed stream may carry several replies (🍒 a pick, read in one stream): each one's first sentence
+ *  marks where it begins, and the reply she's hearing changes when the player reaches it, never earlier */
+function noteReply(message_id: string, start: number) {
+	if (!current) return;
+	const m = current.marks;
+	if (!m.some((x) => x.message_id === message_id)) {
+		m.push({ start, message_id });
+		m.sort((a, b) => a.start - b.start);
+		if (current.trace) spokenMessages.update((s) => (s.has(message_id) ? s : new Set(s).add(message_id)));
+	}
+	hearingNow();
+}
+/** 🧵 A45 · where her 💗 ends the stream on the player's clock: the first reply to begin after the one she kept */
+function cutAt(): number | null {
+	if (!current?.keep) return null;
+	const kept = current.marks.find((x) => x.message_id === current!.keep);
+	const next = current.marks.find((x) => x.message_id !== current!.keep && (!kept || x.start > kept.start));
+	return next ? next.start : null;
+}
+function hearingNow() {
+	if (!current || !audio) return;
+	const end = cutAt();
+	if (end !== null && audio.currentTime >= end - 0.05) {
+		// the voice had gone ahead (the rig was already saying the next reply): she ends here, as at a natural end
+		pageEvent('end');
+		return finish(false, 'natural');
+	}
+	if (current.marks.length < 2) return;
+	const t = audio.currentTime;
+	let at = current.marks[0].message_id;
+	for (const x of current.marks) if (x.start <= t + 0.05) at = x.message_id;
+	if (at === current.message_id) return;
+	current.message_id = at;
+	say(audio.paused ? 'paused' : current.started ? 'playing' : 'loading');
 }
 
 /** made by the page from the <audio> itself (contract 11.6): pause · resume · end · stop */
@@ -228,6 +281,7 @@ const element = () => {
 			finish(false, 'natural');
 		});
 		audio.addEventListener('error', () => current && finish(true, 'broken'));
+		audio.addEventListener('timeupdate', hearingNow); // 🧵 A45 · the reply she hears, on the player's clock
 	}
 	return audio;
 };
@@ -310,7 +364,9 @@ export const flagPetalVoice = async (
 	o: { token?: string; message_id?: string; note?: string; via?: string } = {}
 ): Promise<FlagResult> => {
 	let trace: string | undefined, at: number | null = null, token = o.token;
-	if (current && (!o.message_id || current.message_id === o.message_id)) {
+	// 🧵 A45 · a stream that carries several replies (🍒 one pick, both sides) flags for any of them
+	const carries = (m: string) => current?.message_id === m || !!current?.marks.some((x) => x.message_id === m);
+	if (current && (!o.message_id || carries(o.message_id))) {
 		trace = current.trace;
 		at = audio?.currentTime ?? null;
 		token = token ?? current.token;
@@ -339,7 +395,13 @@ export const playPetalStream = async (p: Play): Promise<boolean> => {
 	const res = await fetch(`${AUDIO_API_BASE_URL}/petal-stream`, {
 		method: 'POST',
 		headers: { Authorization: `Bearer ${p.token}`, 'Content-Type': 'application/json' },
-		body: JSON.stringify({ voice: p.voice, parts: p.parts, meta: p.meta, ...(p.growing ? { growing: true } : {}) })
+		body: JSON.stringify({
+			voice: p.voice,
+			parts: p.parts,
+			meta: p.meta,
+			...(p.growing || p.follow ? { growing: true } : {}),
+			...(p.follow?.length ? { follow: p.follow } : {})
+		})
 	}).catch(() => null);
 	const unopened = () => {
 		if (!current) voiceNow.set({ state: 'idle', message_id: p.meta?.message_id ?? null, chat_id: p.meta?.chat_id ?? null, id: null, ended: 'broken' });
@@ -362,14 +424,15 @@ export const playPetalStream = async (p: Play): Promise<boolean> => {
 		title,
 		started: false,
 		onEnded: p.onEnded,
-		onError: p.onError
+		onError: p.onError,
+		marks: []
 	};
 	if (p.meta?.message_id && opened?.trace) {
 		const mid = p.meta.message_id;
 		spokenMessages.update((s) => new Set(s).add(mid));
 	}
 	const mine = current;
-	if (p.growing && opened?.feed) p.onFeed?.(opened.feed);
+	if ((p.growing || p.follow) && opened?.feed) p.onFeed?.(opened.feed);
 	say('loading');
 	a.addEventListener('playing', () => current === mine && p.onPlaying?.(), { once: true });
 	a.src = `${AUDIO_API_BASE_URL}/petal-stream/${encodeURIComponent(id)}`;
@@ -401,6 +464,21 @@ export const feedPetalStream = async (
 	if (!res || !res.ok) return null;
 	return res.json().catch(() => null);
 };
+
+// 🧵 A45 · her 💗 on the reply she's hearing: the rig reads nothing after it (a followed stream's later replies)
+export const cutPetalStream = async (token: string, feed: string, message_id: string): Promise<boolean> => {
+	if (current) current.keep = message_id; // what the player already holds past it is never heard
+	hearingNow();
+	const res = await fetch(`${AUDIO_API_BASE_URL}/petal-stream/feed/${encodeURIComponent(feed)}`, {
+		method: 'POST',
+		headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+		body: JSON.stringify({ cut_after: message_id })
+	}).catch(() => null);
+	return !!res?.ok;
+};
+
+/** the reply she's hearing right now in the playing stream (a pick's second side once the player reaches it) */
+export const hearingReply = () => current?.message_id ?? null;
 
 // 🔓 A37 · the phone lets an <audio> play by itself only once a tap has played it: inside her tap (her send),
 // her stream's own <audio> plays a breath of silence, so a reply can be heard later without another tap

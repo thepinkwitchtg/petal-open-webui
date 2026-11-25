@@ -220,6 +220,8 @@ class Growing(list):
         self.chars = sum(len(p["text"]) for p in parts)
         self.fed_at = time.monotonic()
         self._more = asyncio.Event()
+        self.keep: set[str] | None = None  # 🧵 A45 · her 💗 cut a followed stream: only these replies are said
+        self.over = False  # 🧵 A45 · the stream itself ended (done only means nothing more will be fed)
 
     def feed(self, parts: list[dict], done: bool = False) -> int:
         """adds what fits (MAX_PARTS · MAX_CHARS across the whole reply) → how many were taken"""
@@ -238,7 +240,7 @@ class Growing(list):
         return took
 
     def end(self) -> None:
-        self.done = True
+        self.done = self.over = True
         self._more.set()
 
     async def wait(self) -> None:
@@ -261,7 +263,9 @@ async def each_part(parts: list[dict]):
     i = 0
     while True:
         if i < len(parts):
-            yield i, parts[i]
+            keep = getattr(parts, "keep", None)  # 🧵 A45 · a reply after the one she chose is never asked of the voice
+            if keep is None or parts[i].get("mid") is None or parts[i]["mid"] in keep:
+                yield i, parts[i]
             i += 1
         elif isinstance(parts, Growing) and not parts.done:
             await parts.wait()
@@ -340,7 +344,8 @@ async def produce(session, parts: list[dict], voice: str, q: asyncio.Queue, c: d
                         return
                     if was == 0:  # 📡 this take's first sample is next: the page hears of it first
                         whole = final and released >= len(buf)
-                        await q.put(voice_events.Saying(i, part["text"], len(piece) / RATE if whole else None))
+                        await q.put(voice_events.Saying(i, part["text"], len(piece) / RATE if whole else None,
+                                                        part.get("mid"), part.get("ix")))  # 🧵 A45 · whose words
                     if first:
                         piece, first = fade(piece, head_n, out=False), False
                     if final and shaped and tail_hold:
@@ -351,6 +356,8 @@ async def produce(session, parts: list[dict], voice: str, q: asyncio.Queue, c: d
 
                 try:
                     hdrs = tr.headers(i, mood) if tr else {"User-Agent": voice_trace.UA, "X-Petal-Mood": mood}
+                    if part.get("mid"):  # 🧵 A45 · a followed stream may carry two replies (🍒): each sentence names its own
+                        hdrs["X-Petal-Message"] = str(part["mid"])[:200]
                     async with session.post(f"{OMNI_URL}/audio/speech", json=payload, timeout=timeout,
                                             headers=hdrs) as r:
                         if take:
@@ -485,8 +492,9 @@ async def station(session, parts: list[dict], voice: str, tr=None, events=None):
         s["told"] = True
         if events is not None:
             m = s["m"]
-            events.publish("sentence", idx=m.idx, text=m.text, start=voice_events.clock(s["start"]),
-                           duration=round(seconds, 3))
+            mine = {"message_id": m.message_id} if m.message_id else {}  # 🧵 A45 · a followed reply's own id and place
+            events.publish("sentence", idx=m.idx if m.ix is None else m.ix, text=m.text,
+                           start=voice_events.clock(s["start"]), duration=round(seconds, 3), **mine)
 
     def heard(b: bytes) -> bytes:
         if tr and b and tr.room():
@@ -525,6 +533,10 @@ async def station(session, parts: list[dict], voice: str, tr=None, events=None):
                 pi += 1
                 continue
             if isinstance(pcm, voice_events.Saying):  # 📡 her next samples are this take's first
+                keep = getattr(parts, "keep", None)
+                if keep is not None and pcm.message_id and pcm.message_id not in keep:
+                    completed = True  # 🧵 A45 · her 💗 kept the reply before this one: she ends where it ends
+                    break
                 saying = {"m": pcm, "start": None, "told": False}
                 continue
             if isinstance(pcm, voice_events.Said):  # 📡 the take is over: its exact length is known now
@@ -533,6 +545,10 @@ async def station(session, parts: list[dict], voice: str, tr=None, events=None):
                 saying = None
                 continue
             if saying and not filler and saying["start"] is None:
+                keep = getattr(parts, "keep", None)
+                if keep is not None and saying["m"].message_id and saying["m"].message_id not in keep:
+                    completed = True  # 🧵 A45 · her 💗 landed while this take was being made: it is never heard
+                    break
                 saying["start"] = sent  # where the take's first sample sits in the stream
                 if saying["m"].seconds is not None:
                     tell(saying, saying["m"].seconds)  # the whole take is here: the page knows at once
@@ -601,6 +617,7 @@ if __name__ != "__main__":
     from fastapi import APIRouter, Depends, HTTPException, Request
     from fastapi.responses import Response, StreamingResponse
 
+    from open_webui.utils import petal_follow  # 🧵 A45 · the rig follows a reply for her voice
     from open_webui.utils.auth import get_verified_user
     from open_webui.utils.session_pool import get_session
 
@@ -614,7 +631,10 @@ if __name__ != "__main__":
             entry = _tickets.pop(k, None)
             if entry and isinstance(entry.get("parts"), Growing):
                 entry["parts"].end()  # never opened: nothing will ever walk it
-        for k in [k for k, v in _feeds.items() if now - v["t"] > FEED_TTL_S or v["parts"].done]:
+        # 🧵 A45 · a followed stream keeps its feed while it plays (her 💗 can still cut it after all of it was fed)
+        for k in [k for k, v in _feeds.items()
+                  if ((v["parts"].over or now - v["t"] > 6 * FEED_TTL_S) if v.get("follower")
+                      else (now - v["t"] > FEED_TTL_S or v["parts"].done))]:
             _feeds.pop(k, None)
 
     @router.get("/petal-stream/health")
@@ -642,14 +662,28 @@ if __name__ != "__main__":
         ch = voice_events.open_channel(ticket, user.id, meta.get("message_id"))  # 📡 memory only, never written
         if growing:  # 🌱 her voice as she writes: the parts keep coming through the feed
             parts = Growing(parts)
+        # 🧵 A45 · the rig follows the replies itself (the page never feeds it, so a sleeping page starves nothing)
+        follower = None
+        raw_follow = body.get("follow") if isinstance(body.get("follow"), list) else []
+        segments = [s for s in (petal_follow.Segment.of(x) for x in raw_follow[:4]) if s]
+        if growing and segments:
+            follower = petal_follow.Follower(parts, segments, tr, take=_take, idle_s=GROW_IDLE_S).start()
         _tickets[ticket] = {"t": time.monotonic(), "user": user.id, "parts": parts, "voice": voice[:128], "trace": tr,
                             "events": ch}
         out = {"id": ticket, "trace": tr.id, "events": f"petal-stream/{ticket}/events"}
         if growing:
             feed = secrets.token_urlsafe(16)
-            _feeds[feed] = {"t": time.monotonic(), "user": user.id, "parts": parts, "trace": tr}
+            _feeds[feed] = {"t": time.monotonic(), "user": user.id, "parts": parts, "trace": tr, "follower": follower}
             out["feed"] = feed
+            if follower is not None:
+                out["follow"] = len(segments)
         return out
+
+    def _take(tr, first: int, fed: list[dict]) -> None:
+        """🧵 A45 · the trace keeps one take per sentence the follower gives, as the feed always did"""
+        if tr is not None:
+            for k, p in enumerate(fed):
+                tr.takes.append(voice_trace.Take(idx=first + k, raw=p["text"], para_end=p["para_end"]))
 
     @router.post("/petal-stream/feed/{feed}")
     async def petal_stream_feed(feed: str, request: Request, user=Depends(get_verified_user)):
@@ -664,6 +698,11 @@ if __name__ != "__main__":
             raise HTTPException(400, "invalid body") from None
         body = body if isinstance(body, dict) else {}
         g: Growing = entry["parts"]
+        follower = entry.get("follower")
+        if follower is not None:  # 🧵 A45 · the rig feeds this one: a page's parts would be said twice
+            if isinstance(body.get("cut_after"), str):
+                follower.cut(body["cut_after"])  # her 💗 on the reply she's hearing: nothing after it is read
+            return {"ok": True, "parts": len(g), "done": g.done, "follow": True}
         more = clean_parts(body.get("parts"))
         first = len(g)
         took = g.feed(more, done=body.get("done") is True)

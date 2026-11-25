@@ -27,14 +27,16 @@ import { config, settings } from '$lib/stores';
 import { AUDIO_API_BASE_URL } from '$lib/constants';
 import { getMessageContentParts } from '$lib/utils';
 import {
-	feedPetalStream,
+	cutPetalStream,
+	hearingReply,
 	petalStreamAudio,
 	petalStreamEnabled,
 	petalStreamParts,
 	playPetalStream,
 	stopPetalStream,
 	unlockPetalStream,
-	voiceNow
+	voiceNow,
+	type FollowSegment
 } from '$lib/utils/petalStream';
 import { playReply, replyOf, setLivePlayer, stopAllVoice, voiceUI } from '$lib/utils/petal-voice';
 
@@ -245,6 +247,9 @@ type Writing = {
 	pick: PickRead | null; // 🍒 A38 · the pick this turn reads
 	chat: string | null; // 🔈 A40 · the chat it speaks for
 	eager: boolean; // 🔈 A40 · her tap on a reply still being written: open at once, before a sentence is whole
+	stream: string | null; // 🧵 A45 · the stream's ticket, once open (a pick's stream changes its reply midway)
+	both: boolean; // 🧵 A45 · 🍒 the stream reads the other side too (the rig follows both, in turn)
+	lounge: boolean; // 🧵 A45 · 🌊 words she spoke on her own: a stream that never opens still plays them as clips
 };
 let writing: Writing | null = null;
 
@@ -275,13 +280,17 @@ function begin(id: string, content: string, finished: boolean, lead = '', pick: 
 		lead,
 		pick,
 		chat: replyOf(id)?.meta?.()?.chat_id ?? null,
-		eager: false
+		eager: false,
+		stream: null,
+		both: false,
+		lounge: false
 	};
 	writing = w;
 	handled.add(id);
 	return w;
 }
-export const writingNow = () => (writing ? { id: writing.id, sent: writing.sent, done: writing.done, open: !!writing.feed } : null);
+export const writingNow = () =>
+	writing ? { id: writing.id, sent: writing.sent, done: writing.done, open: !!writing.feed, both: writing.both } : null;
 
 /** ResponseMessage tells each change of a reply's words (while it streams, and once it's done) */
 export function grew(
@@ -347,30 +356,42 @@ function flush(w: Writing) {
 		void open(w, ready);
 		return;
 	}
-	const fresh = ready.slice(w.sent);
-	if (!fresh.length && !w.finished) return;
-	w.sent += fresh.length;
+	// 🧵 A45 · open: the rig follows the reply itself and feeds her voice (a sleeping page starves nothing, and a
+	// page that wakes never says a sentence twice). the page only keeps count of what it has seen
+	w.sent = ready.length;
 	w.done = w.finished;
-	const feed = w.feed;
-	const done = w.done;
-	const source = w.content;
-	w.chain = w.chain
-		.then(() => feedPetalStream(read('token') ?? '', feed, fresh, done, source))
-		.then((r) => {
-			if (!r && writing === w && !w.done) letGo(w, true); // the stream is gone (she stopped it)
+}
+
+/** 🧵 A45 · the replies the rig follows for this stream: this one (its cue first), and for 🍒 a pick's first turn the
+ *  other side after it, with its own cue (after-she-finishes: it waits until that side is written) */
+function segmentsOf(w: Writing): FollowSegment[] {
+	const first: FollowSegment = { message_id: w.id, chat_id: w.chat, lead: w.lead };
+	if (w.finished) Object.assign(first, { text: w.content, finished: true });
+	const segs = [first];
+	const p = w.pick;
+	if (p && reading === p && p.turn === 0 && !p.chosen && w.id === p.a) {
+		segs.push({
+			message_id: p.b,
+			chat_id: w.chat,
+			lead: cuesOf(get(settings)).two,
+			whole: effectiveMode() === 'finished'
 		});
+		w.both = true;
+	}
+	return segs;
 }
 
 async function open(w: Writing, ready: ReturnType<typeof wholeParts>) {
 	const r = replyOf(w.id);
 	if (!r) return letGo(w, false);
 	w.opening = true;
-	w.sent = ready.length; // what the stream opens with is already given
+	w.sent = ready.length;
 	const m = r.meta?.() ?? {};
 	const opened = await playPetalStream({
 		token: read('token') ?? '',
 		voice: r.voice() ?? '',
-		parts: w.lead ? [{ text: w.lead, para_end: true }, ...ready] : ready,
+		parts: [], // 🧵 A45 · the rig gives every sentence, her cue first, as it follows the reply
+		follow: segmentsOf(w),
 		meta: { chat_id: m.chat_id, message_id: w.id, model: m.model, source: w.content },
 		title: m.title,
 		artwork: m.artwork,
@@ -384,6 +405,7 @@ async function open(w: Writing, ready: ReturnType<typeof wholeParts>) {
 			if (writing === w) letGo(w, false);
 			handled.delete(w.id);
 			if (w.pick && reading === w.pick) reading = null; // 🍒 a broken voice reads no further
+			else if (w.finished && !w.pick) playReply(w.id); // 🧵 A45 · a whole reply still gets its sentence clips
 		}
 	});
 	w.opening = false;
@@ -397,10 +419,12 @@ async function open(w: Writing, ready: ReturnType<typeof wholeParts>) {
 		letGo(w, false);
 		handled.delete(w.id); // never opened: after-she-finishes gets its chance
 		if (w.pick && reading === w.pick) reading = null;
+		if (w.lounge) playReply(w.id); // 🌊 her own words have no after-she-finishes: the clips, as before A45
 		return;
 	}
-	markHeard(w.id);
-	flush(w); // what was written while it opened
+	w.stream = get(voiceNow).id;
+	markHeard(w.id); // 🧵 A45 · 🍒 the other side is marked heard only once her voice reaches it (voiceNow, below)
+	flush(w); // what was written while it opened (the rig has it already: this only keeps count)
 }
 
 function letGo(w: Writing, keepHandled: boolean) {
@@ -469,10 +493,12 @@ export function picked(id: string): boolean {
 	const p = reading;
 	if (p && (id === p.a || id === p.b)) {
 		const ui = get(voiceUI);
-		const hearing = writing?.pick === p ? writing.id : ui.state !== 'idle' ? ui.message_id : null;
+		const hearing = writing?.pick === p ? (hearingReply() ?? writing.id) : ui.state !== 'idle' ? ui.message_id : null;
 		if (hearing === id) {
 			p.chosen = id;
 			handled.add(id);
+			// 🧵 A45 · one stream reads both sides: the rig reads nothing after the one she chose
+			if (writing?.both && writing.feed) void cutPetalStream(read('token') ?? '', writing.feed, id);
 			why('picked the one she hears', id);
 			return true;
 		}
@@ -548,7 +574,13 @@ function streamWhole(id: string) {
 	takeOver();
 	markHeard(id);
 	handled.add(id);
-	playReply(id);
+	// 🧵 A45 · the same path as her replies: one stream the rig carries (here already whole)
+	const r = replyOf(id);
+	if (!r) return;
+	if (writing) letGo(writing, true);
+	const w = begin(id, r.content() ?? '', true);
+	w.lounge = true;
+	flush(w);
 }
 
 /** 🔈 A40 · the voice a send in another chat may hand over to that send's reply (null: none) */
@@ -641,10 +673,28 @@ export function installAutoplay() {
 		wasId = ui.message_id;
 	});
 	voiceNow.subscribe((v) => {
+		// 🧵 A45 · 🍒 one stream reads both sides: the other side is heard once the player reaches it, never before
+		// (stopped before it, her 💗 on it still plays it after she finishes)
+		const both = writing?.both && writing.pick && writing.stream && v.id === writing.stream ? writing.pick : null;
+		if (both && v.message_id === both.b) markHeard(both.b);
 		if (v.state !== 'idle') return;
 		// she ended (played out, stopped, broken): the writing voice lets go of it
-		const ended = writing && (!v.message_id || v.message_id === writing.id) && (writing.feed || !writing.opening) ? writing : null;
+		const ended =
+			writing &&
+			(!v.message_id || v.message_id === writing.id || (!!writing.stream && v.id === writing.stream)) &&
+			(writing.feed || !writing.opening)
+				? writing
+				: null;
 		if (ended) letGo(ended, true);
+		// 🧵 A45 · 🍒 one stream read both sides: its end is the reading's end, whatever ended it
+		if (ended?.both && ended.pick && reading === ended.pick) {
+			if (v.ended === 'natural' && !reading.chosen) {
+				readThrough.add(reading.a);
+				readThrough.add(reading.b);
+			}
+			why(v.ended === 'natural' ? 'pick read through (one stream)' : 'pick read stops', reading.a);
+			reading = null;
+		}
 		// 🍒 A38 · a pick's turn: reached its end → the other's turn · stopped, faded, broken → the reading ends
 		if (reading && v.message_id === turnOf(reading) && (!ended || ended.pick === reading)) {
 			if (v.ended === 'natural') nextTurn(reading);
@@ -686,6 +736,7 @@ export function installAutoplay() {
 				writing: writingNow(),
 				pick: readingNow(),
 				voice: get(voiceUI), // ids and states only
+				stream: get(voiceNow), // 🧵 A45 · the stream's ticket, its reply and why it last ended (ids only)
 				volume: petalStreamAudio()?.volume ?? null
 			};
 		},
