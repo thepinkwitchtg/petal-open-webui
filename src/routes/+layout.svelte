@@ -504,6 +504,9 @@
 		await tick();
 		const type = event?.data?.type ?? null;
 		const data = event?.data?.data ?? null;
+		// 🌊 A-REBASE2 · the server's copy moved (her stream spoke in it): 0.13.5's quick reopen would show a
+		// cached copy without her words, so the next open reads the server's
+		if (type === 'chat:reload' && event.chat_id) cachedChats.delete(event.chat_id);
 
 		// Calendar alerts are not chat-scoped, handle before chat_id checks
 		if (type === 'calendar:alert' && data) {
