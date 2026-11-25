@@ -1262,22 +1262,6 @@ class ChatTable:
         """Message map for walking history (see ``get_message_list``)."""
         return await ChatMessages.get_messages_map_by_chat_id(id)
 
-    async def messages_map_may_heal(self, id: str) -> bool:
-        """Petal (A24) · may ``get_messages_map_by_chat_id`` heal this chat (backfill its message rows)?
-
-        Answered from the rows' ids and parent links only, never the messages themselves: no rows (a legacy
-        chat), or a parent link that points outside the rows (a migration gap), the only two cases where that
-        read can write. A caller that needs that read's side effect but not its map skips the heavy read when
-        this says no, and the chat's rows end up the same either way.
-        """
-        async with get_async_db_context() as db:
-            rows = (await db.execute(select(ChatMessage.id, ChatMessage.parent_id).filter_by(chat_id=id))).all()
-        if not rows:
-            return True
-        prefix = f'{id}-'
-        ids = {row.id[len(prefix) :] if row.id.startswith(prefix) else row.id for row in rows}
-        return any(row.parent_id and row.parent_id not in ids for row in rows)
-
     async def get_message_by_id_and_message_id(self, id: str, message_id: str) -> dict | None:
         messages_map = await ChatMessages.get_messages_map_by_message_ids(id, [message_id])
         return messages_map.get(message_id)

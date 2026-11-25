@@ -30,7 +30,7 @@ the core lives in utils/petal_lounge.py (her profiles, the spiral rhythm, the sl
   stream utterance
 - **the utterance lands as an assistant message** under the chat's current leaf, stamped at the top level
   `petal_stream: {profile, at, gap}` (never in meta, never replayed to the model: OWUI replays only its own
-  keys). a saved chat gets it in its history and its message rows, then every open page reloads that chat
+  keys). a saved chat gets it as its message row (0.13.5), then every open page reloads that chat
   (`chat:reload`, the way upstream's timers land theirs). a temporary chat lives on the page: the asking page
   lands it, the rig keeps nothing (contract 0)
 - **her next message ends the turn naturally:** if the chat moved while she wrote (a send, a reply), her words
@@ -214,43 +214,33 @@ def _temp_branch(turns: Optional[list]) -> list[dict]:
 
 
 async def _insert(app, chat_id: str, user, leaf_id: str, message: dict) -> bool:
-    """her words under the leaf she answered, if the chat is still where she left it (the timers' way)"""
-    from open_webui.internal.db import get_async_db
+    """her words under the leaf she answered, if the chat is still where she left it (the timers' way) · since 0.13.5
+    a message lives in its chat_message row (every key it has, the stamp in `data`) and the chat keeps only
+    `current_message_id`: both written in one chat transaction, through upstream's own helpers"""
     from open_webui.models.chat_messages import ChatMessages
-    from open_webui.models.chats import Chat
+    from open_webui.models.chats import Chats
     from open_webui.tasks import has_active_tasks
-    from sqlalchemy import select
 
     lock = _LOCKS.setdefault(chat_id, asyncio.Lock())
     async with lock:
-        async with get_async_db() as db:
-            stmt = select(Chat).where(Chat.id == chat_id, Chat.user_id == user.id)
-            if db.bind.dialect.name == 'postgresql':
-                stmt = stmt.with_for_update()
-            row = (await db.execute(stmt)).scalar_one_or_none()
-            if not row:
+        if await has_active_tasks(app.state.redis, chat_id):
+            return False
+        async with Chats._chat_transaction(chat_id) as (session, row):
+            if not row or row.user_id != user.id or row.current_message_id != leaf_id:
                 return False
-            if await has_active_tasks(app.state.redis, chat_id):
+            messages = await ChatMessages.get_messages_map_by_message_ids(chat_id, [leaf_id], db=session)
+            if leaf_id not in messages:
                 return False
-            chat = copy.deepcopy(row.chat or {})
-            history = chat.setdefault('history', {})
-            messages = history.setdefault('messages', {})
-            current = row.current_message_id if row.current_message_id in messages else history.get('currentId')
-            if current != leaf_id or leaf_id not in messages:
-                return False
-            messages[message['id']] = message
-            children = messages[leaf_id].setdefault('childrenIds', [])
-            if message['id'] not in children:
-                children.append(message['id'])
-            history['currentId'] = message['id']
-            row.chat = chat
-            row.current_message_id = message['id']
+            # 🌊 A43 · the row knows it's a stream message (meta beside the stamp): a later request's replay places the
+            # spoke-first line before it
+            spoken = {**message, 'parentId': leaf_id, 'meta': {**(message.get('meta') or {}), 'petal_spoke_first': True}}
+            history = {'messages': messages, 'currentId': row.current_message_id}
+            Chats.upsert_message_to_history(history, message['id'], spoken)
+            for mid in (message['id'], leaf_id):  # hers, and the leaf that now lists her as its child
+                m = history['messages'][mid]
+                await ChatMessages.upsert_message(mid, chat_id, m.get('user_id') or user.id, m, db=session)
+            row.current_message_id = history['currentId']
             row.updated_at = int(time.time())
-            await db.commit()
-        # 🌊 A43 · the row knows it's a stream message (the stamp stays in the history JSON): a later request's replay
-        # places the spoke-first line before it without reading the whole chat
-        row = {**message, 'meta': {**(message.get('meta') or {}), 'petal_spoke_first': True}}
-        await ChatMessages.upsert_message(message['id'], chat_id, user.id, row)
     return True
 
 

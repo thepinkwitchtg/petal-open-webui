@@ -1982,29 +1982,14 @@ async def load_messages_from_db(
 
 
 async def _petal_stream_ids(chat_id: str, messages_map: dict, db_messages: list[dict]) -> set:
-    """🌊 A43 · which messages of this branch are her stream messages. the stamp lives in the chat's history JSON,
-    not in its message rows: a row written by the stream carries `meta.petal_spoke_first` (exact, no extra read);
-    an assistant message under an assistant (where a stream message, or a timer's, lands) without it is
-    looked up once in the history JSON (stream messages written before A43)"""
+    """🌊 A43 · which messages of this branch are her stream messages. since 0.13.5 a message's every key lives in its
+    chat_message row (the stamp in `data`), so the branch read above already holds it: the stamp itself, or the
+    row's `meta.petal_spoke_first` (written beside it since A43), no second read"""
     ids = {
         m.get('id')
         for m in db_messages
         if isinstance(m.get(petal_lounge.STAMP), dict) or ((m.get('meta') or {}).get('petal_spoke_first') is True)
     }
-    unsure = [
-        m.get('id')
-        for m in db_messages
-        if m.get('role') == 'assistant'
-        and m.get('id') not in ids
-        and ((messages_map or {}).get(m.get('parentId')) or {}).get('role') == 'assistant'
-    ]
-    if unsure:
-        try:
-            chat = await Chats.get_chat_by_id(chat_id)
-            history = ((chat.chat or {}).get('history') or {}).get('messages') or {} if chat else {}
-            ids |= {mid for mid in unsure if isinstance((history.get(mid) or {}).get(petal_lounge.STAMP), dict)}
-        except Exception as e:
-            log.warning(f'🌊 stream messages not looked up ({type(e).__name__})')
     ids.discard(None)
     return ids
 

@@ -5572,7 +5572,8 @@
 							role: message.role,
 							model: message.model,
 							output: message.output,
-							meta: message.meta
+							meta: message.meta,
+							...(message.petal_stream ? { petal_stream: true } : {}) // 🌊 A43 · the spoke-first line
 						};
 					}
 
