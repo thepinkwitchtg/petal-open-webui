@@ -83,6 +83,7 @@ from open_webui.socket.main import (
 from open_webui.tasks import append_response_stream, clear_response_stream, save_response_stream
 from open_webui.utils import petal_pick  # 🍒 A29 · a pick's second reply never acts
 from open_webui.utils import petal_lounge  # 🌊 A43 · the spoke-first line
+from open_webui.utils import petal_follow  # 🧵 A45 · her voice follows replies on the rig
 from open_webui.utils.access_control import has_permission
 from open_webui.utils.access_control.files import get_owner_accessible_folder_files
 from open_webui.utils.access_control.folders import has_folder_access
@@ -4734,6 +4735,9 @@ async def streaming_chat_response_handler(response, ctx):
                     ]
                 return prior_output + output if prior_output else output
 
+            # 🧵 A45 · her voice follows this reply on the rig, not the page (a sleeping phone feeds nothing)
+            petal_follow.provide(metadata.get('message_id'), full_output)
+
             stream_size = 0
             snapshot_size = 0
 
@@ -6583,6 +6587,7 @@ async def streaming_chat_response_handler(response, ctx):
                             _part['text'] = _t[:_cut].rstrip()
 
                 current_output = full_output()
+                petal_follow.done(metadata.get('message_id'), current_output)  # 🧵 A45 · all of it, guard applied
                 title = await Chats.get_chat_title_by_id(metadata['chat_id']) if save_to_chat else ''
                 data = {
                     'done': True,
@@ -6664,6 +6669,7 @@ async def streaming_chat_response_handler(response, ctx):
 
                 async def save_cancelled_state():
                     cancelled_output = full_output()
+                    petal_follow.done(metadata.get('message_id'), cancelled_output)  # 🧵 A45 · stopped: she ends with it
                     result_call_ids = {
                         item.get('call_id')
                         for item in cancelled_output

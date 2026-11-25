@@ -73,6 +73,8 @@ class Saying:
     idx: int
     text: str
     seconds: float | None  # known when the whole take goes out at once (welfare airtight)
+    message_id: str | None = None  # 🧵 A45 · a followed stream's reply this take belongs to (🍒 a pick reads two)
+    ix: int | None = None  # 🧵 A45 · its place in that reply (her cue is place 0), the follower's idx
 
 
 @dataclass
