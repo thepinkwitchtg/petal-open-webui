@@ -37,6 +37,8 @@ export type ChatContext = {
 	models: typeof import('$lib/stores').models;
 	temporary: typeof import('$lib/stores').temporaryChat;
 	audioQueue: typeof import('$lib/stores').audioQueue;
+	/** the chat's own folder (a chat tab has none, whatever the main view shows) · A44 */
+	selectedFolder?: typeof import('$lib/stores').selectedFolder;
 	submitPrompt?: (prompt: string) => void;
 	/** The folder the chat's file panel shows on a machine, if it shows one there. */
 	getCurrentDirectory?: (machineId: string | null) => string | undefined;

@@ -250,6 +250,7 @@
 		models,
 		temporary: temporaryChat,
 		audioQueue,
+		selectedFolder,
 		submitPrompt: (prompt) => submitHandler(prompt),
 		getCurrentDirectory: (machineId) => tabs?.getCurrentDirectory(machineId)
 	});
@@ -307,7 +308,12 @@
 	let loading = true;
 	const instanceId = uuidv4();
 	const messagesContainerId = embedded ? `note-messages-${instanceId}` : 'messages-container';
-	const inputId = embedded ? `note-chat-input-${instanceId}` : 'chat-input';
+	// 🌸 A44 · a tab's composer is a chat field (hush whispers in it); a note's keeps its own id
+	const inputId = tabbed
+		? `chat-tab-input-${instanceId}`
+		: embedded
+			? `note-chat-input-${instanceId}`
+			: 'chat-input';
 	let audioElement: HTMLAudioElement;
 	$: chatContainerId = embedded ? `note-chat-container-${instanceId}` : 'chat-container';
 	$: messageInputDropzoneId = embedded ? `note-chat-input-dropzone-${instanceId}` : 'chat-pane';
@@ -6936,31 +6942,10 @@
 									</div>
 								</div>
 							{/if}
-						{:else if embedded}
+						{:else if embedded && !tabbed}
+							<!-- 🌸 A44 · a tab's empty chat opens like the landing (the Placeholder below) -->
 							<div class="flex h-full min-h-0 flex-col justify-end">
-								{#if tabbed}
-									<div class="flex flex-1 items-center justify-center px-6">
-										<div class="max-w-56 text-center">
-											<p class="text-sm font-normal text-base-600 dark:text-base-300">
-												{$temporaryChat ? $i18n.t('Temporary chat') : $i18n.t('New Chat')}
-											</p>
-											<p class="mt-1.5 text-xs leading-relaxed text-base-400 dark:text-base-500">
-												{$temporaryChat
-													? $i18n.t('Messages disappear when you close this tab.')
-													: $i18n.t('Messages are saved to your chats.')}
-											</p>
-										</div>
-									</div>
-									{#if modelSuggestionPrompts?.length}
-										<div class="mx-auto w-full max-w-2xl px-5 pb-3">
-											<Suggestions
-												suggestionPrompts={modelSuggestionPrompts}
-												inputValue={prompt}
-												{onSelect}
-											/>
-										</div>
-									{/if}
-								{:else if suggestedPrompts.length > 0 && !embeddedCollapsed}
+								{#if suggestedPrompts.length > 0 && !embeddedCollapsed}
 									<div class="flex flex-1 items-end px-5 pb-8">
 										<div class="w-full">
 											<div class="mb-2 text-[0.75rem] text-base-300 dark:text-base-700">
@@ -7076,6 +7061,10 @@
 								<Placeholder
 									onNewFolderChat={() => tabs?.openFeatureTab('chat')}
 									bind:folderTabActions
+									{inputId}
+									{embedded}
+									{dropzoneId}
+									{messagesContainerId}
 									{selectedMachineId}
 									machineSelectionEnabled={!machineFixed}
 									disabled={!canUseMachine}
