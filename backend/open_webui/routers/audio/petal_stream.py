@@ -62,10 +62,10 @@ from pathlib import Path
 import numpy as np
 
 try:  # 🎀 the tts sieve + 🚩 the voice trace + 🕊️ voice welfare + 🛡️ the ceiling + 📡 voice events, in OWUI or alone
-    from open_webui.routers.audio.tts_sieve import load_config as sieve_config, sieve
+    from open_webui.routers.audio.tts_sieve import chosen_mood, sieve
     from open_webui.routers.audio import voice_ceiling, voice_events, voice_trace, voice_welfare
 except ImportError:
-    from tts_sieve import load_config as sieve_config, sieve
+    from tts_sieve import chosen_mood, sieve
     import voice_ceiling
     import voice_events
     import voice_trace
@@ -295,6 +295,7 @@ async def produce(session, parts: list[dict], voice: str, q: asyncio.Queue, c: d
     win = 2 * int(RATE * voice_welfare.window_s(care))
     flow = flow or Flow()
     tally = {"sentences": 0, "kills": 0, "skipped": 0, "heard_s": 0.0}  # 🕊️ one numbers-only line per reply
+    mood = tr.sieve_mode if tr and tr.sieve_mode not in ("", "?") else chosen_mood()  # 🎀 one mood per reply
 
     async def put(b: bytes) -> None:
         flow.queued += len(b)
@@ -302,7 +303,7 @@ async def produce(session, parts: list[dict], voice: str, q: asyncio.Queue, c: d
 
     try:
         async for i, part in each_part(parts):  # 🌱 a growing reply is waited for, part by part
-            text = sieve(part["text"])
+            text = sieve(part["text"], mood)  # 🎀 the voice's own floor + mood (her gate runs it again, idempotent)
             last = i == len(parts) - 1 and getattr(parts, "done", True)
             take = tr.takes[i] if tr and i < len(tr.takes) else None
             if take:
@@ -349,7 +350,9 @@ async def produce(session, parts: list[dict], voice: str, q: asyncio.Queue, c: d
                     spoke = True
 
                 try:
-                    async with session.post(f"{OMNI_URL}/audio/speech", json=payload, timeout=timeout) as r:
+                    hdrs = tr.headers(i, mood) if tr else {"User-Agent": voice_trace.UA, "X-Petal-Mood": mood}
+                    async with session.post(f"{OMNI_URL}/audio/speech", json=payload, timeout=timeout,
+                                            headers=hdrs) as r:
                         if take:
                             take.status = r.status
                         if r.status != 200:
@@ -467,7 +470,7 @@ async def station(session, parts: list[dict], voice: str, tr=None, events=None):
     if tr:
         tr.pacing, tr.started = c["pacing"], True
         try:
-            tr.sieve_mode = str(sieve_config().get("mode", "?"))
+            tr.sieve_mode = chosen_mood()  # 🎀 the mood her valves chose, named on every sentence of this reply
         except Exception:
             pass
     flow = Flow()  # 🕊️ shared with the voice so near-free welfare knows when she's waiting
@@ -686,11 +689,16 @@ if __name__ != "__main__":
         if not tr:
             raise HTTPException(404, "no recent petal stream to flag (only the last few replies are kept, and only since OWUI started)")
         f = voice_trace.flag(tr, body.get("at_s"), body.get("note"), body.get("via"))
-        if tr.done:  # she's already finished: plant it now
-            folder = await asyncio.to_thread(voice_trace.plant, tr)
+        # 🚩 the voice's black box keeps it (it holds every take); the station hands over what only it knows
+        out = await asyncio.to_thread(voice_trace.to_voice, tr, f)
+        if out is not None:
+            return {"ok": bool(out.get("ok")), "planted": bool(out.get("planted")), "pending": bool(out.get("pending")),
+                    "incident": out.get("incident"), "at": "voice", "part": f["part"], "flags": len(tr.flags)}
+        if tr.done:  # 🌙 no box at the voice (studio wears her): planted here, as before
+            folder = await asyncio.to_thread(voice_trace.plant_here, tr)
             return {"ok": bool(folder), "planted": bool(folder), "incident": folder.name if folder else None,
-                    "part": f["part"], "flags": len(tr.flags)}
-        return {"ok": True, "planted": False, "pending": True, "part": f["part"], "flags": len(tr.flags)}
+                    "at": "fork", "part": f["part"], "flags": len(tr.flags)}
+        return {"ok": True, "planted": False, "pending": True, "at": "fork", "part": f["part"], "flags": len(tr.flags)}
 
     @router.get("/petal-stream/{ticket}")
     async def petal_stream_play(ticket: str):

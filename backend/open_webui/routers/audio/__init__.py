@@ -54,7 +54,7 @@ from open_webui.env import (
 from open_webui.events import EVENTS, publish_event
 from open_webui.models.config import Config
 from open_webui.routers.audio import realtime
-from open_webui.routers.audio.tts_sieve import sieve_speech_body, silent_mp3
+from open_webui.routers.audio.tts_sieve import chosen_mood, sieve_speech_body, silent_mp3
 from open_webui.routers.audio import voice_events, voice_welfare
 from open_webui.utils.access_control import has_permission
 from open_webui.utils.auth import get_admin_user, get_verified_user
@@ -451,6 +451,8 @@ async def _tts_openai(request, payload, file_path, file_body_path, user):
     }
     if ENABLE_FORWARD_USER_INFO_HEADERS:
         headers = include_user_info_headers(headers, user)
+    if voice_welfare.is_her_voice(api_base_url):  # 🎀 her voice's gate: the mood her valves chose, and where the clip belongs
+        headers.update(_petal_voice_headers(request))
 
     # 🕊️ voice welfare: her whole clip is judged before it's returned. a looping, runaway or broken take
     # is asked again with a fresh seed and never reaches the speech cache (which would replay it every
@@ -782,6 +784,19 @@ async def _tts_mistral(request, payload, file_path, file_body_path, user):
         await _raise_tts_error(exc, r)
 
 
+def _petal_voice_headers(request) -> dict:
+    """🎀 what her voice's gate reads: the mood (the floor runs first, always) and, for the black box, the
+    message and sentence the clip belongs to (a 🚩 on the speaker button finds it by message id)"""
+    st = getattr(request, 'state', None)
+    h = {'X-Petal-Mood': getattr(st, 'petal_mood', None) or chosen_mood(), 'User-Agent': 'petal-open-webui/speech'}
+    ask = getattr(st, 'petal_ask', None) or {}
+    if ask.get('message_id'):
+        h['X-Petal-Message'] = str(ask['message_id'])[:200]
+        h['X-Petal-Group'] = 'clip-' + ''.join(ch for ch in str(ask['message_id']) if ch.isalnum() or ch in '-_')[:64]
+        h['X-Petal-Idx'] = str(int(ask.get('idx') or 0))
+    return h
+
+
 # Dispatcher map: engine name -> handler
 _TTS_ENGINES = {
     'openai': _tts_openai,
@@ -813,8 +828,11 @@ async def speech(request: Request, user=Depends(get_verified_user)):
     body = await request.body()
     # 📡 voice events: a page that asks ("petal": {message_id, idx}) gets the stream's events with the clip
     body, petal_ask = voice_events.take_petal(body)
-    # 🎀 tts sieve: what the voice eats, never what the chat shows (tts_sieve.json toggles it live)
-    body, sieved_empty = sieve_speech_body(body)
+    # 🎀 the voice's own sieve, by path (its gate runs it again: the floor is idempotent): what the voice
+    # eats, never what the chat shows. the mood is the one her valves chose (tts-sieve.json "mood")
+    mood = chosen_mood()
+    request.state.petal_mood, request.state.petal_ask = mood, petal_ask
+    body, sieved_empty = sieve_speech_body(body, mood)
     if sieved_empty:
         quiet = silent_mp3()
         if quiet is not None:

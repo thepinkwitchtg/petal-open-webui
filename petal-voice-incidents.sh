@@ -1,22 +1,19 @@
 #!/usr/bin/env bash
-# 🚩🎀 petal voice incidents — re-listen to every flagged reply and print the stats-only report
+# 🚩🎀 petal voice incidents — the black box lives at the voice now (V1): this points there
 #
 #   ./petal-voice-incidents.sh              report (also saved as incidents/report-<date>.md)
 #   ./petal-voice-incidents.sh open         open the incidents folder
 #   ./petal-voice-incidents.sh last         the newest incident's analysis (numbers only)
+#   ./petal-voice-incidents.sh recent       what the voice's black box holds right now (numbers only)
 #
-# the incidents folder holds her words (trace.json) — keep it on the rig. the report is what you share.
+# petal-voice's own helper ($PETAL_VOICE_DIR/petal-voice-incidents.sh) does the work; its report hears
+# with welfare's ear, beside this file. the incidents folder holds her words (trace.json): keep it on the rig.
 
 set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PY="${PETAL_OWUI_PY:-$HOME/.venvs/openwebui/bin/python}"
-[ -x "$PY" ] || PY=python3
-VT="$HERE/backend/open_webui/routers/audio/voice_trace.py"
-INC="${PETAL_APP_DATA:-$HOME/Gardens/Documents/Petal-App-Data}/petal-voice/incidents"
-
-case "${1:-report}" in
-  report) nice -n 10 "$PY" "$VT" report ;;
-  open)   mkdir -p "$INC" && xdg-open "$INC" >/dev/null 2>&1 & ;;
-  last)   nice -n 10 "$PY" "$VT" last ;;
-  *) echo "usage: $0 [report|open|last]"; exit 1 ;;
-esac
+VOICE_DIR="${PETAL_VOICE_DIR:-$HOME/Gardens/Transformation Sequences - Automation/petal_core/petal-voice}"
+if [ -x "$VOICE_DIR/petal-voice-incidents.sh" ]; then
+  PETAL_OWUI_DIR="${PETAL_OWUI_DIR:-$HERE}" exec "$VOICE_DIR/petal-voice-incidents.sh" "$@"
+fi
+echo "✗ petal-voice isn't at $VOICE_DIR (set PETAL_VOICE_DIR) — the black box and its report live there now"
+exit 1
