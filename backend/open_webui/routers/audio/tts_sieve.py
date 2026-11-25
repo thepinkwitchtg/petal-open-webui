@@ -1,285 +1,117 @@
 #!/usr/bin/env python3
 """
-tts_sieve — a gentle text sieve that sits between Petal's words and the voice.
+tts_sieve · a thin door to the voice's own sieve (V1, nov 24 2026: one sieve, at the voice)
 
-The chat keeps every emoji and tilde; only what the TTS *eats* is filtered.
-Words are never rewritten — Petal's phrasing stays hers.
+the sieve no longer lives here. words in, voice out is petal-voice's own rule now: its gate holds
+:8100 and every caller meets the same floor there (a line with no words never reaches the model;
+every emoji goes by Unicode property; private-use and control characters go; markdown leftovers
+become plain words or nothing). no request can lower it.
 
-modes
-  off     pass-through
-  select  strip only the emoji listed in "select_emoji"
-  emoji   strip every emoji (incl. ZWJ sequences, skin tones, flags, keycaps)
-  soft    emoji + tildes + stretched letters (sooooo -> soo) + trailing "..." cues
+what stays in the fork:
+  · the mood. the Petal Sieve filter's valves pick it and write it to tts-sieve.json ("mood"); the
+    fork names it on every line (X-Petal-Mood), and the voice applies it above the floor
+  · the same sieve, run here too, by path (never copied): $PETAL_VOICE_SIEVE, else voice_sieve.py in
+    $PETAL_VOICE_DIR, else petal_core/petal-voice. so a line that would be silence never costs a
+    request, the speech cache keys on the words she really speaks, and the speaker button stays
+    sieved while studio (qwen) wears the voice. it is the voice's own code: running it twice
+    changes nothing (the floor is idempotent)
 
-wordless  (every mode, even off) a sentence of bare markup — no letter, digit or emoji: "---",
-          "***", "|---|", a lone "…" — is never handed to the voice: with nothing to read she improvises (the
-          hyena laugh of Nov 4 2026 was a markdown "---"). set "hush_wordless": false to let her.
+without petal-voice beside the fork, words go to the voice as written and the voice's gate (if
+there is one) sieves them; this says so once in the log.
 
-marks     (every mode, even off) the same truth inside a sentence: anything that isn't a word lets the
-          noise speak. hushed: stray markdown (* ` | \\ # before a word, runs of --- === __), bullets and
-          sparkle dust (• ‣ ⋆ ˚ ₊ ‧ ‿), box drawing, blocks, braille art, zalgo stacks, and any loose
-          clump of symbols with no letter in it (^_^ >_< -> ==> ¯\\_(ツ)_/¯). kept: every word and digit,
-          the punctuation that gives her rhythm (. , ! ? ; : … — – - ( ) quotes ~), the symbols that are read as
-          words (& % $ € £ + = @ / °). set "hush_marks": false to let her (or the filter's 🫧 valve).
-          in emoji + soft, ascii faces (:3 <3 :) xD T_T ^^) are hushed with the emoji.
-
-control  the Petal Sieve filter (chat controls → valves) writes the config for you;
-         hand edits still work, nothing needs wiping
-config   (private, outside any repo)
-  ~/Gardens/Documents/Petal-App-Data/petal-voice/tts-sieve.json
-  {"mode": "select", "select_emoji": ["🎀", "🖤"], "stats": true}
-
-stats  (numbers only, never text)
-  ~/Gardens/Documents/Petal-App-Data/petal-voice/tts-sieve-stats.jsonl
-
-where she lives: petal-open-webui, routers/audio — both voices pass through here
-  /api/v1/audio/speech   the speaker button (omni chat or qwen studio, whichever serves)
-  petal stream           sentence by sentence, screen off
-petal-siren deliveries go straight to petal-voice and are never sieved: studio work stays raw.
-
-try it (any python3, no venv needed)
-  python3 tts_sieve.py "🎀 Are you feeling me deeper, my Doll~?"     # every mode
-  python3 tts_sieve.py --mode soft "sooooo cute~ 💅🏻💅🏻"
+  python3 tts_sieve.py "🎀 Are you feeling me deeper, my Doll~?"     the voice's own CLI, every mood
 """
 from __future__ import annotations
 
+import importlib.util
 import json
+import logging
 import os
-import re
 import sys
-import time
-import unicodedata
 from pathlib import Path
+
+log = logging.getLogger(__name__)
 
 APP_DATA = Path(os.environ.get("PETAL_APP_DATA", Path.home() / "Gardens/Documents/Petal-App-Data")).expanduser()
 DATA_DIR = APP_DATA / "petal-voice"  # the same place the Petal Sieve filter writes to
 CONFIG_PATH = DATA_DIR / "tts-sieve.json"
-STATS_PATH = DATA_DIR / "tts-sieve-stats.jsonl"
+DEFAULT_VOICE_DIR = "~/Gardens/Transformation Sequences - Automation/petal_core/petal-voice"
+LEGACY = {"emoji": "strict", "soft": "soft", "select": "palette", "off": "every"}  # the old modes, as moods
 
-MODES = ("off", "select", "emoji", "soft")
-DEFAULT_CONFIG = {"mode": "emoji", "select_emoji": ["🎀"], "stats": True, "hush_wordless": True, "hush_marks": True}
-WORD_RE = re.compile(r"[^\W_]")  # a letter or digit, any script
-
-# --- emoji matching (no dependencies) ---------------------------------------
-_EMOJI_BASE = (
-    "\U0001F000-\U0001FAFF"   # mahjong … symbols & pictographs ext-A
-    "\U00002600-\U000027BF"   # misc symbols, dingbats
-    "\U00002B00-\U00002BFF"   # arrows, stars ⭐
-    "\U00002190-\U000021FF"   # arrows
-    "\U00002300-\U000023FF"   # misc technical ⌛⏰
-    "\U00003030\U0000303D\U00003297\U00003299"
-    "\U000000A9\U000000AE\U0000203C\U00002049\U00002122\U00002139"
-    "\U000024C2\U000025AA-\U000025FE"
-    "\U0001F1E6-\U0001F1FF"   # regional indicators (flags)
-)
-_EMOJI_MODS = (
-    "\U0000FE0E\U0000FE0F"    # variation selectors
-    "\U0001F3FB-\U0001F3FF"   # skin tones
-    "\U000020E3"              # keycap
-    "\U000E0020-\U000E007F"   # tag sequences
-)
-EMOJI_RE = re.compile(
-    rf"(?:[0-9#*][{_EMOJI_MODS}]*\U000020E3)"                       # keycaps
-    rf"|(?:[{_EMOJI_BASE}][{_EMOJI_MODS}]*"
-    rf"(?:\U0000200D[{_EMOJI_BASE}][{_EMOJI_MODS}]*)*)"             # ZWJ chains
-)
-
-STRETCH_RE = re.compile(r"([A-Za-zÀ-ÿ])\1{2,}")      # sooooo -> soo
-TILDE_RE = re.compile(r"\s*~+\s*")
-TRAIL_DOTS_RE = re.compile(r"(?:\.{3,}|…)\s*$")
-SPACES_RE = re.compile(r"[ \t]{2,}")
-SPACE_PUNCT_RE = re.compile(r"\s+([,.!?;:])")
-
-# --- marks: anything that isn't a word (hush_marks) ----------------------------
-# the punctuation that gives her rhythm, and the symbols the voice reads as words: always kept
-RHYTHM = set(".,!?;:…'\"“”‘’«»()-–—~¡¿。、！？；：（）「」『』｡")
-SPOKEN = set("&%$€£¥+=@/°*×")  # * survives the markup sweep only between numbers (5 * 3)
-NEVER_WORDS_RE = re.compile(
-    "[|`\\\\"                                    # pipes, code ticks, escapes: markup, never a word
-    "─-▟"                              # box drawing + blocks
-    "■-▩◿"                        # geometric shapes the emoji ranges leave out
-    "⠀-⣿"                              # braille patterns (braille art)
-    "•‣⁃∙⋅⋆"       # bullets • ‣ ⁃ ∙ ⋅ ⋆
-    "˖˙˚⁺₊‧‿⁀⁔]+"  # sparkle dust ˖ ˙ ˚ ⁺ ₊ ‧ and kaomoji mouths ‿ ⁀ ⁔
-)
-# --- === __ · a stray * (5 * 3 keeps its star: it sits between numbers) · the # of a #tag
-MARKUP_RUNS_RE = re.compile(r"-{3,}|={2,}|_{2,}|\*+(?!\s?\d)|(?<!\d)(?<!\d\s)\*+|#(?=[^\W\d_])")
-ZALGO_RE = re.compile("[̀-ͯ᪰-᫿᷀-᷿⃐-⃿︠-︯]{2,}")  # stacked marks
-OVERLAY_RE = re.compile("[̴̲̳̅-̸⃒⃓⃥⃦]")  # s̶t̶r̶i̶k̶e̶, u̲n̲d̲e̲r̲, o̅v̅e̅r̅
-# ascii faces: hushed with the emoji (emoji + soft modes), voiced when she voices every emoji
-EMOTICON_RE = re.compile(
-    r"¯\\_\(ツ\)_/¯"
-    r"|(?<![\w:])(?:</?3+|[:;=][-'^]?[)(\]\[DPpOo3/\\|*]+|\^[_\-.]?\^|[>;][_.]?[<;]|[Tt;][_.][Tt;]"
-    r"|[oO0][_.][oO0]|-_-|[xX]D+)(?![\w])"
-)
+_vs = None
+_tried = False
 
 
-def _symbols_only(token: str) -> bool:
-    """a loose clump with no letter, digit or emoji, holding a symbol that isn't rhythm or spoken"""
-    return (not WORD_RE.search(token) and not EMOJI_RE.search(token)
-            and any(ch not in RHYTHM and ch not in SPOKEN for ch in token))
-
-
-def _bracket_face(token: str) -> bool:
-    """(ω) (ᴥ) (Д) — what's left of a kaomoji once its dust is gone: a short bracketed clump whose
-    one or two letters aren't latin. a real word in brackets, (λόγος) or (oui), always stays"""
-    if len(token) > 12 or token[:1] not in "(（" or token[-1:] not in ")）":
-        return False
-    letters = [ch for ch in token if WORD_RE.match(ch)]
-    return len(letters) <= 2 and all(ch.isalpha() and ord(ch) >= 0x250 for ch in letters)
-
-
-def _sweep_tokens(t: str, test) -> tuple[str, int]:
-    pieces = re.split(r"(\s+)", t)  # words and the whitespace between them, newlines kept
-    n = 0
-    for i in range(0, len(pieces), 2):
-        if pieces[i] and test(pieces[i]):
-            pieces[i] = ""
-            n += 1
-    return "".join(pieces), n
-
-
-def _hush(t: str) -> tuple[str, int]:
-    n = 0
-    t = unicodedata.normalize("NFC", t)  # é stays one letter, so only decoration is left as marks
-    for rx in (ZALGO_RE, OVERLAY_RE):  # c̷̢u̴r̵s̸e̷d̶ → cursed: the letters stay, the decoration goes
-        t, k = rx.subn("", t)
-        n += k
-    t, k = _sweep_tokens(t, _bracket_face)  # (•ω•) whole, before its dust is swept and ω is left alone
-    n += k
-    for rx in (NEVER_WORDS_RE, MARKUP_RUNS_RE):
-        t, k = rx.subn(" ", t)
-        n += k
-    t, k = _sweep_tokens(t, lambda tok: _symbols_only(tok) or _bracket_face(tok))
-    return t, n + k
-
-
-def hush_marks(text: str, keep_faces: bool = False) -> tuple[str, int]:
-    """only what isn't a word goes; a removed mark leaves a space, so two words never glue together.
-    keep_faces: ascii faces stay whole (she voices every emoji). a text with nothing to hush comes back
-    exactly as it was, so the speech cache keeps its keys"""
-    if keep_faces:
-        parts = re.split(f"({EMOTICON_RE.pattern})", text)
-        n = 0
-        for i in range(0, len(parts), 2):
-            parts[i], k = _hush(parts[i])
-            n += k
-        out = "".join(parts)
-    else:
-        out, n = _hush(text)
-    return (out, n) if n else (text, 0)
-
-
-_MODS_RE = re.compile(rf"[{_EMOJI_MODS}]")
-
-
-def _bare(e: str) -> str:
-    """an emoji without its skin tone / variation selector: 💅🏻 and 💅 are the same nail."""
-    return _MODS_RE.sub("", e)
-
-
-def hushed_set(select_emoji) -> set[str]:
-    """accepts a list or a pasted string ("🎀🖤 💅🏻") and returns the bare emoji to hush."""
-    if isinstance(select_emoji, str):
-        select_emoji = [select_emoji]
-    found = EMOJI_RE.findall(" ".join(str(x) for x in (select_emoji or ())))
-    return {_bare(e) for e in found}
+def voice_sieve():
+    """the voice's voice_sieve module, loaded by path once (None if petal-voice isn't beside us)"""
+    global _vs, _tried
+    if _tried:
+        return _vs
+    _tried = True
+    path = os.environ.get("PETAL_VOICE_SIEVE")
+    if not path:
+        path = str(Path(os.environ.get("PETAL_VOICE_DIR") or DEFAULT_VOICE_DIR).expanduser() / "voice_sieve.py")
+    p = Path(path).expanduser()
+    if not p.exists():
+        log.warning("🎀 tts sieve: the voice's sieve isn't at %s — words go as written; her gate sieves them", p.parent)
+        return None
+    try:
+        added = str(p.parent) not in sys.path
+        if added:
+            sys.path.insert(0, str(p.parent))  # its emoji table sits beside it
+        try:
+            spec = importlib.util.spec_from_file_location("petal_voice_sieve", p)
+            mod = importlib.util.module_from_spec(spec)
+            sys.modules["petal_voice_sieve"] = mod
+            spec.loader.exec_module(mod)
+        finally:
+            if added:
+                sys.path.remove(str(p.parent))
+        _vs = mod
+    except Exception as e:  # a broken sieve never silences her: the gate still holds the floor
+        log.warning("🎀 tts sieve: couldn't load the voice's sieve (%s)", e.__class__.__name__)
+        _vs = None
+    return _vs
 
 
 def load_config() -> dict:
     try:
         cfg = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
-        return {**DEFAULT_CONFIG, **cfg}
-    except FileNotFoundError:
-        return dict(DEFAULT_CONFIG)
+        return cfg if isinstance(cfg, dict) else {}
     except Exception:
-        return dict(DEFAULT_CONFIG)      # a broken config never silences her
+        return {}
 
 
-def _tidy(t: str) -> str:
-    t = SPACES_RE.sub(" ", t)
-    t = SPACE_PUNCT_RE.sub(r"\1", t)
-    return t.strip()
+def chosen_mood(cfg: dict | None = None) -> str:
+    """the mood her valves picked ("mood"; an older file's "mode" is read as its mood). no choice → strict"""
+    cfg = load_config() if cfg is None else cfg
+    m = cfg.get("mood")
+    if isinstance(m, str) and m:
+        return m
+    return LEGACY.get(cfg.get("mode"), "strict")
 
 
-def apply(text: str, mode: str, select_emoji=(), marks: bool = True) -> tuple[str, dict]:
-    """Return (filtered_text, counts). counts are numbers only."""
-    counts = {"emoji": 0, "tilde": 0, "stretch": 0, "trail_dots": 0, "emoticon": 0, "marks": 0}
-    if not text:
-        return text, counts
-    if mode == "off":
-        if not marks:
-            return text, counts
-        out, counts["marks"] = hush_marks(text, keep_faces=True)
-        return (_tidy(out) if counts["marks"] else text), counts
-
-    if mode in ("emoji", "soft"):
-        text, counts["emoticon"] = EMOTICON_RE.subn(" ", text)  # before marks, so a face goes whole
-
-    if mode == "select":
-        hushed = hushed_set(select_emoji)
-
-        def _pick(m):
-            if _bare(m.group()) in hushed:
-                counts["emoji"] += 1
-                return " "
-            return m.group()
-
-        text = EMOJI_RE.sub(_pick, text)
-    else:  # emoji / soft
-        text, counts["emoji"] = EMOJI_RE.subn(" ", text)
-
-    if mode == "soft":
-        text, counts["tilde"] = TILDE_RE.subn(" ", text)
-        text, counts["stretch"] = STRETCH_RE.subn(r"\1\1", text)
-        text, counts["trail_dots"] = TRAIL_DOTS_RE.subn(".", text)
-
-    if marks:
-        text, counts["marks"] = hush_marks(text, keep_faces=mode == "select")
-
-    return _tidy(text), counts
-
-
-def _log(mode: str, counts: dict, chars_in: int, chars_out: int) -> None:
+def sieve(text: str, mood: str | None = None) -> str:
+    """what the voice will eat ("" = nothing to say). never raises; without the voice's sieve the
+    words go as written (her gate is the floor then)"""
+    vs = voice_sieve()
+    if vs is None:
+        return text
     try:
-        DATA_DIR.mkdir(parents=True, exist_ok=True)
-        row = {"t": round(time.time()), "mode": mode, "in": chars_in,
-               "out": chars_out, **counts}
-        with STATS_PATH.open("a", encoding="utf-8") as f:
-            f.write(json.dumps(row) + "\n")
-    except Exception:
-        pass
-
-
-def sieve(text: str, mode: str | None = None) -> str:
-    """Main entry. Config is re-read each call, so a toggle lands on the next sentence.
-    Never raises: if anything goes wrong she speaks the text as written."""
-    try:
-        cfg = load_config()
-        m = mode or cfg.get("mode", "emoji")
-        if m not in MODES:
-            m = "emoji"
-        out, counts = apply(text, m, cfg.get("select_emoji", ()), marks=cfg.get("hush_marks", True) is not False)
-        if cfg.get("hush_wordless", True) and out.strip() and not WORD_RE.search(out) and not EMOJI_RE.search(out):
-            counts["wordless"] = 1  # 🚩 nothing to read: she'd improvise, so she rests instead
-            out = ""
-        if cfg.get("stats") and any(counts.values()):
-            _log(m, counts, len(text), len(out))
-        return out
+        return vs.sift(text, mood or chosen_mood()).text
     except Exception:
         return text
 
 
-def sieve_speech_body(body: bytes) -> tuple[bytes, bool]:
-    """For OWUI's /audio/speech: sieve the JSON body's "input".
-    Returns (body, emptied). An untouched text returns the original bytes, so the
-    speech cache keeps its keys; only a sieved line gets a fresh take."""
+def sieve_speech_body(body: bytes, mood: str | None = None) -> tuple[bytes, bool]:
+    """for OWUI's /audio/speech: sieve the JSON body's "input" → (body, emptied).
+    an untouched text returns the original bytes, so the speech cache keeps its keys"""
     try:
         payload = json.loads(body)
         text = payload.get("input") if isinstance(payload, dict) else None
         if not isinstance(text, str) or not text.strip():
             return body, False
-        out = sieve(text)
+        out = sieve(text, mood)
         if out == text:
             return body, False
         if not out.strip():
@@ -294,8 +126,8 @@ _SILENT_MP3: bytes | None = None
 
 
 def silent_mp3(ms: int = 60) -> bytes | None:
-    """A whisper of nothing, for a sentence that was only emoji: the player moves on
-    without hearing a sound. None if lameenc isn't in this venv."""
+    """a whisper of nothing, for a line with no words: the player moves on without a sound.
+    None if lameenc isn't in this venv."""
     global _SILENT_MP3
     if _SILENT_MP3 is None:
         try:
@@ -311,23 +143,8 @@ def silent_mp3(ms: int = 60) -> bytes | None:
     return _SILENT_MP3
 
 
-def _cli(argv: list[str]) -> int:
-    mode = None
-    if len(argv) >= 2 and argv[0] == "--mode":
-        mode, argv = argv[1], argv[2:]
-    if not argv:
-        print(__doc__)
-        return 1
-    text = " ".join(argv)
-    cfg = load_config()
-    print(f"\n  in      │ {text}")
-    for m in ([mode] if mode else MODES):
-        out, c = apply(text, m, cfg.get("select_emoji", ()), marks=cfg.get("hush_marks", True) is not False)
-        hits = " ".join(f"{k}:{v}" for k, v in c.items() if v)
-        print(f"  {m:<7} │ {out!r:<60} {hits}")
-    print(f"\n  live mode from config: {cfg['mode']}  ({CONFIG_PATH})\n")
-    return 0
-
-
 if __name__ == "__main__":
-    sys.exit(_cli(sys.argv[1:]))
+    vs = voice_sieve()
+    if vs is None:
+        sys.exit("✗ the voice's sieve isn't beside the fork (set $PETAL_VOICE_DIR)")
+    sys.exit(vs._cli(sys.argv[1:]))
