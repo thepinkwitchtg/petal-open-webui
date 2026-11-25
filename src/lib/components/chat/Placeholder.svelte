@@ -12,7 +12,7 @@
 
 	import { updateFolderById } from '$lib/apis/folders';
 
-	import { config, user, selectedFolder } from '$lib/stores';
+	import { config, user, selectedFolder as _selectedFolder } from '$lib/stores';
 	import { sanitizeResponseContent, extractCurlyBraceWords } from '$lib/utils';
 	import {
 		resolveLocalizedModelDescription,
@@ -29,7 +29,14 @@
 	import FolderPlaceholder from './Placeholder/FolderPlaceholder.svelte';
 	import { getChatContext } from '$lib/components/chat/context';
 
-	const { models: _models, temporary } = getChatContext();
+	const { models: _models, temporary, selectedFolder: chatFolder } = getChatContext();
+	// 🌸 A44 · the enclosing chat's folder: a chat tab has its own (none), never the main view's
+	const selectedFolder = chatFolder ?? _selectedFolder;
+	// 🌸 A44 · a chat tab's composer keeps its own ids (two #chat-input would answer for each other)
+	export let inputId = 'chat-input';
+	export let embedded = false;
+	export let dropzoneId = 'chat-pane';
+	export let messagesContainerId = 'messages-container';
 
 	const i18n: any = getContext('i18n');
 
@@ -134,6 +141,10 @@
 
 {#snippet composer(placeholder = '')}
 	<MessageInput
+		{inputId}
+		{embedded}
+		{dropzoneId}
+		{messagesContainerId}
 		{selectedTerminalId}
 		{terminalSkills}
 		{chatId}

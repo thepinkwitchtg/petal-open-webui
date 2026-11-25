@@ -1,6 +1,10 @@
 /* ═══════════════════════════════════════════════════════════
-   🌸 petal · hush  ·  v0.14 · open + reply + linger + pin + pulse + reflex · she writes it in
+   🌸 petal · hush  ·  v0.15 · open + reply + linger + pin + pulse + reflex · she writes it in
    the empty chat field whispers — and Petal writes the words.
+
+   v0.15 · chat tabs (A44): the field is the chat field on screen — the main one (#chat-input)
+          or a chat tab's (chat-tab-input-…), never a note's. a tab mirrors its chat into the
+          address, so open and reply mode follow the tab she's looking at, as on the landing.
 
    v0.14 · nothing appears pre-written (A33): every line types itself in through
           petal type (static/petal/type.js), paced to its length at her speed
@@ -190,13 +194,32 @@
 		'"';
 
 	/* she writes it in (v0.14, A33): petal type paces it to its length at her speed and steps on frames.
-	   the field gets the growing line, written straight to #chat-input (one placeholder restyled per
+	   the field gets the growing line, written straight to the chat field (one placeholder restyled per
 	   step, not the whole page); the <html> dial holds nothing until the line is whole, then holds it (the
 	   truth) — so a field drawn mid-way starts empty, never with the whole line pre-written. */
 	const graphemes = (s) =>
 		typeof Intl !== 'undefined' && Intl.Segmenter
 			? [...new Intl.Segmenter(undefined, { granularity: 'grapheme' }).segment(s)].map((g) => g.segment)
 			: [...s];
+	/* the chat field on screen (v0.15, A44): the main chat's, or a chat tab's; a hidden one (a tab
+	   behind another) draws nothing, so the one she can see wins, the one she's typing in first */
+	const FIELD = '#chat-input, [id^="chat-tab-input-"]';
+	// the editor itself, never the composer's other parts (…-wrapper, …-container, its buttons)
+	const TAB_FIELD = /^chat-tab-input-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+	const isField = (el) => !!el?.id && (el.id === 'chat-input' || TAB_FIELD.test(el.id));
+	const fieldOf = (node) => {
+		for (let n = node; n && n.nodeType === 1; n = n.parentElement) if (isField(n)) return n;
+		return null;
+	};
+	const fields = () => [...document.querySelectorAll(FIELD)].filter(isField);
+	const field = () => {
+		const all = fields();
+		if (all.length < 2) return all[0] ?? null;
+		const seen = all.filter((el) => el.getClientRects().length > 0);
+		const active = document.activeElement;
+		return seen.find((el) => el.contains(active)) ?? seen[0] ?? all[0];
+	};
+	const emptyP = () => field()?.querySelector('p.is-editor-empty') ?? null;
 	let typing = null; // the job in hand (petal type)
 	let fieldWait = null; // the line is waiting for the field to be drawn (a page still arriving)
 	let fieldWaitTimer = null;
@@ -209,7 +232,7 @@
 	};
 	const whole = (line) => {
 		document.documentElement.style.setProperty('--p-hush', toCss(line));
-		document.querySelector('#chat-input')?.style.removeProperty('--p-hush');
+		for (const el of fields()) el.style.removeProperty('--p-hush'); // every field, a tab left behind too
 	};
 	const writeIn = (line) => {
 		stopTyping();
@@ -217,10 +240,10 @@
 		const T = window.petalType;
 		if (!line || !T) return whole(line); // no engine (it loads first, so almost never): the line shows whole
 		root.style.setProperty('--p-hush', '""'); // until it's written, nothing pre-written anywhere
-		if (!document.querySelector('#chat-input')) {
+		if (!field()) {
 			// the field isn't drawn yet: she writes it in the moment it is (one observer, gone once it's there)
 			fieldWait = new MutationObserver(() => {
-				if (!document.querySelector('#chat-input')) return;
+				if (!field()) return;
 				stopTyping();
 				writeIn(line);
 			});
@@ -235,7 +258,7 @@
 					typing = null;
 					return whole(line); // done: the <html> line takes over, nothing left running
 				}
-				document.querySelector('#chat-input')?.style.setProperty('--p-hush', toCss(part));
+				field()?.style.setProperty('--p-hush', toCss(part));
 			}
 		});
 	};
@@ -284,7 +307,7 @@
 			return null;
 		}
 	};
-	const fieldIsEmpty = () => !!document.querySelector('#chat-input p.is-editor-empty');
+	const fieldIsEmpty = () => !!emptyP();
 
 	/* one request, recorded as numbers — every mode shares it */
 	const askPetal = async (why, extra = {}, signal = null, { withDebug = debug, peek = false } = {}) => {
@@ -708,7 +731,7 @@
 	document.addEventListener(
 		'input',
 		(e) => {
-			if (!lw || !e.target?.closest?.('#chat-input')) return;
+			if (!lw || !fieldOf(e.target)) return;
 			lw.focusedMs = 0; // you're typing — the quiet starts over
 			lw.resumedAt = null;
 			lingerClock();
@@ -726,7 +749,7 @@
 	document.addEventListener(
 		'beforeinput',
 		(e) => {
-			if (!e.target?.closest?.('#chat-input') || !fieldIsEmpty()) return;
+			if (!fieldOf(e.target) || !fieldIsEmpty()) return;
 			readStop('you began answering'); // she won't type over you
 			if (!shown.line || shown.mode === 'rest') return void (held = null); // the rest line isn't her whisper
 			const now = Date.now();
@@ -762,9 +785,9 @@
 		return n;
 	};
 	const fieldLen = () => {
-		const field = document.querySelector('#chat-input');
-		if (!field || fieldIsEmpty()) return 0;
-		return cpLen((field.innerText ?? '').replace(/\n+$/, ''));
+		const el = field();
+		if (!el || fieldIsEmpty()) return 0;
+		return cpLen((el.innerText ?? '').replace(/\n+$/, ''));
 	};
 	const pulseSettle = (hint = '') => {
 		if (!pulseOn) return;
@@ -805,7 +828,7 @@
 			pulse.awayAt = null;
 		}
 	};
-	const inField = (e) => !!e.target?.closest?.('#chat-input');
+	const inField = (e) => !!fieldOf(e.target);
 	document.addEventListener('input', (e) => inField(e) && pulseSettle(/FromPaste|FromDrop/.test(e.inputType ?? '') ? 'paste' : ''), true);
 	document.addEventListener('keyup', (e) => inField(e) && pulseSettle(), true);
 	document.addEventListener('cut', (e) => inField(e) && setTimeout(() => pulseSettle(), 0), true);
@@ -1056,8 +1079,8 @@
 	/* ── the console window — numbers only, safe to paste ─── */
 	const facts = () => {
 		const root = document.documentElement;
-		const field = document.querySelector('#chat-input');
-		const empty = document.querySelector('#chat-input p.is-editor-empty');
+		const el = field();
+		const empty = emptyP();
 		const drawn = empty ? getComputedStyle(empty, '::before').content : null;
 		const dial = getComputedStyle(root).getPropertyValue('--p-hush').trim();
 		const skinLoaded = getComputedStyle(root).getPropertyValue('--abyss').trim() !== '';
@@ -1070,7 +1093,7 @@
 			theme,
 			'html.petal': root.classList.contains('petal'),
 			'skin css loaded': skinLoaded,
-			'chat field': !!field,
+			'chat field': el ? (el.id === 'chat-input' ? 'the main chat' : 'a chat tab') : false,
 			'field empty': !!empty,
 			'field draws the dial': !!dial && unquote(drawn) === unquote(dial),
 			page: chatId ? `chat ${short(chatId)} (reply mode)` : 'new chat (open mode)',
@@ -1154,7 +1177,7 @@
 	/* ── the reflex: a line that takes the field at once, typed (v0.13 · v0.14) ──── */
 	let measure = null;
 	const fitsOneRow = (line) => {
-		const p = document.querySelector('#chat-input p.is-editor-empty');
+		const p = emptyP();
 		if (!p) return true;
 		try {
 			const cs = getComputedStyle(p, '::before');
@@ -1171,17 +1194,17 @@
 		if (!line) return false;
 		if (!root.classList.contains('petal') || getComputedStyle(root).getPropertyValue('--abyss').trim() === '')
 			return note('reflex not seen', { why: 'no 🌸 skin' }), false;
-		const field = document.querySelector('#chat-input');
-		if (!field) return note('reflex not seen', { why: 'no chat field' }), false;
+		const el = field();
+		if (!el) return note('reflex not seen', { why: 'no chat field' }), false;
 		if (!fieldIsEmpty()) return note('reflex not seen', { why: 'words already in the field' }), false;
 		// can the field draw her line? (another stylesheet may not draw the dial) · asked and undone in this
 		// same instant, so nothing of it is ever seen
-		const empty = document.querySelector('#chat-input p.is-editor-empty');
-		const was = field.style.getPropertyValue('--p-hush');
-		field.style.setProperty('--p-hush', toCss(line));
+		const empty = emptyP();
+		const was = el.style.getPropertyValue('--p-hush');
+		el.style.setProperty('--p-hush', toCss(line));
 		const drawn = empty ? getComputedStyle(empty, '::before').content : null;
-		if (was) field.style.setProperty('--p-hush', was);
-		else field.style.removeProperty('--p-hush');
+		if (was) el.style.setProperty('--p-hush', was);
+		else el.style.removeProperty('--p-hush');
 		if (!empty || unquote(drawn) !== unquote(toCss(line)))
 			return note('reflex not seen', { why: 'the field does not draw the dial' }), false;
 		// whatever hush had on its way lets go: this line wins, typed from its first letter (v0.14)

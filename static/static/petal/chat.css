@@ -112,11 +112,12 @@ html.petal
    the chat box is a tiptap/ProseMirror editor, and its
    placeholder is painted by css: `content: attr(data-placeholder)`.
    so we paint our own words instead — the dial lives in
-   tokens.css as --p-hush. scoped to #chat-input (the editor
-   itself) so notes and channels keep theirs, and the
-   ai-autocompletion ghost text is left alone.
+   tokens.css as --p-hush. scoped to the chat fields (#chat-input,
+   and a chat tab's chat-tab-input-… since A44) so notes and
+   channels keep theirs, and the ai-autocompletion ghost text is
+   left alone.
    ──────────────────────────────────────────────────────────── */
-html.petal #chat-input p.is-editor-empty:first-child:not(.ai-autocompletion)::before {
+html.petal :is(#chat-input, [id^='chat-tab-input-']) p.is-editor-empty:first-child:not(.ai-autocompletion)::before {
 	content: var(--p-hush);
 	color: var(--whisper);
 	opacity: 0.85;
@@ -125,11 +126,11 @@ html.petal #chat-input p.is-editor-empty:first-child:not(.ai-autocompletion)::be
 /* her thank-you (hush v0.13's reflex, A27) can be longer than one row of a phone's field:
    hush raises html[data-p-hush-tall] and the whisper gets a second row instead of a "…",
    the empty field making room for it. her first letter ends it (the field isn't empty) */
-html.petal[data-p-hush-tall] #chat-input p.is-editor-empty:first-child:not(.ai-autocompletion) {
+html.petal[data-p-hush-tall] :is(#chat-input, [id^='chat-tab-input-']) p.is-editor-empty:first-child:not(.ai-autocompletion) {
 	min-height: 3em;
 	min-height: 2lh;
 }
-html.petal[data-p-hush-tall] #chat-input p.is-editor-empty:first-child:not(.ai-autocompletion)::before {
+html.petal[data-p-hush-tall] :is(#chat-input, [id^='chat-tab-input-']) p.is-editor-empty:first-child:not(.ai-autocompletion)::before {
 	-webkit-line-clamp: 2;
 	line-clamp: 2;
 	white-space: normal;
