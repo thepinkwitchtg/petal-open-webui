@@ -160,6 +160,7 @@
 	let chatHoverPreview = true;
 	let renderMarkdownInPreviews = true;
 	let showChatTitleInTab = true;
+	let landingRecentChats = false; // 🌸 0.13.5's lists on a new chat (default off)
 
 	let showFloatingActionButtons = true;
 	let floatingActionButtons: any = null;
@@ -461,6 +462,7 @@
 		chatDirection = currentSettings?.chatDirection ?? 'auto';
 		userLocation = currentSettings?.userLocation ?? false;
 		showChatTitleInTab = currentSettings?.showChatTitleInTab ?? true;
+		landingRecentChats = currentSettings?.landingRecentChats === true;
 
 		iframeSandboxAllowScripts = currentSettings?.iframeSandboxAllowScripts ?? true;
 		iframeSandboxAllowSameOrigin = currentSettings?.iframeSandboxAllowSameOrigin ?? false;
@@ -736,6 +738,28 @@
 		</div>
 		<p class={settingDescriptionClass}>
 			{$i18n.t('settings.personal.interface.displayChatTitleInTab.description')}
+		</p>
+	</div>
+
+	<div>
+		<div class={settingRowClass}>
+			<label id="petal-landing-recent-label" class={settingLabelClass} for="petal-landing-recent-label-control">
+				🌸 Recent chats on a new chat
+			</label>
+
+			<div class={settingControlClass}>
+				<Switch
+					ariaLabelledbyId="petal-landing-recent-label"
+					tooltip={true}
+					bind:state={landingRecentChats}
+					on:change={() => {
+						saveSettings({ landingRecentChats });
+					}}
+				/>
+			</div>
+		</div>
+		<p class={settingDescriptionClass}>
+			Your recent chats and the folders to continue, under the input of a new chat. Off keeps a new chat a clean page.
 		</p>
 	</div>
 

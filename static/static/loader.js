@@ -29,8 +29,10 @@
 	window.applyTheme = paint; // their hook, our hands
 
 	const graft = (sel) => {
-		// identified by its options, not its label — survives i18n and renames
-		if (!sel.querySelector('option[value="oled-dark"]')) return;
+		// identified by its options, not its label — survives i18n and renames.
+		// 0.13.5 folded OLED Dark into Dark, so the theme select is the one holding system · dark · light
+		const has = (v) => !!sel.querySelector('option[value="' + v + '"]');
+		if (!(has('system') && has('dark') && has('light'))) return;
 		if (sel.querySelector('option[value="' + NAME + '"]')) return;
 		const opt = document.createElement('option');
 		opt.value = NAME;

@@ -17,7 +17,8 @@
 		user,
 		selectedFolder as _selectedFolder,
 		recentChats,
-		refreshRecentChats
+		refreshRecentChats,
+		settings
 	} from '$lib/stores';
 	import { sanitizeResponseContent, extractCurlyBraceWords } from '$lib/utils';
 	import {
@@ -143,9 +144,14 @@
 	$: modelSuggestionPrompts =
 		resolveLocalizedModelPromptSuggestions(atSelectedModel, $i18n.language) ??
 		resolveLocalizedModelPromptSuggestions(models[selectedModelIdx], $i18n.language);
-	$: showRecentChats = !modelSuggestionPrompts?.length && ($recentChats?.length ?? 0) > 0;
+	// 🌸 petal: 0.13.5's recent chats + continue-folders sit on the landing only when she turns them on
+	// (Settings → Interface → Recent chats on a new chat · off by default: a new chat is a clean page)
+	$: petalLandingLists = $settings?.landingRecentChats === true;
+	$: showRecentChats =
+		petalLandingLists && !modelSuggestionPrompts?.length && ($recentChats?.length ?? 0) > 0;
 	// Until recent chats first load, show neither rather than flash the defaults.
-	$: waitingForRecentChats = !modelSuggestionPrompts?.length && $recentChats === null;
+	$: waitingForRecentChats =
+		petalLandingLists && !modelSuggestionPrompts?.length && $recentChats === null;
 	$: selectedSuggestionPrompts =
 		modelSuggestionPrompts ??
 		resolveLocalizedPromptSuggestions(
@@ -156,7 +162,7 @@
 		);
 
 	onMount(() => {
-		refreshRecentChats(localStorage.token);
+		if ($settings?.landingRecentChats === true) refreshRecentChats(localStorage.token); // 🌸 off: no fetch
 	});
 
 	// True when viewing a shared folder the current user doesn't own AND lacks write access
@@ -409,7 +415,7 @@
 		<div class="mx-auto max-w-2xl mt-3" in:fade={{ duration: 200, delay: 200 }}>
 			<!-- Held at the height of either list, so the centred composer doesn't jump when it arrives. -->
 			<div class="mx-5 min-h-[10.5rem]">
-				{#if !$temporary}
+				{#if !$temporary && petalLandingLists}
 					<ContinueFolders />
 				{/if}
 				{#if showRecentChats}

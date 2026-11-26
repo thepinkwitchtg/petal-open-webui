@@ -15,7 +15,8 @@
 	if (window.petalPaint) return;
 
 	const PRIMARY =
-		"[class~='dark:bg-white'], [class~='dark:bg-gray-100'][class~='dark:text-gray-900']";
+		"[class~='dark:bg-white'], [class~='dark:bg-gray-100'][class~='dark:text-gray-900'], " +
+		"[class~='dark:bg-base-0'], [class~='dark:bg-base-100'][class~='dark:text-base-900']";
 
 	// walk every rule we can reach — imports, layers, media, supports — remembering the layer path
 	const walk = (rules, layer, out) => {

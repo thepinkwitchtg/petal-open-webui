@@ -386,6 +386,7 @@ type Settings = {
 	highContrastMode?: boolean;
 	title?: TitleSettings;
 	showChatTitleInTab?: boolean;
+	landingRecentChats?: boolean; // 🌸 0.13.5's recent chats + continue-folders on a new chat (default off)
 	splitLargeDeltas?: boolean;
 	chatDirection?: 'LTR' | 'RTL' | 'auto';
 	ctrlEnterToSend?: boolean;
