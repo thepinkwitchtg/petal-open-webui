@@ -14,9 +14,12 @@ and a stream fed by the page (A37) starves at the end of what was queued. so the
                           a reply nobody can see any more (GROW_IDLE_S with no source).
   segments              · a stream may follow several replies in turn (🍒 A38's pick read aloud: her cue,
                           the first reply, her cue, the second). each sentence carries its reply's id and
-                          its place in that reply (the cue is place 0), so the page lights the right
-                          words. her 💗 can let the later segments go (cut()): the stream keeps only the
-                          replies up to the chosen one (Growing.keep) and ends where it ends.
+                          its place in that reply (🧵 A46: the page's own index; her cue is -1, marked
+                          cue), so the page lights the right words. her 💗 can let the later segments go
+                          (cut()): the stream keeps only the replies up to the chosen one (Growing.keep)
+                          and ends where it ends.
+  given                 · 🧵 A46 · how many of a reply's sentences the stream already holds: a stream that
+                          picks up where a broken one left off starts there (its cue only when given is 0).
   a whole segment       · after-she-finishes reads a reply only once it's written (`whole`): the follower
                           waits for done before it gives a word.
 
@@ -185,7 +188,8 @@ class Follower:
     async def _segment(self, seg: Segment, last: bool) -> bool:
         """→ False when the stream is gone (cut short, she stopped it)"""
         given, quiet_since, last_db, pulse = seg.given, time.monotonic(), [0.0], None
-        base = 1 if seg.lead else 0  # her cue is place 0 of its reply
+        if given:  # 🧵 A46 · picked up mid-reply: her cue was said already
+            seg.lead_given = True
         while True:
             if self.parts.done:
                 return False
@@ -205,10 +209,11 @@ class Follower:
                 await asyncio.sleep(POLL_S)
                 continue
             ready = words.whole(text, finished)
-            fresh = [{"text": p["text"], "para_end": p["para_end"], "mid": seg.message_id, "ix": base + given + k}
+            # 🧵 A46 · a sentence's idx is its place in its own reply, the page's index exactly (her cue is -1)
+            fresh = [{"text": p["text"], "para_end": p["para_end"], "mid": seg.message_id, "ix": given + k}
                      for k, p in enumerate(ready[given:])]
             if seg.lead and not seg.lead_given and (fresh or finished or text.strip()):
-                fresh = [{"text": seg.lead, "para_end": True, "mid": seg.message_id, "ix": 0}] + fresh
+                fresh = [{"text": seg.lead, "para_end": True, "mid": seg.message_id, "ix": -1, "cue": True}] + fresh
                 seg.lead_given = True
             if fresh:
                 given = max(given, len(ready))

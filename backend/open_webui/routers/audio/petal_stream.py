@@ -15,6 +15,17 @@ random bits, for the same signed-in user only):
   POST /api/v1/audio/petal-stream/feed/{feed}   {parts: [{text, para_end}], done?: bool, source?: str}
                                                 → {ok, parts: <total>, done}
 
+🧵 A46 · one voice thread (the page owns what's playing; the rig keeps her talking):
+  POST /api/v1/audio/petal-stream               + "first": N   a stream that picks up where a broken one left off:
+                                                               its parts are the reply's from N on, each sentence
+                                                               keeps its place in the reply (idx)
+  POST /api/v1/audio/petal-stream/{id}/voice    {voice}  →  {ok, voice, playing}   the voice she picked while she
+                                                               speaks: from the next sentence on
+  a take the voice broke is asked once more, then given up with a `skip` event (never a silent stop) · the gate's
+  floor (X-Petal-Silenced) is silence, never an error · while the launcher restarts her voice
+  (gentle-stop-petal-voice.json) or it's out of reach, the stream waits for it (≤ PETAL_STREAM_VOICE_WAIT_S, 90)
+  with the station's quiet holding the line · a voice the gate refuses is asked once in her own (OMNI_MODEL)
+
 the voice asks each sentence as soon as it's fed; while the next one isn't written yet she simply waits
 between sentences, and the station's little quiet holds the line (the same care as a late voice). done
 (or GROW_IDLE_S with nothing fed) lets her finish. the events door tells each sentence as always.
@@ -275,8 +286,37 @@ async def each_part(parts: list[dict]):
 
 RUSH_S = 0.35  # near-free: below this much audio ahead of her ears, she's waiting, so a take may start early
 
+# 🧵 A46 · a failed take is asked once more (welfare asleep; awake, welfare re-asks on its own), then given up and
+# the page is told (a `skip` event): her voice never stops in silence over one broken sentence
+RETRY_S = 0.4
+# 🧵 A46 · while the launcher restarts her voice (its gentle stop) or the voice is out of reach, the stream waits for
+# it (the station's quiet holds the line), at most this long per stream
+VOICE_WAIT_S = float(os.environ.get("PETAL_STREAM_VOICE_WAIT_S", "90"))
+VOICE_STOP_PATH = APP / "petal-launcher" / "gentle-stop-petal-voice.json"
+_VOICE_ROOT = OMNI_URL[: -len("/v1")] if OMNI_URL.endswith("/v1") else OMNI_URL
 
-async def produce(session, parts: list[dict], voice: str, q: asyncio.Queue, c: dict, tr=None, flow: Flow | None = None) -> None:
+
+async def voice_back(session, waited: dict) -> bool:
+    """🧵 A46 · her voice is being restarted (the launcher's gentle stop: gentle-stop-petal-voice.json) or out of
+    reach: wait until it answers again, never longer than what's left of VOICE_WAIT_S for this stream → True once
+    it answers (its /health, the gate's own door)"""
+    import aiohttp
+
+    while waited["s"] < VOICE_WAIT_S:
+        if not VOICE_STOP_PATH.exists():
+            try:
+                async with session.get(f"{_VOICE_ROOT}/health", timeout=aiohttp.ClientTimeout(total=2)) as r:
+                    if r.status < 500:
+                        return True
+            except (aiohttp.ClientError, asyncio.TimeoutError):
+                pass
+        await asyncio.sleep(1.0)
+        waited["s"] += 1.0
+    return False
+
+
+async def produce(session, parts: list[dict], voice: str, q: asyncio.Queue, c: dict, tr=None, flow: Flow | None = None,
+                  vbox: dict | None = None) -> None:
     """asks the omni voice for each sentence (streaming pcm) and puts 24 kHz int16 bytes on q.
     None on q means she's done. tr (a voice trace) quietly keeps each take as she made it.
 
@@ -285,7 +325,13 @@ async def produce(session, parts: list[dict], voice: str, q: asyncio.Queue, c: d
     stops making it) and the sentence is asked again with a fresh seed, up to max_tries, then
     skipped with a clean silence. a take the voice ended with an error (or with no audio at all) is
     judged too, and is never played as it arrived: it counts as a kill ("broken") whatever the ear
-    said. a kept take goes out exactly as she made it."""
+    said. a kept take goes out exactly as she made it.
+
+    🧵 A46 · welfare asleep, a take the voice broke (an error, a cut, nothing at all) is asked once more, then
+    given up; either way a part given up tells the page (Skipped → a `skip` event). the gate's floor (a wordless
+    line answered with X-Petal-Silenced) is silence: nothing is said, judged or told. a voice the gate refuses
+    (4xx) is asked once in her own voice (OMNI_MODEL). a voice she picks mid-reply (vbox) speaks from the next
+    sentence. while her voice is being restarted or out of reach, the stream waits for it (voice_back)."""
     import aiohttp
 
     shaped = c["pacing"] == "shaped"
@@ -300,6 +346,12 @@ async def produce(session, parts: list[dict], voice: str, q: asyncio.Queue, c: d
     flow = flow or Flow()
     tally = {"sentences": 0, "kills": 0, "skipped": 0, "heard_s": 0.0}  # 🕊️ one numbers-only line per reply
     mood = tr.sieve_mode if tr and tr.sieve_mode not in ("", "?") else chosen_mood()  # 🎀 one mood per reply
+    waited = {"s": 0.0}  # 🧵 A46 · how long this stream already waited for her voice to come back
+
+    def voice_now() -> str:
+        """🧵 A46 · the voice she chose: one picked mid-reply speaks from the next sentence"""
+        v = vbox.get("voice") if isinstance(vbox, dict) else None
+        return (v.strip()[:128] if isinstance(v, str) and v.strip() else voice) or OMNI_MODEL
 
     async def put(b: bytes) -> None:
         flow.queued += len(b)
@@ -319,19 +371,25 @@ async def produce(session, parts: list[dict], voice: str, q: asyncio.Queue, c: d
                 continue
             sent = voice_welfare.Sentence(care, path="stream", text=text, idx=i, chat_id=meta.get("chat_id"),
                                           message_id=meta.get("message_id"), temp=temp, hold=care["hold"],
-                                          speaker=voice or OMNI_MODEL) \
+                                          speaker=voice_now()) \
                 if care["enabled"] else None
             spoke = False
             if take:
                 take.t_req = tr.rel()
-            while True:  # one pass per take. only welfare ever asks twice
-                payload = {"model": OMNI_MODEL, "input": text, "voice": voice or OMNI_MODEL,
+            if VOICE_STOP_PATH.exists():  # 🧵 A46 · the launcher is restarting her voice: wait for it, holding the line
+                await voice_back(session, waited)
+            asked = voice_now()
+            retried = fell_back = silenced = False  # 🧵 A46 · one more take for a broken one · her own voice once · the floor
+            given_up = None  # 🧵 A46 · why this part was given up (the page is told)
+            while True:  # one pass per take. welfare asks again on its own; asleep, a broken take is asked once more
+                payload = {"model": OMNI_MODEL, "input": text, "voice": asked,
                            "response_format": "pcm", "stream": True, "stream_format": "audio"}
                 w = None
                 if sent:
                     payload["seed"] = sent.seed()
                     w = sent.watch()
                 buf, released, first, why, broke = bytearray(), 0, True, None, None  # broke: what ended it badly
+                status, unreachable = None, False
 
                 async def out(upto: int, final: bool = False) -> None:
                     """sends buf[released:upto] to her ears, shaped only in "shaped" pacing"""
@@ -345,7 +403,8 @@ async def produce(session, parts: list[dict], voice: str, q: asyncio.Queue, c: d
                     if was == 0:  # 📡 this take's first sample is next: the page hears of it first
                         whole = final and released >= len(buf)
                         await q.put(voice_events.Saying(i, part["text"], len(piece) / RATE if whole else None,
-                                                        part.get("mid"), part.get("ix")))  # 🧵 A45 · whose words
+                                                        part.get("mid"), part.get("ix"),  # 🧵 A45 · whose words
+                                                        bool(part.get("cue"))))  # 🧵 A46 · her cue, never the reply's
                     if first:
                         piece, first = fade(piece, head_n, out=False), False
                     if final and shaped and tail_hold:
@@ -360,9 +419,12 @@ async def produce(session, parts: list[dict], voice: str, q: asyncio.Queue, c: d
                         hdrs["X-Petal-Message"] = str(part["mid"])[:200]
                     async with session.post(f"{OMNI_URL}/audio/speech", json=payload, timeout=timeout,
                                             headers=hdrs) as r:
+                        status = r.status
                         if take:
                             take.status = r.status
-                        if r.status != 200:
+                        if r.status == 200 and r.headers.get("X-Petal-Silenced"):
+                            silenced = True  # 🧵 A46 · the gate's floor: a wordless line is silence, never an error
+                        elif r.status != 200:
                             log.warning("petal stream: omni said %s for part %d", r.status, i)
                             broke = f"http {r.status}"
                         else:
@@ -397,8 +459,21 @@ async def produce(session, parts: list[dict], voice: str, q: asyncio.Queue, c: d
                 except (aiohttp.ClientError, asyncio.TimeoutError) as e:
                     log.warning("petal stream: part %d lost (%s)", i, e.__class__.__name__)
                     broke = e.__class__.__name__
+                    unreachable = isinstance(e, aiohttp.ClientConnectorError)
                     if take:
                         take.error = broke
+                if silenced:
+                    break
+                if broke and not released:
+                    # 🧵 A46 · the voice refused the voice asked for (an unknown name, a picker gone astray): her own once
+                    if status in (400, 404, 422) and asked != OMNI_MODEL and not fell_back:
+                        log.info("petal stream: part %d · the voice refused %r, asking in her own voice", i, asked[:40])
+                        asked, fell_back = OMNI_MODEL, True
+                        continue
+                    # 🧵 A46 · her voice is being restarted or out of reach: wait for it (never counted as a kill)
+                    if (unreachable or status == 503 or VOICE_STOP_PATH.exists()) and waited["s"] < VOICE_WAIT_S:
+                        if await voice_back(session, waited):
+                            continue
                 if w is not None and why is None and buf:
                     # the whole take (or all of it that came before a break), as the report would hear it
                     kills = await asyncio.to_thread(w.listen, bytes(buf))
@@ -416,13 +491,30 @@ async def produce(session, parts: list[dict], voice: str, q: asyncio.Queue, c: d
                         await q.put(voice_events.Said(i, released / (2 * RATE)))
                     if not sent.spent:
                         continue  # a fresh take of the very same sentence
+                    given_up = why  # 🧵 A46 · the page is told, right where its clean silence sits
+                    await q.put(voice_events.Skipped(i, part["text"], part.get("mid"), part.get("ix"), why))
                     await put(silence(care["skip_silence_ms"]))  # skipped: a clean silence, never the loop
                     spoke = True
                     break
-                if not (w is None and broke):  # asleep, a broken take ends where it broke, as it always did
-                    if sent and buf:
-                        sent.keep(w, bytes(buf))
-                    await out(len(buf), final=True)
+                if w is None and (broke or not buf):
+                    # 🧵 A46 · welfare asleep: a take the voice broke (or left empty) is asked once more, then given up
+                    broke = broke or "empty"
+                    if released:  # what went out live was heard: the page learns how long it lasted
+                        await q.put(voice_events.Said(i, released / (2 * RATE)))
+                    if take and buf and tr.room():
+                        take.pcm += buf
+                    if not retried and not (status and 400 <= status < 500):
+                        retried = True
+                        log.info("petal stream: part %d broke (%s), asking once more", i, broke)
+                        await asyncio.sleep(RETRY_S)
+                        continue
+                    given_up = broke
+                    log.warning("petal stream: part %d given up (%s)", i, broke)
+                    await q.put(voice_events.Skipped(i, part["text"], part.get("mid"), part.get("ix"), broke))
+                    break
+                if sent and buf:
+                    sent.keep(w, bytes(buf))
+                await out(len(buf), final=True)
                 if released:
                     await q.put(voice_events.Said(i, released / (2 * RATE)))  # 📡 its exact length, as heard
                 if take and buf and tr.room():
@@ -430,12 +522,15 @@ async def produce(session, parts: list[dict], voice: str, q: asyncio.Queue, c: d
                 break
             if take:
                 take.t_done = tr.rel()
-                take.tries = (len(sent.kills) + (1 if sent.kept else 0)) if sent else 1
+                take.tries = (len(sent.kills) + (1 if sent.kept else 0)) if sent else (2 if retried else 1)
+                if given_up:
+                    take.error = take.error or given_up
             if sent:
-                tally["sentences"] += 1
-                tally["kills"] += len(sent.kills)
-                tally["skipped"] += int(sent.skipped)
-                tally["heard_s"] += sum(k["heard_s"] for k in sent.kills)
+                if not silenced:
+                    tally["sentences"] += 1
+                    tally["kills"] += len(sent.kills)
+                    tally["skipped"] += int(sent.skipped)
+                    tally["heard_s"] += sum(k["heard_s"] for k in sent.kills)
                 await asyncio.to_thread(sent.close)
             if shaped and (spoke or last):
                 await put(silence(gap_ms(text, part.get("para_end", False), last, c)))
@@ -481,7 +576,8 @@ async def station(session, parts: list[dict], voice: str, tr=None, events=None):
         except Exception:
             pass
     flow = Flow()  # 🕊️ shared with the voice so near-free welfare knows when she's waiting
-    voice_task = asyncio.create_task(produce(session, parts, voice, q, c, tr, flow))
+    vbox = getattr(events, "vbox", None)  # 🧵 A46 · a voice she picks mid-reply speaks from the next sentence
+    voice_task = asyncio.create_task(produce(session, parts, voice, q, c, tr, flow, vbox))
     guard = c["underrun_guard_ms"] / 1000
     pi, completed = 0, False  # 🚩 which sentence is on air, and whether she got to the end
     saying, reason = None, "gone"  # 📡 the take about to be heard · why a stream ended early
@@ -493,6 +589,8 @@ async def station(session, parts: list[dict], voice: str, tr=None, events=None):
         if events is not None:
             m = s["m"]
             mine = {"message_id": m.message_id} if m.message_id else {}  # 🧵 A45 · a followed reply's own id and place
+            if m.cue:
+                mine["cue"] = True  # 🧵 A46 · her cue (idx -1): said, never in the reply's words
             events.publish("sentence", idx=m.idx if m.ix is None else m.ix, text=m.text,
                            start=voice_events.clock(s["start"]), duration=round(seconds, 3), **mine)
 
@@ -543,6 +641,15 @@ async def station(session, parts: list[dict], voice: str, tr=None, events=None):
                 if saying and not saying["told"] and saying["start"] is not None:
                     tell(saying, pcm.seconds)
                 saying = None
+                continue
+            if isinstance(pcm, voice_events.Skipped):  # 🧵 A46 · a part given up: the page says so, right here
+                keep = getattr(parts, "keep", None)
+                if keep is not None and pcm.message_id and pcm.message_id not in keep:
+                    continue
+                if events is not None:
+                    mine = {"message_id": pcm.message_id} if pcm.message_id else {}
+                    events.publish("skip", idx=pcm.idx if pcm.ix is None else pcm.ix, text=pcm.text,
+                                   at=voice_events.clock(sent), why=str(pcm.why)[:80], **mine)
                 continue
             if saying and not filler and saying["start"] is None:
                 keep = getattr(parts, "keep", None)
@@ -655,11 +762,18 @@ if __name__ != "__main__":
         if not parts and not growing:
             raise HTTPException(400, "nothing to speak")
         voice = body.get("voice") if isinstance(body.get("voice"), str) else OMNI_MODEL
+        # 🧵 A46 · a stream that picks up where a broken one left off: its parts are the reply's from `first` on, and
+        # each sentence keeps its place in the reply (idx), so the page's trail never shifts
+        first = body.get("first")
+        if isinstance(first, int) and not isinstance(first, bool) and first > 0 and not growing:
+            for k, p in enumerate(parts):
+                p["ix"] = first + k
         _sweep()
         ticket = secrets.token_urlsafe(16)
         tr = voice_trace.open_trace(user.id, parts, voice[:128], body.get("meta"))  # 🚩 memory only, until flagged
         meta = body.get("meta") if isinstance(body.get("meta"), dict) else {}
         ch = voice_events.open_channel(ticket, user.id, meta.get("message_id"))  # 📡 memory only, never written
+        ch.vbox = {"voice": voice[:128]}  # 🧵 A46 · the voice she chose, changeable while she speaks (POST …/voice)
         if growing:  # 🌱 her voice as she writes: the parts keep coming through the feed
             parts = Growing(parts)
         # 🧵 A45 · the rig follows the replies itself (the page never feeds it, so a sleeping page starves nothing)
@@ -715,6 +829,23 @@ if __name__ != "__main__":
         if g.done:
             _feeds.pop(feed, None)
         return {"ok": True, "parts": len(g), "done": g.done}
+
+    @router.post("/petal-stream/{ticket}/voice")
+    async def petal_stream_voice(ticket: str, request: Request, user=Depends(get_verified_user)):
+        """🧵 A46 · the voice she picked while she speaks: from the next sentence on, this stream speaks in it (the
+        sentence she's hearing finishes as it began)"""
+        ch = voice_events.channel(ticket)
+        if ch is None or ch.user != user.id or not isinstance(getattr(ch, "vbox", None), dict):
+            raise HTTPException(404, "no such stream (or it ended)")
+        try:
+            body = await request.json()
+        except ValueError:
+            raise HTTPException(400, "invalid body") from None
+        voice = body.get("voice") if isinstance(body, dict) else None
+        if not isinstance(voice, str):
+            raise HTTPException(400, "voice must be a string")
+        ch.vbox["voice"] = voice.strip()[:128]
+        return {"ok": True, "voice": ch.vbox["voice"] or OMNI_MODEL, "playing": not ch.closed}
 
     @router.post("/petal-stream/flag")
     async def petal_stream_flag(request: Request, user=Depends(get_verified_user)):

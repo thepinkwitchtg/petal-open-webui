@@ -4,6 +4,7 @@
 
 	import { user, settings, config, visibleControls } from '$lib/stores';
 	import { getVoices as _getVoices } from '$lib/apis/audio';
+	import { pickedVoice } from '$lib/utils/petal-voice'; // 🧵 A46 · the picker shows the voice every way in speaks with
 
 	import Switch from '$lib/components/common/Switch.svelte';
 	import Spinner from '$lib/components/common/Spinner.svelte';
@@ -100,11 +101,7 @@
 		TTSEngine = $settings?.audio?.tts?.engine ?? '';
 		TTSEngineConfig = $settings?.audio?.tts?.engineConfig ?? {};
 
-		if ($settings?.audio?.tts?.defaultVoice === $config.audio.tts.voice) {
-			voice = $settings?.audio?.tts?.voice ?? $config.audio.tts.voice ?? '';
-		} else {
-			voice = $config.audio.tts.voice ?? '';
-		}
+		voice = pickedVoice() || ($config.audio.tts.voice ?? ''); // 🧵 A46 · her own pick, else her Petal voice
 
 		nonLocalVoices = $settings.audio?.tts?.nonLocalVoices ?? false;
 

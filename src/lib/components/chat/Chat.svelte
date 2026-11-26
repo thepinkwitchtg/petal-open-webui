@@ -63,7 +63,7 @@
 	import { adoptMode, modeToSend } from '$lib/utils/petal-mode'; // 🌀 the mode chip (A15)
 	import { thumbsNudge } from '$lib/utils/petal-thumbs'; // 👍🏻 instant thumbs (A23): waiting verdicts go first
 	import { playReply, speakingNow } from '$lib/utils/petal-voice'; // 🔈 auto-playback in speaker mode (A23)
-	import { askedHere, askedLater, autoAfter, bornHere, picked, effectiveMode, installAutoplay, newSend } from '$lib/utils/petal-autoplay'; // 🔈 A37
+	import { askedHere, askedLater, autoAfter, bornHere, picked, installAutoplay, newSend } from '$lib/utils/petal-autoplay'; // 🔈 A37
 	import { watchLounge } from '$lib/utils/petal-lounge'; // 🌊 A41 · Petal Stream: she speaks on her own
 	import { petalDraft } from '$lib/utils/petal-draft'; // 📷 A33 · her draft kept in this browser too
 	import { installPetalCamera } from '$lib/utils/petal-camera'; // 📷 A33 · the camera stays in the page
@@ -2416,7 +2416,7 @@
 
 		const audioQueueInstance = new AudioQueue(
 			audioElement,
-			() => ($settings.responseAutoPlayback ?? false) || effectiveMode() !== 'off' // 🔈 A37
+			() => $settings.responseAutoPlayback ?? false
 		);
 		audioQueue.set(audioQueueInstance);
 
@@ -4026,10 +4026,8 @@
 		// voice couldn't take this one (a pick plays only the chosen reply, once she picks)
 		if (!$voiceCall && !bridge?.connected && autoAfter(message.id, message.parentId, history.messages[message.parentId]?.content)) {
 			await tick();
-			const speaker = document.getElementById(`speak-button-${message.id}`);
-			// speaker mode (A23): the row's Read Aloud steps aside for the speaker by her name
-			if (speaker) speaker.click();
-			else if (($settings?.voiceControl ?? 'bubble') === 'speaker') playReply(message.id);
+			// 🧵 A46 · through the one thread, never a click on the speaker (a click is a toggle: it could stop her)
+			playReply(message.id);
 		}
 		return visibleContent;
 	};

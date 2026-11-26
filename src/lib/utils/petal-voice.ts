@@ -1,4 +1,4 @@
-// 🎙️ her voice on the page (slices A19 · A19b · A20 · A21 · A22 · A31): the way in, where she is, and what she lights on the way.
+// 🎙️ her voice on the page (slices A19 · A19b · A20 · A21 · A22 · A31 · 🧵 A46): the way in, where she is, and what she lights on the way.
 //  · the registry: every reply on screen says how to speak it (ResponseMessage registers itself)
 //  · one control, Lily's choice (Settings → Interface → Voice control): the bubble (PetalVoiceBubble, left
 //    of the chat bar: plays the reply most in view, pause while she speaks, fades once that reply is heard)
@@ -6,38 +6,50 @@
 //  · her eyes (A31): the reply most in view, followed by one IntersectionObserver (never a scroll listener):
 //    the largest share of itself in view, by tenths, a tie to the one nearest the view's middle · inside an
 //    open pick, the reply she swiped to (phone) or last pointed at (desktop)
-//  · the trail (petal-trail.ts): where she is, as a small run of soft pink under the words she's saying
-//    (where she is in a sentence is estimated from its timing). it pauses with her, and nothing of it moves
-//    off-screen, in a hidden tab or with reduced motion (a still dot marks her sentence then); on a low
-//    battery (auto quotes) only the leading mark travels
+//  · 🧵 A46 · one thread (petalStream.ts) owns what's playing: every way in here asks it (speakReply, speakQuote,
+//    playReply, voiceTap), and every control reads its mirror (voiceUI), so the ✕, the play button, the bubble and
+//    the trail can never disagree. the voice she speaks in has one answer too (chosenVoice: the reply's model's own,
+//    else her pick in Settings → Audio, else her Petal voice), and a pick made while she speaks applies from the
+//    next sentence
+//  · the trail (petal-trail.ts): where she is, as a small run of soft pink under the words she's saying. 🧵 A46 · it
+//    follows the sentence whose audio is sounding (the thread says, on the audio's own clock) and finds it in its own
+//    reply by its place there (the reply's sentences walked in order, each after the one before), so it moves forward
+//    only: a phrase that repeats an earlier one, a sentence told again, a rebuffer never send it back. it pauses with
+//    her, and nothing of it moves off-screen, in a hidden tab or with reduced motion (a still dot marks her sentence
+//    then); on a low battery (auto quotes) only the leading mark travels. a line the voice gave up wears a dotted
+//    pink underline (said, never a silent stop)
 //  · quotes: when her voice reaches a display quote, its reveal plays again; a click on a quote reveals it
 //    and has her say only that line (the speaker path, under B's ceiling), if she isn't already speaking
 //  · A35 · her voice paused, the lead holds where she is and what it left finishes falling; only off her screen or
 //    in a hidden tab does everything hold (and carry on from there). her reply drawn again under her (a pick
-//    closing, the list keyed again, its words re-rendered) is found again where it is now, from the sentence's own
-//    start; gone from the page (the chat changed), nothing of the trail stays
-// built on contract ch. 11.6 (B7's events): petal stream's events door gives each `sentence {message_id,
-// idx, text, start, duration}` on the player's clock; a sentence is kept by idx (a later start replaces it)
-// and followed while start ≤ currentTime < start + duration. pause · resume · end · stop are the page's own.
-// a quote said alone asks the speaker path with "petal": {message_id, idx} and reads its timing back from
-// X-Petal-Voice ({v: 1, events: [sentence, end]}).
+//    closing, the list keyed again, its words re-rendered) is found again where it is now, by its place; gone from
+//    the page (the chat changed), nothing of the trail stays
 import { get, writable } from 'svelte/store';
-import { audioQueue, config, settings } from '$lib/stores';
-import { AUDIO_API_BASE_URL } from '$lib/constants';
+import { config, settings } from '$lib/stores';
 import { getMessageContentParts } from '$lib/utils';
 import {
-	onPetalVoice,
-	pausePetalStream,
-	petalStreamParts,
+	onSounding,
 	petalStreamAudio,
-	resumePetalStream,
-	stopPetalStream,
-	voiceNow,
-	type VoiceSentence
+	petalStreamEnabled,
+	petalStreamParts,
+	revoice,
+	speakVoice,
+	stopVoice,
+	toggleVoice,
+	voiceRows,
+	voiceSpeaking,
+	voiceThread,
+	voiceUI,
+	type Sounding,
+	type VoiceRow,
+	type VoiceSkip
 } from '$lib/utils/petalStream';
 import { fxMode, voiceReveal } from '$lib/utils/petal-quote-fx';
 import { batteryLow } from '$lib/utils/petal-battery';
 import { Trail } from '$lib/utils/petal-trail';
+
+export { voiceUI };
+export type { VoiceUI, VoiceKind } from '$lib/utils/petalStream';
 
 // ── the registry ─────────────────────────────────────────────────────────────────────────────────────
 export type VoiceReply = {
@@ -73,11 +85,11 @@ export function registerReply(r: VoiceReply): () => void {
 	wire();
 	replies.set(r.id, r);
 	bump();
-	if (r.id === segsMessage && shown) relocateSoon(); // A35 · the reply she's hearing, drawn again: the trail follows
+	if (shown && r.id === shown.row.mid) relocateSoon(); // A35 · the reply she's hearing, drawn again: the trail follows
 	return () => {
 		if (replies.get(r.id) === r) replies.delete(r.id);
 		bump();
-		if (r.id === segsMessage && shown) relocateSoon(); // gone, or about to be drawn again: decided on the next frame
+		if (shown && r.id === shown.row.mid) relocateSoon(); // gone, or about to be drawn again: decided on the next frame
 	};
 }
 
@@ -93,13 +105,10 @@ export const replyDone = (id: string) => {
 /** 🌱 A37 · a reply on the page, as it registered itself (autoplay speaks it from here) */
 export const replyOf = (id: string): VoiceReply | undefined => replies.get(id);
 
-/** ⏹ A37 · her voice stops, whatever was speaking: the stream, a quote's line, sentence clips, the browser's own */
+/** ⏹ A37 · her voice stops, whatever was speaking (🧵 A46 · one thread: the stream, a quote's line, sentence clips, the
+ *  browser's own voice all live there) */
 export function stopAllVoice() {
-	stopPetalStream();
-	stopLine();
-	try {
-		(get(audioQueue) as { stop?: () => void } | null)?.stop?.();
-	} catch {}
+	stopVoice();
 	try {
 		if (typeof speechSynthesis !== 'undefined' && speechSynthesis.speaking) speechSynthesis.cancel();
 	} catch {}
@@ -311,47 +320,38 @@ export function tapTarget(): string | null {
 // replies heard to their end, this visit (the bubble fades on one, comes back on an unheard one)
 export const heardReplies = writable<Set<string>>(new Set());
 
-// ── what the page shows of her voice: the stream first, then a quote's line, then sentence clips ──────
-export type VoiceKind = 'stream' | 'line' | 'clips';
-export type VoiceUI = {
-	state: 'idle' | 'loading' | 'playing' | 'paused';
-	message_id: string | null;
-	kind: VoiceKind | null;
-};
-export const voiceUI = writable<VoiceUI>({ state: 'idle', message_id: null, kind: null });
 
-type LineState = 'idle' | 'loading' | 'playing' | 'paused';
-let lineState: LineState = 'idle';
-let lineMessage: string | null = null;
-let clips: { state: 'idle' | 'playing' | 'paused'; message_id: string | null } = {
-	state: 'idle',
-	message_id: null
-};
-
-function refresh() {
-	const s = get(voiceNow);
-	let ui: VoiceUI = { state: 'idle', message_id: null, kind: null };
-	if (s.state !== 'idle') ui = { state: s.state, message_id: s.message_id, kind: 'stream' };
-	else if (lineState !== 'idle') ui = { state: lineState, message_id: lineMessage, kind: 'line' };
-	else if (clips.state !== 'idle') ui = { state: clips.state, message_id: clips.message_id, kind: 'clips' };
-	const was = get(voiceUI);
-	if (was.state !== ui.state || was.message_id !== ui.message_id || was.kind !== ui.kind) {
-		voiceUI.set(ui);
-	}
-}
-
-/** she's speaking now (a stream on its way or playing, a line, clips, the browser's own voice) ·
- *  paused counts as quiet */
+// ── what the page shows of her voice: the one thread's mirror (voiceUI, from petalStream.ts) ──────────────────
+/** she's speaking now (on her way or sounding, or the browser's own voice elsewhere) · paused counts as quiet */
 export function speakingNow(): boolean {
-	const s = get(voiceNow).state;
-	if (s === 'loading' || s === 'playing') return true;
-	if (lineState === 'loading' || lineState === 'playing') return true;
-	if (clips.state === 'playing') return true;
+	if (voiceSpeaking()) return true;
 	try {
 		return typeof speechSynthesis !== 'undefined' && speechSynthesis.speaking;
 	} catch {
 		return false;
 	}
+}
+
+// ── 🧵 A46 · the picker: one answer for the voice she speaks in ────────────────────────────────────────────────
+type TTS = { voice?: string; defaultVoice?: string; engine?: string; playbackRate?: number };
+const ttsOf = (s: unknown): TTS => ((s as { audio?: { tts?: TTS } } | null)?.audio?.tts ?? {}) as TTS;
+/** the voice she picked in Settings → Audio: her own choice, never the copy of the default saved beside it (OWUI
+ *  saves the default it saw as defaultVoice) · '' when she picked none */
+export function pickedVoice(): string {
+	const s = ttsOf(get(settings));
+	const pick = typeof s.voice === 'string' ? s.voice.trim() : '';
+	if (!pick) return '';
+	return pick !== (typeof s.defaultVoice === 'string' ? s.defaultVoice.trim() : '') ? pick : '';
+}
+/** the voice she speaks in, the same answer for every way in (the speaker, autoplay, a pick, her stream, a quote): the
+ *  reply's model's own voice (Workspace → Models) · else her pick (Settings → Audio) · else her Petal voice (the
+ *  admin's voice; empty: the rig's own default, her Petal voice) */
+export function chosenVoice(modelVoice?: string | null): string {
+	if (typeof modelVoice === 'string' && modelVoice.trim()) return modelVoice.trim();
+	const pick = pickedVoice();
+	if (pick) return pick;
+	const c = ttsOf(get(config));
+	return typeof c.voice === 'string' ? c.voice.trim() : '';
 }
 
 // ── the way in: one reply per tap ─────────────────────────────────────────────────────────────────────
@@ -363,9 +363,75 @@ export const setLivePlayer = (f: ((id: string) => boolean) | null) => void (live
 export function playReply(id: string) {
 	const r = replies.get(id);
 	if (!r) return;
-	stopLine();
 	if (!r.done() && livePlayer?.(id)) return;
 	r.speak();
+}
+
+/** 🧵 A46 · a whole reply, spoken through the one thread (the speaker button, the bubble, a replay, after she
+ *  finishes): her petal stream (its sentence clips if the stream can't open) · the in-browser engine's clips · the
+ *  browser's own voice for OWUI's engine '' */
+export type ReplyVoice = {
+	id: string;
+	chat_id?: string | null;
+	content: string;
+	modelVoice?: string | null;
+	model?: string;
+	title?: string;
+	artwork?: string;
+	playbackRate?: number;
+	kokoro?: (text: string, voice: string) => Promise<string | null | undefined>; // the in-browser engine (its worker)
+	onNatural?: () => void; // the browser's own voice reached her last word (OWUI's conversation mode listens again)
+};
+export function speakReply(r: ReplyVoice): Promise<boolean> {
+	const c = ttsOf(get(config));
+	const s = ttsOf(get(settings));
+	const voice = chosenVoice(r.modelVoice);
+	const base = {
+		message_id: r.id,
+		chat_id: r.chat_id ?? null,
+		title: r.title,
+		artwork: r.artwork,
+		playbackRate: r.playbackRate ?? s.playbackRate ?? 1,
+		voice,
+		revoice: () => chosenVoice(r.modelVoice)
+	};
+	if (!c.engine && s.engine !== 'browser-kokoro')
+		return speakVoice({
+			...base,
+			kind: 'browser',
+			text: r.content,
+			voiceURI: voice,
+			onEnded: () => {
+				if (get(voiceThread).why === 'natural') r.onNatural?.();
+			}
+		});
+	const parts = petalStreamParts(r.content, getMessageContentParts);
+	if (!parts.length) return Promise.resolve(false);
+	const text = (i: number) => parts[i]?.text ?? '';
+	if (s.engine === 'browser-kokoro' && r.kokoro) {
+		const make = r.kokoro;
+		return speakVoice({
+			...base,
+			kind: 'clips',
+			clips: {
+				count: parts.length,
+				text,
+				make: async (i) => {
+					const url = await make(text(i), voice);
+					return url ? { url, seg: null } : null;
+				}
+			}
+		});
+	}
+	if (petalStreamEnabled())
+		return speakVoice({
+			...base,
+			kind: 'stream',
+			parts,
+			fallback: true,
+			meta: { chat_id: r.chat_id ?? undefined, message_id: r.id, model: r.model, source: r.content }
+		});
+	return speakVoice({ ...base, kind: 'clips', clips: { count: parts.length, text } });
 }
 
 /** the reply the bubble plays: the one most in view (her eyes, above), or the newest with none in view */
@@ -387,22 +453,9 @@ export function firstWords(id: string | null, n = 5): string {
 	return words.slice(0, n).join(' ') + (words.length > n ? '…' : '');
 }
 
+/** pause her while she speaks, resume her while she's paused (one thread: whatever kind she speaks in) */
 export function togglePause() {
-	const ui = get(voiceUI);
-	if (ui.kind === 'stream') {
-		if (ui.state === 'paused') {
-			stopLine();
-			resumePetalStream();
-		} else pausePetalStream();
-	} else if (ui.kind === 'line' && line) {
-		if (line.paused) line.play().catch(() => stopLine());
-		else line.pause();
-	} else if (ui.kind === 'clips') {
-		const el = clipElement();
-		if (!el) return;
-		if (el.paused) el.play().catch(() => {});
-		else el.pause();
-	}
+	toggleVoice();
 }
 
 /** what one tap does, for the bubble and the hotkey: pause her while she speaks; while she's paused,
@@ -421,15 +474,18 @@ export function voiceTap(target: string | null = mostInView()) {
 	if (target) playReply(target);
 }
 
-// ── following her: the sentence she's on, from the rig's events ──────────────────────────────────────
-// from: where the search for this sentence began (in the reply's letters): her reply drawn again, it's found again from there
-type Shown = { seg: VoiceSentence; range: Range | null; host: HTMLElement | null; block: Element | null; from: number };
-let segs: VoiceSentence[] = [];
-let segsStream: string | null = null;
-let segsMessage: string | null = null;
-let cursor = 0; // where the last sentence ended, in the reply's letters
+// ── following her: the sentence sounding now (the thread says, on the audio's own clock) ─────────────────────
+type Shown = {
+	seq: number;
+	row: VoiceRow;
+	range: Range | null;
+	host: HTMLElement | null;
+	block: Element | null;
+	running: boolean;
+	pos: number; // where its words end in the reply's letters (forward only: her console reads it)
+};
 let shown: Shown | null = null;
-let nextTimer: ReturnType<typeof setTimeout> | null = null;
+let followSeq = 0;
 let hostRO: ResizeObserver | null = null;
 let roHost: HTMLElement | null = null; // the words the ResizeObserver watches now (it follows her reply when it's drawn again)
 let relocating = 0;
@@ -473,29 +529,51 @@ function indexWords(host: HTMLElement): Index {
 	return { norm, at };
 }
 
-/** find the sentence in the reply, after the last one (or anywhere, or by its first words) */
-export function locate(host: HTMLElement, text: string, from = 0): { range: Range; end: number } | null {
-	const needle = letters(text);
+/** a sentence's letters, found at or after `from` (never before): near (within a little of `from`) for the
+ *  sentences walked on the way, anywhere ahead for the one she's saying · its first words when it reads a
+ *  little differently on the page (a table read aloud, a word the cleaner changed) */
+function findIn(ix: Index, needle: string, from: number, near: boolean): { pos: number; len: number } | null {
 	if (!needle) return null;
-	const idx = indexWords(host);
-	let pos = idx.norm.indexOf(needle, from);
+	const slack = near ? Math.max(160, needle.length * 2) : Infinity;
+	let pos = ix.norm.indexOf(needle, from);
 	let len = needle.length;
-	if (pos < 0) pos = idx.norm.indexOf(needle);
 	if (pos < 0 && needle.length > 30) {
-		// a sentence a little different from the page (a table read aloud, a word the cleaner changed):
-		// its first words still say where she is
-		const head = needle.slice(0, 24);
-		pos = idx.norm.indexOf(head, from);
-		if (pos < 0) pos = idx.norm.indexOf(head);
-		len = Math.min(needle.length, idx.norm.length - pos);
+		pos = ix.norm.indexOf(needle.slice(0, 24), from);
+		len = Math.min(needle.length, ix.norm.length - pos);
 	}
-	if (pos < 0 || !len) return null;
-	const a = idx.at[pos];
-	const b = idx.at[pos + len - 1];
+	if (pos < 0 || !len || pos - from > slack) return null;
+	return { pos, len };
+}
+function rangeOf(ix: Index, pos: number, len: number): Range {
+	const a = ix.at[pos];
+	const b = ix.at[pos + len - 1];
 	const range = document.createRange();
 	range.setStart(a.node, a.start);
 	range.setEnd(b.node, b.end);
-	return { range, end: pos + len };
+	return range;
+}
+
+/** find the sentence in the reply after `from` (forward only: a repeated phrase earlier in the reply is never it) */
+export function locate(host: HTMLElement, text: string, from = 0): { range: Range; end: number } | null {
+	const ix = indexWords(host);
+	const f = findIn(ix, letters(text), from, false);
+	return f ? { range: rangeOf(ix, f.pos, f.len), end: f.pos + f.len } : null;
+}
+
+/** 🧵 A46 · a sentence in its own reply, by its place there (idx): the reply's sentences (the page's own cut, the
+ *  rig's too) are walked in order from its start, each found after the one before, so the sentence she's saying is
+ *  found where it truly is · a sentence that can't be found leaves the walk where it was (the next ones still are) */
+export function place(host: HTMLElement, content: string, idx: number, text: string): { range: Range; end: number } | null {
+	const ix = indexWords(host);
+	const parts = petalStreamParts(content, getMessageContentParts);
+	let from = 0;
+	for (let j = 0; j < Math.min(idx, parts.length); j++) {
+		const f = findIn(ix, letters(parts[j].text), from, true);
+		if (f) from = f.pos + f.len;
+	}
+	const needle = letters(text);
+	const f = findIn(ix, needle, from, true) ?? findIn(ix, needle, from, false);
+	return f ? { range: rangeOf(ix, f.pos, f.len), end: f.pos + f.len } : null;
 }
 
 const BLOCKS = 'p, li, h1, h2, h3, h4, h5, h6, blockquote, td, th, dd, dt, figcaption';
@@ -507,25 +585,10 @@ function blockOf(range: Range): Element | null {
 
 // ── the trail (petal-trail.ts): a leading sparkle under the words, sparkles and a rare petal behind ─────
 const trail = new Trail({
-	back: () => (lineState !== 'idle' ? lineSync : sync)(), // her block came back on screen: meet her again
+	back: () => resync(), // her block came back on screen: meet her again
 	lost: () => relocateSoon(), // her block left the page: find her words where they are now
 	simple: () => fxMode() === 'auto' && batteryLow() // auto quotes on a low battery: the lead alone (her setting)
 });
-
-/** she paused (or the stream is waiting for words): the lead holds where she is, the next edge waits for her, and
- *  what it left behind finishes falling */
-function hold() {
-	if (nextTimer) clearTimeout(nextTimer);
-	nextTimer = null;
-	trail.hold();
-}
-
-/** the tab hid: the whole trail holds where it is, and the next edge waits for her */
-function freeze() {
-	if (nextTimer) clearTimeout(nextTimer);
-	nextTimer = null;
-	trail.freeze();
-}
 
 function unobserveHost() {
 	hostRO?.disconnect();
@@ -534,13 +597,12 @@ function unobserveHost() {
 }
 
 function clearFollower() {
-	if (nextTimer) clearTimeout(nextTimer);
-	nextTimer = null;
-	if (relocating) cancelAnimationFrame(relocating);
+	if (relocating && typeof cancelAnimationFrame === 'function') cancelAnimationFrame(relocating);
 	relocating = 0;
 	trail.clear();
 	unobserveHost();
 	shown = null;
+	lineFollowed = false;
 }
 
 /** a range still standing on the page (its words weren't drawn again under it) */
@@ -554,26 +616,23 @@ function relocateSoon() {
 	relocating = requestAnimationFrame(relocate);
 }
 
-/** the sentence she's on, found again in the page as it is now, from where its search began · her reply not on the
- *  page (the chat changed): nothing of the trail stays, and it's found again if her reply comes back */
+/** the sentence she's on, found again in the page as it is now, by its place · her reply not on the page (the chat
+ *  changed): nothing of the trail stays, and it's found again if her reply comes back */
 function relocate() {
 	relocating = 0;
-	if (lineState !== 'idle') return lineLost();
+	if (lineQuote) return lineLost();
 	const s = shown;
 	if (!s) return;
-	const host = replies.get(segsMessage ?? '')?.words() ?? null;
+	const host = replies.get(s.row.mid ?? '')?.words() ?? null;
 	if (host?.isConnected && host === s.host && (!s.range || alive(s.range))) return; // nothing moved
-	if (nextTimer) clearTimeout(nextTimer);
-	nextTimer = null;
 	if (!host?.isConnected) {
 		trail.clear();
 		unobserveHost();
-		shown = { ...s, range: null, host: null, block: null };
+		shown = { ...s, range: null, host: null, block: null, running: false, pos: -1 };
 		return;
 	}
-	cursor = s.from;
 	shown = null;
-	sync();
+	resync();
 }
 
 /** watch the words her voice is in for a change of size (one observer, following her reply when it's drawn again) */
@@ -584,95 +643,108 @@ function observeHost(host: HTMLElement) {
 		const s = shown;
 		if (!s?.range || !s.host) return;
 		if (!s.host.isConnected || !alive(s.range)) return relocateSoon();
-		trail.lay(s.range, s.host, s.seg.duration * 1000);
-		sync();
+		trail.lay(s.range, s.host, s.row.duration * 1000);
+		s.running = false;
+		resync();
 	});
 	if (roHost) hostRO.unobserve(roHost);
 	hostRO.observe(host);
 	roHost = host;
 }
 
-function resetFollower(stream: string | null, message: string | null) {
-	clearFollower();
-	segs = [];
-	segsStream = stream;
-	segsMessage = message;
-	cursor = 0;
-}
-
-/** her next sentence: its road, and the quotes it reaches */
-function show(seg: VoiceSentence) {
-	const live = replies.get(segsMessage ?? '')?.words() ?? null;
+/** her next sentence: its road under its words, in its own reply, and the quotes it reaches */
+function show(seq: number, row: VoiceRow) {
+	const r = replies.get(row.mid ?? '');
+	const live = r?.words() ?? null;
 	const host = live?.isConnected ? live : null;
-	const from = cursor;
-	const found = host ? locate(host, seg.text, cursor) : null;
-	shown = { seg, range: found?.range ?? null, host, block: found ? blockOf(found.range) : null, from };
-	if (!found || !host) return trail.rest();
-	cursor = found.end;
-	trail.lay(found.range, host, seg.duration * 1000);
+	const found = host && r && !row.cue ? place(host, r.content(), row.idx, row.text) : null;
+	shown = { seq, row, range: found?.range ?? null, host, block: found ? blockOf(found.range) : null, running: false, pos: found?.end ?? -1 };
+	if (!found || !host) return trail.rest(); // her cue, or words the page doesn't show: the lead rests
+	trail.lay(found.range, host, (Number.isFinite(row.duration) ? row.duration : 2) * 1000);
 	trail.watch(shown.block);
 	for (const q of host.querySelectorAll<HTMLElement>('.petal-quote'))
 		if (found.range.intersectsNode(q)) voiceReveal(q); // her voice reached it: the reveal plays again
 	observeHost(host);
 }
 
-/** meet her where she is: the sentence followed while start ≤ currentTime < start + duration (none
- *  between two), and a timer for the next edge */
-function sync() {
-	if (nextTimer) clearTimeout(nextTimer);
-	nextTimer = null;
-	const a = petalStreamAudio();
-	if (!a || !segs.length || get(voiceNow).state === 'idle') return;
+/** 🧵 A46 · the thread looked at her clock: the trail follows what it says is sounding, never a clock of its own */
+function follow(s: Sounding) {
+	if (s.seq !== followSeq) {
+		clearFollower();
+		clearSkips();
+		followSeq = s.seq;
+	}
+	if (s.ended) return clearFollower();
+	if (s.kind === 'line') return lineFollow(s);
+	if (s.skip) markSkip(s.skip);
+	const row = s.row;
+	if (!row) {
+		// between two sentences (or a line the voice gave up): the lead fades, what it left finishes falling
+		if (shown?.range) trail.rest();
+		if (shown) shown.running = false;
+		return;
+	}
 	if (shown?.host && (!shown.host.isConnected || (shown.range && !alive(shown.range)))) return relocateSoon(); // A35
-	const t = a.currentTime;
-	const rate = a.playbackRate || 1;
-	const cur = segs.find((s) => s.start <= t && t < s.start + s.duration) ?? null;
-	if (!cur) {
-		if (shown) trail.rest();
-		shown = null;
-	} else {
-		if (cur !== shown?.seg) show(cur);
-		if (shown?.seg === cur) trail.time(t - cur.start, rate, a.paused);
+	if (!shown || shown.row !== row || shown.seq !== s.seq) show(s.seq, row);
+	if (!shown?.range) return;
+	if (s.paused || s.waiting) {
+		trail.hold(); // paused, or the stream is waiting for words: the lead holds where she is
+		shown.running = false;
+		return;
 	}
-	if (a.paused || document.visibilityState === 'hidden') return;
-	let edge = Infinity;
-	for (const s of segs) {
-		if (s.start > t) edge = Math.min(edge, s.start);
-		if (s === cur) edge = Math.min(edge, s.start + s.duration);
+	if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return trail.freeze();
+	if (!shown.running) {
+		trail.time(s.at, s.rate, false);
+		shown.running = true;
+	} else trail.pin(s.at, s.rate); // A33 · on her clock: never ahead of her voice, never stepping back
+}
+
+/** meet her where she is now (her block back on screen, the tab visible again, her reply drawn again) */
+function resync() {
+	const a = petalStreamAudio();
+	const now = get(voiceThread);
+	if (!a || (now.state !== 'playing' && now.state !== 'paused')) return;
+	if (shown) shown.running = false;
+	if (lineQuote) lineFollowed = false;
+	a.dispatchEvent?.(new Event('timeupdate')); // the thread looks at her clock and tells the trail
+}
+
+// ── 🧵 A46 · a line the voice gave up: a dotted pink underline under its words (said, never a silent stop) ──────
+const skipRanges: Range[] = [];
+function markSkip(k: VoiceSkip) {
+	const r = replies.get(k.mid ?? '');
+	const host = r?.words();
+	if (!r || !host?.isConnected) return;
+	const f = place(host, r.content(), k.idx, k.text);
+	if (!f) return;
+	skipRanges.push(f.range);
+	paintSkips();
+}
+function clearSkips() {
+	if (!skipRanges.length) return;
+	skipRanges.length = 0;
+	paintSkips();
+}
+function paintSkips() {
+	const H = (globalThis as { Highlight?: new (...r: Range[]) => unknown }).Highlight;
+	const reg = (globalThis as { CSS?: { highlights?: Map<string, unknown> } }).CSS?.highlights;
+	if (!H || !reg) return;
+	if (!document.getElementById('petal-voice-skip-style')) {
+		const st = document.createElement('style');
+		st.id = 'petal-voice-skip-style';
+		st.textContent =
+			'::highlight(petal-voice-skip){text-decoration:underline dotted rgb(255 120 192 / 0.8);text-decoration-thickness:2px;text-underline-offset:4px}';
+		document.head.appendChild(st);
 	}
-	if (edge < Infinity) nextTimer = setTimeout(sync, Math.max(10, ((edge - t) / rate) * 1000 + 5));
+	const live = skipRanges.filter(alive);
+	if (live.length) reg.set('petal-voice-skip', new H(...live));
+	else reg.delete('petal-voice-skip');
 }
 
 // ── a quote's line: a click has her say just that line ────────────────────────────────────────────────
-let line: HTMLAudioElement | null = null;
 let lineQuote: HTMLElement | null = null;
-let lineUrl: string | null = null;
-let lineTicket = 0;
-
-function setLine(state: LineState, quote: HTMLElement | null = lineQuote) {
-	lineState = state;
-	lineQuote = quote;
-	lineMessage = quote?.closest('[id^="message-"]')?.id.slice('message-'.length) ?? null;
-	refresh();
-}
-
-function stopLine() {
-	if (lineState === 'idle') return;
-	lineTicket++;
-	if (line) {
-		line.pause();
-		line.removeAttribute('src');
-		line.load();
-	}
-	if (lineUrl) URL.revokeObjectURL(lineUrl);
-	lineUrl = null;
-	if (lineTimer) clearTimeout(lineTimer);
-	lineTimer = null;
-	if (lineFollowed) clearFollower();
-	lineFollowed = false;
-	lineSeg = lineRange = lineHost = null;
-	setLine('idle', null);
-}
+let lineSeq = 0;
+let lineFollowed = false; // its road is laid
 
 /** the words a quote says aloud: its own (never the layers that echo them), without emoji */
 export function quoteText(quote: HTMLElement): string {
@@ -683,17 +755,10 @@ export function quoteText(quote: HTMLElement): string {
 		.trim();
 }
 
-function voiceFor(quote: HTMLElement): string | undefined {
+function voiceFor(quote: HTMLElement): string {
 	const id = quote.closest('[id^="message-"]')?.id.slice('message-'.length);
 	const own = id ? replies.get(id)?.voice() : undefined;
-	if (own) return own;
-	for (const r of replies.values()) {
-		const v = r.voice();
-		if (v) return v;
-	}
-	const s = get(settings) as { audio?: { tts?: { voice?: string } } };
-	const c = get(config) as { audio?: { tts?: { voice?: string } } } | undefined;
-	return s?.audio?.tts?.voice ?? c?.audio?.tts?.voice;
+	return own || chosenVoice();
 }
 
 /** which of the message's parts (as petal stream would cut them) holds this quote: its idx */
@@ -709,222 +774,97 @@ function partOf(message_id: string, text: string): number | null {
 	return null;
 }
 
-type LineSeg = { start: number; duration: number };
-/** the speaker path, with the line's place in its message (contract 11.6): the rig answers the clip and
- *  its events in X-Petal-Voice, url-encoded JSON ({v: 1, events: [sentence, end]}; a bare [sentence, end]
- *  reads the same) */
-async function speakLine(token: string, voice: string | undefined, text: string, petal: object | null) {
-	const res = await fetch(`${AUDIO_API_BASE_URL}/speech`, {
-		method: 'POST',
-		headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-		body: JSON.stringify({ input: text, ...(voice ? { voice } : {}), ...(petal ? { petal } : {}) })
-	}).catch(() => null);
-	if (!res?.ok) return null;
-	let seg: LineSeg | null = null;
-	try {
-		const h = res.headers.get('X-Petal-Voice');
-		const told = h ? JSON.parse(decodeURIComponent(h)) : null;
-		const events: { type?: string; start?: number; duration?: number }[] = Array.isArray(told)
-			? told
-			: Array.isArray(told?.events)
-				? told.events
-				: [];
-		const said = events.find((e) => e?.type === 'sentence') ?? (Array.isArray(told) ? told[0] : null);
-		if (said && Number.isFinite(said.start) && Number.isFinite(said.duration))
-			seg = { start: said.start as number, duration: Math.max(0, said.duration as number) };
-	} catch {}
-	const blob = await res.blob().catch(() => null);
-	return blob ? { blob, seg } : null;
-}
-
-let lineSeg: LineSeg | null = null;
-let lineRange: Range | null = null;
-let lineHost: HTMLElement | null = null;
-let lineFollowed = false; // its road is laid
-let lineTimer: ReturnType<typeof setTimeout> | null = null;
-
 /** the line, followed while she says it (by the rig's timing, or the whole clip without it) */
-function lineSync() {
-	if (lineTimer) clearTimeout(lineTimer);
-	lineTimer = null;
-	const a = line;
-	if (!a || lineState === 'idle' || !lineRange || !lineHost) return;
-	if (!lineHost.isConnected) return lineLost(); // A35 · her reply drawn again under the line: the trail lets go
-	const t = a.currentTime;
-	const seg = lineSeg ?? { start: 0, duration: Number.isFinite(a.duration) ? a.duration : 0 };
-	const on = seg.duration > 0 && seg.start <= t && t < seg.start + seg.duration;
-	if (on) {
-		if (!lineFollowed) {
-			trail.lay(lineRange, lineHost, seg.duration * 1000);
-			trail.watch(lineQuote);
-			lineFollowed = true;
-		}
-		trail.time(t - seg.start, a.playbackRate, a.paused);
-	} else if (lineFollowed) trail.rest();
-	if (a.paused) return;
-	const edge = t < seg.start ? seg.start : t < seg.start + seg.duration ? seg.start + seg.duration : Infinity;
-	if (edge < Infinity)
-		lineTimer = setTimeout(lineSync, ((edge - t) / (a.playbackRate || 1)) * 1000 + 5);
+function lineFollow(s: Sounding) {
+	const q = lineQuote;
+	if (s.seq !== lineSeq || !q) return;
+	const host = q.closest<HTMLElement>('#response-content-container') ?? q;
+	if (!host.isConnected) return lineLost(); // A35 · her reply drawn again under the line: the trail lets go
+	if (!s.row) {
+		if (lineFollowed) trail.rest();
+		return;
+	}
+	if (!lineFollowed) {
+		const range = document.createRange();
+		range.selectNodeContents(q.querySelector<HTMLElement>('.pq-base') ?? q);
+		const a = petalStreamAudio();
+		const d = Number.isFinite(s.row.duration) ? s.row.duration : a && Number.isFinite(a.duration) ? a.duration : 3;
+		trail.lay(range, host, d * 1000);
+		trail.watch(q);
+		lineFollowed = true;
+		return s.paused ? trail.hold() : trail.time(s.at, s.rate, false);
+	}
+	if (s.paused || s.waiting) trail.hold();
+	else trail.pin(s.at, s.rate);
 }
 
 /** A35 · the reply her line lives in left the page (drawn again, the chat changed): the line plays on, the trail
  *  lets go at once (its marks leave with it) */
 function lineLost() {
-	if (lineHost?.isConnected) return;
+	if (lineQuote?.isConnected) return;
 	if (lineFollowed) trail.clear();
 	lineFollowed = false;
-	lineRange = lineHost = null;
 }
 
 /** a click on a display quote: she says just that line, unless she's already speaking (the reveal plays
  *  either way, from PetalQuote) · only through the speaker path (/audio/speech, under B's ceiling) */
 export async function speakQuote(quote: HTMLElement) {
 	if (speakingNow()) return;
-	const c = get(config) as { audio?: { tts?: { engine?: string } } } | undefined;
-	const s = get(settings) as { audio?: { tts?: { engine?: string; playbackRate?: number } } };
-	if (!c?.audio?.tts?.engine || s?.audio?.tts?.engine === 'browser-kokoro') return;
+	const c = ttsOf(get(config));
+	const s = ttsOf(get(settings));
+	if (!c.engine || s.engine === 'browser-kokoro') return;
 	const text = quoteText(quote);
 	if (!/[\p{L}\p{N}]/u.test(text)) return;
 	wire();
-	const ticket = ++lineTicket;
-	setLine('loading', quote);
-	let token = '';
-	try {
-		token = localStorage.token ?? '';
-	} catch {}
-	const mid = lineMessage;
+	const mid = quote.closest('[id^="message-"]')?.id.slice('message-'.length) ?? null;
 	const idx = mid ? partOf(mid, text) : null;
-	const got = await speakLine(token, voiceFor(quote), text, mid && idx !== null ? { message_id: mid, idx } : null);
-	if (ticket !== lineTicket) return;
-	if (!got) return stopLine();
-	if (!line) {
-		line = new Audio();
-		line.setAttribute('playsinline', '');
-	}
-	const a = line;
-	lineUrl = URL.createObjectURL(got.blob);
-	a.src = lineUrl;
-	a.playbackRate = s?.audio?.tts?.playbackRate ?? 1;
-	lineSeg = got.seg;
-	lineHost = quote.closest<HTMLElement>('#response-content-container') ?? quote;
-	lineRange = document.createRange();
-	lineRange.selectNodeContents(quote.querySelector<HTMLElement>('.pq-base') ?? quote);
+	lineQuote = quote;
 	lineFollowed = false;
-	a.onplaying = () => {
-		if (ticket !== lineTicket) return;
-		setLine('playing', quote);
-		lineSync();
-	};
-	a.onpause = () => {
-		if (ticket !== lineTicket || a.ended) return;
-		setLine('paused', quote);
-		if (lineTimer) clearTimeout(lineTimer);
-		lineTimer = null;
-		hold();
-	};
-	a.onended = a.onerror = () => {
-		if (ticket === lineTicket) stopLine();
-	};
-	a.play().catch(() => ticket === lineTicket && stopLine());
+	const said = speakVoice({
+		kind: 'line',
+		message_id: mid,
+		voice: voiceFor(quote),
+		revoice: () => voiceFor(quote),
+		playbackRate: s.playbackRate ?? 1,
+		petal: mid && idx !== null ? { message_id: mid, idx } : null,
+		clips: { count: 1, idx: () => idx ?? 0, text: () => text }
+	});
+	lineSeq = get(voiceThread).seq;
+	await said;
 }
 
-// ── wiring: the stream's state, its sentences, sentence clips, the page ──────────────────────────────
+// ── wiring: the thread's look at her clock, the page ──────────────────────────────────────────────────────
 let wired = false;
-let hookedAudio: HTMLAudioElement | null = null;
-let clipIdle: ReturnType<typeof setTimeout> | null = null;
-
-const clipElement = () =>
-	typeof document !== 'undefined'
-		? (document.getElementById('audioElement') as HTMLAudioElement | null)
-		: null;
-
-function hookAudio() {
-	const a = petalStreamAudio();
-	if (!a || a === hookedAudio) return;
-	hookedAudio = a;
-	// the page's own pause and resume arrive as events; these keep her clock in step in between
-	a.addEventListener('playing', sync);
-	a.addEventListener('seeked', sync);
-	a.addEventListener('ratechange', sync);
-	a.addEventListener('waiting', hold);
-	a.addEventListener('timeupdate', pinNow); // A33 · a few times a second while she plays: on her clock
-}
-
-/** A33 · between two edges, a few times a second while she plays (the audio's own timeupdate, no timer): the
- *  lead stays pinned to her clock, never ahead of her voice and never stepping back · a sentence that ended,
- *  or one the rig has told meanwhile, is met at its edge */
-function pinNow() {
-	if (lineState !== 'idle') return;
-	const a = petalStreamAudio();
-	if (!a || a.paused || document.visibilityState === 'hidden' || get(voiceNow).state === 'idle') return;
-	const s = shown;
-	if (s?.host && (!s.host.isConnected || (s.range && !alive(s.range)))) return relocateSoon(); // A35 · drawn again
-	const seg = s?.seg;
-	if (!seg) return segs.length ? sync() : undefined;
-	const t = a.currentTime;
-	if (t < seg.start || t >= seg.start + seg.duration) return sync();
-	trail.pin(t - seg.start, a.playbackRate || 1);
-}
-
-/** the sentence clips (petal stream's fallback) are her voice too: the bubble can pause them */
-function hookClips() {
-	const el = clipElement();
-	if (!el || (el as HTMLAudioElement & { __petalVoice?: boolean }).__petalVoice) return;
-	(el as HTMLAudioElement & { __petalVoice?: boolean }).__petalVoice = true;
-	const set = (state: typeof clips.state) => {
-		if (clipIdle) clearTimeout(clipIdle);
-		clipIdle = null;
-		const real = !!el.currentSrc && !el.currentSrc.startsWith('data:'); // not the silent unlock
-		const id = (get(audioQueue) as { id?: string | null } | null)?.id ?? null;
-		if (state === 'idle' || !real) {
-			// between two clips the element rests a moment: only a longer rest is the end
-			clipIdle = setTimeout(() => {
-				clips = { state: 'idle', message_id: null };
-				refresh();
-			}, 600);
-			return;
-		}
-		clips = { state, message_id: id };
-		refresh();
-	};
-	el.addEventListener('playing', () => set('playing'));
-	el.addEventListener('pause', () => set(el.ended || !el.currentSrc ? 'idle' : 'paused'));
-	el.addEventListener('emptied', () => set('idle'));
-}
+const notes = writable<{ seq: number; note: string } | null>(null);
+/** 🧵 A46 · what her voice needs her to know (a break it couldn't heal): the bubble says it once */
+export const voiceNotes = { subscribe: notes.subscribe };
 
 function wire() {
 	if (wired || typeof window === 'undefined') return;
 	wired = true;
-	voiceNow.subscribe((v) => {
-		hookAudio();
-		hookClips();
-		if (v.state === 'idle') {
-			if (segsStream && (!v.id || v.id === segsStream)) resetFollower(null, null);
-			if (v.ended === 'natural' && v.message_id) {
-				// heard to her last word: the bubble may rest on this one
-				const id = v.message_id;
-				heardReplies.update((h) => new Set(h).add(id));
-			}
-		} else if (v.id && v.id !== segsStream) resetFollower(v.id, v.message_id);
-		refresh();
+	onSounding(follow);
+	let noted = 0;
+	voiceThread.subscribe((t) => {
+		if (t.state === 'ended' && t.why === 'natural' && t.message_id && t.kind !== 'line') {
+			// heard to her last word (a whole reply, never a quote said alone): the bubble may rest on this one
+			const id = t.message_id;
+			heardReplies.update((h) => (h.has(id) ? h : new Set(h).add(id)));
+		}
+		if (t.state === 'error' && t.note && t.seq !== noted) {
+			noted = t.seq;
+			notes.set({ seq: t.seq, note: t.note });
+		}
+		if (t.state !== 'playing' && t.state !== 'paused' && t.state !== 'loading' && lineQuote && t.seq === lineSeq) {
+			lineQuote = null;
+			lineFollowed = false;
+		}
 	});
-	onPetalVoice((e, stream) => {
-		if (stream !== segsStream) resetFollower(stream, e.message_id ?? get(voiceNow).message_id);
-		if (e.type === 'sentence') {
-			// kept by idx: a later start replaces it (a take the rig made again)
-			const had = segs.find((s) => s.idx === e.idx);
-			if (had && had.start > e.start) return;
-			segs = [...segs.filter((s) => s.idx !== e.idx), e].sort((a, b) => a.start - b.start);
-			sync();
-		} else if (e.type === 'pause') hold();
-		else if (e.type === 'resume') sync();
-		else clearFollower(); // end · stop
-	});
+	// 🧵 A46 · a voice she picks while she speaks: the thread speaks in it from the next sentence
+	settings.subscribe(() => revoice());
 	document.addEventListener('visibilitychange', () => {
-		if (document.visibilityState !== 'visible') return freeze();
+		if (document.visibilityState !== 'visible') return trail.freeze();
 		if (pending) look(); // A31 · what changed while the page was hidden, decided once
-		if (lineState !== 'idle') lineSync();
-		else sync();
+		resync();
 	});
 	pickFocus.subscribe(() => look()); // A31 · her eyes moved inside an open pick
 	(window as unknown as { petalVoice?: object }).petalVoice = {
@@ -934,6 +874,15 @@ function wire() {
 		/** A33 · the trail, numbers only: the lead's state, ms into its road, ms it last was ahead of her voice */
 		get trail() {
 			return trail.state;
+		},
+		/** 🧵 A46 · the one thread, ids and numbers only: what plays, its part, why it last ended, and its rows */
+		get thread() {
+			const t = get(voiceThread);
+			return {
+				...t,
+				shown: shown ? { mid: shown.row.mid, idx: shown.row.idx, found: !!shown.range, pos: shown.pos } : null,
+				rows: voiceRows().map((r) => ({ mid: r.mid, idx: r.idx, start: r.start, duration: r.duration, cue: r.cue, order: r.order }))
+			};
 		}
 	};
 }

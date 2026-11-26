@@ -387,9 +387,11 @@ async function open(w: Writing, ready: ReturnType<typeof wholeParts>) {
 	w.opening = true;
 	w.sent = ready.length;
 	const m = r.meta?.() ?? {};
+	let superseded = false; // 🧵 A46 · her voice went to a newer ask while this one opened (she chose it)
 	const opened = await playPetalStream({
 		token: read('token') ?? '',
 		voice: r.voice() ?? '',
+		revoice: () => replyOf(w.id)?.voice() ?? r.voice() ?? '', // 🧵 A46 · a voice she picks while she speaks
 		parts: [], // 🧵 A45 · the rig gives every sentence, her cue first, as it follows the reply
 		follow: segmentsOf(w),
 		meta: { chat_id: m.chat_id, message_id: w.id, model: m.model, source: w.content },
@@ -400,6 +402,9 @@ async function open(w: Writing, ready: ReturnType<typeof wholeParts>) {
 		onFeed: (f) => {
 			w.feed = f;
 		},
+		onSuperseded: () => {
+			superseded = true;
+		},
 		onError: () => {
 			// the stream broke before her first sound: after-she-finishes may still play it
 			if (writing === w) letGo(w, false);
@@ -409,6 +414,13 @@ async function open(w: Writing, ready: ReturnType<typeof wholeParts>) {
 		}
 	});
 	w.opening = false;
+	if (superseded) {
+		// 🧵 A46 · another way in took her voice while this opened: it never speaks on, nor replays later by itself
+		why('superseded while opening', w.id);
+		if (writing === w) letGo(w, true);
+		if (w.pick && reading === w.pick) reading = null;
+		return;
+	}
 	if (writing !== w) {
 		// a new send (or her stop) let go of it while it opened: the stream it opened doesn't speak on
 		const v = get(voiceNow);
@@ -560,6 +572,16 @@ export function streamMay(voice: StreamVoice, mode: AutoMode, phoneGate: AutoMod
 	if (voice === 'off') return false;
 	return voice === 'always' ? phoneGate !== 'off' : mode !== 'off';
 }
+// 🌊 🧵 A46 · her stream's words that land while her earlier ones still speak wait their turn, read in order (Petal
+// Radio's spine: a long spiral of answers, hands-free) · her ⏹, a send, another voice or a break lets them go
+const lounged: { id: string; voice: StreamVoice }[] = [];
+function nextLounge() {
+	const n = lounged.shift();
+	if (!n) return;
+	streamed.set(n.id, n.voice);
+	why('stream: her next words, in order', n.id);
+	streamWhole(n.id);
+}
 function streamWhole(id: string) {
 	const voice = streamed.get(id);
 	if (!voice) return;
@@ -569,6 +591,11 @@ function streamWhole(id: string) {
 	if (!streamMay(voice, effectiveMode(), gate))
 		return why(voice === 'always' ? 'stream stays: no earphones here' : 'stream stays: autoplay is off', id);
 	if (!ttsReady() || !petalStreamEnabled()) return why('stream stays: no voice here', id);
+	if (get(voiceUI).state !== 'idle' && writing?.lounge && writing.id !== id && !lounged.some((x) => x.id === id)) {
+		lounged.push({ id, voice });
+		if (lounged.length > 20) lounged.shift();
+		return why('stream waits its turn after her words', id);
+	}
 	if (get(voiceUI).state !== 'idle' && !mayTakeOver()) return why('stream waits: she listens', id); // her tap keeps it
 	why('stream speaks', id);
 	takeOver();
@@ -613,6 +640,7 @@ export function newSend(chatId?: string | null) {
 	why('new send');
 	yieldTo = null;
 	reading = null;
+	lounged.length = 0;
 	if (writing) letGo(writing, true);
 	if (ui.state !== 'idle') stopAllVoice();
 }
@@ -677,7 +705,13 @@ export function installAutoplay() {
 		// (stopped before it, her 💗 on it still plays it after she finishes)
 		const both = writing?.both && writing.pick && writing.stream && v.id === writing.stream ? writing.pick : null;
 		if (both && v.message_id === both.b) markHeard(both.b);
+		// 🧵 A46 · another way in took her voice from a stream: its end, said without any idle between the two
+		if (v.replaced) voiceEnded(v.replaced);
 		if (v.state !== 'idle') return;
+		voiceEnded(v);
+	});
+	/** a stream ended (played out, stopped, broken, or another ask took her voice): the writing voice lets go of it */
+	function voiceEnded(v: { message_id: string | null; id: string | null; ended: string | null }) {
 		// she ended (played out, stopped, broken): the writing voice lets go of it
 		const ended =
 			writing &&
@@ -704,7 +738,9 @@ export function installAutoplay() {
 			}
 		}
 		if (v.message_id === yieldTo) yieldTo = null; // the voice she might have handed over has ended
-	});
+		if (ended?.lounge && v.ended === 'natural') nextLounge(); // 🌊 her stream's next words, in order
+		else if (v.ended !== 'natural') lounged.length = 0; // stopped, broken, taken over: the queue lets go
+	}
 	voiceUI.subscribe((ui) => {
 		if (ui.state === 'idle' && reading && !writing) pickTurn(reading); // 🍒 the next turn, once she's quiet
 	});

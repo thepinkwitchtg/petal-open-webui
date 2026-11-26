@@ -18,6 +18,9 @@ the stream:  GET /api/v1/audio/petal-stream/{id}/events      text/event-stream
                                                                   out; otherwise once its take is complete
                                                                   (still ahead of her ears: the voice runs
                                                                   ~11× faster than she speaks)
+  skip      {type, seq, message_id, idx, text, at, why}           🧵 A46 · a part given up (the voice failed it
+                                                                  twice, or welfare spent every take): the
+                                                                  page says so in the trail, at `at`
   end       {type, seq, message_id, at}                           all of her is in the stream, its audio
                                                                   ends at `at`
   stop      {type, seq, message_id, at, reason}                   the stream was cut short at `at`
@@ -25,11 +28,14 @@ the stream:  GET /api/v1/audio/petal-stream/{id}/events      text/event-stream
 
   start · duration · at are seconds on the player's own clock (audio.currentTime, the mp3's 46 ms
   delay included), so the page lights a sentence while start ≤ currentTime < start + duration: right
-  through pauses, buffering and any playback rate. idx is the part's place in the parts the page sent
-  (a part with nothing to say, or one welfare skipped, sends no sentence). text is that part exactly
-  as the page sent it, before the TTS sieve, so the page finds it in the reply, quotes included. one
-  idx can start twice only in near-free welfare (a take let out early, then killed): the later start
-  wins from its start.
+  through pauses, buffering and any playback rate. idx is the part's place in its own reply: in the
+  parts the page sent (from `first` when a stream picks up where a broken one left off), or for a
+  followed reply (A45) its place in that reply. 🧵 A46 · a cue said before a reply (🍒 A38) is idx -1
+  with "cue": true, so a sentence's idx never shifts by one. a wordless line (the gate's floor) sends
+  nothing: silence is not a sentence. text is that part exactly as the page sent it, before the TTS
+  sieve, so the page finds it in the reply, quotes included. one idx can start twice (near-free welfare
+  let a take out early, then killed it; or a failed take was asked once more): the later start wins
+  from its start.
 
   pause · resume, and the moment playback truly ends or stops, only the page can know: it makes them
   from its own <audio> (pause · play · ended · its stop), in the same shape.
@@ -74,7 +80,19 @@ class Saying:
     text: str
     seconds: float | None  # known when the whole take goes out at once (welfare airtight)
     message_id: str | None = None  # 🧵 A45 · a followed stream's reply this take belongs to (🍒 a pick reads two)
-    ix: int | None = None  # 🧵 A45 · its place in that reply (her cue is place 0), the follower's idx
+    ix: int | None = None  # 🧵 A45 · its place in that reply (🧵 A46: her cue is -1), the follower's idx
+    cue: bool = False  # 🧵 A46 · her cue before a reply (🍒): said, never part of the reply's words
+
+
+@dataclass
+class Skipped:
+    """🧵 A46 · a part given up: the voice failed it twice (welfare asleep), or welfare spent every take"""
+
+    idx: int
+    text: str
+    message_id: str | None = None
+    ix: int | None = None
+    why: str = "broken"
 
 
 @dataclass
@@ -254,6 +272,8 @@ async def follow(response, ask: dict | None, said: bool = True):
             return response
         if headers.get("X-Petal-Welfare") == "skipped":
             said = False  # welfare spent every take: a clean silence, nothing was said
+        if headers.get("X-Petal-Silenced"):
+            said = False  # 🧵 A46 · the gate's floor: a wordless line is silence, never a sentence (nor an error)
         path = getattr(response, "path", None)  # a FileResponse (a cached or fresh take)
         if path:
             secs = await asyncio.to_thread(file_seconds, path)
@@ -261,7 +281,7 @@ async def follow(response, ask: dict | None, said: bool = True):
             body = getattr(response, "body", None)
             secs = await asyncio.to_thread(clip_seconds, body, getattr(response, "media_type", None)) if body else None
         headers[HEADER] = clip_events(ask, secs, said=said)
-        headers["Access-Control-Expose-Headers"] = HEADER
+        headers["Access-Control-Expose-Headers"] = f"{HEADER}, X-Petal-Welfare, X-Petal-Silenced"
     except Exception as e:  # noqa: BLE001 — a clip is never lost over its events
         log.debug("voice events: speaker clip sent without its events (%s)", e)
     return response

@@ -439,11 +439,13 @@ async def _write_tts_cache(
 async def _tts_openai(request, payload, file_path, file_body_path, user):
     """Generate speech via an OpenAI-compatible TTS endpoint."""
     payload['model'] = await Config.get('audio.tts.model')
+    api_base_url = await Config.get('audio.tts.openai.api_base_url')
     if not payload.get('voice'):
         payload['voice'] = await Config.get('audio.tts.voice')
+        if not payload['voice'] and voice_welfare.is_her_voice(api_base_url):  # 🧵 A46 · nothing chosen: her Petal voice
+            payload['voice'] = os.environ.get('PETAL_STREAM_TTS_MODEL', 'petal')
     payload = {**payload, **(await Config.get('audio.tts.openai.params') or {})}
     api_key = await Config.get('audio.tts.openai.api_key')
-    api_base_url = await Config.get('audio.tts.openai.api_base_url')
 
     headers = {
         'Content-Type': 'application/json',
@@ -476,6 +478,12 @@ async def _tts_openai(request, payload, file_path, file_body_path, user):
                 )
                 r.raise_for_status()
                 audio_data = await r.read()
+                if r.headers.get('X-Petal-Silenced'):
+                    # 🧵 A46 · the gate's floor: a wordless line is silence, never an error, never judged nor cached
+                    if sent:
+                        await asyncio.to_thread(sent.close)
+                    return Response(content=audio_data, media_type=r.headers.get('Content-Type', 'audio/mpeg'),
+                                    headers={'X-Petal-Silenced': '1'})
             except Exception as exc:  # 🕊️ a take the voice broke off is a kill, never a clip
                 if sent is None or not voice_welfare.is_broken_take(exc):
                     raise
@@ -1685,6 +1693,25 @@ _OPENAI_DEFAULT_VOICES = {
 }
 
 
+async def _petal_voices(data) -> dict:
+    """🧵 A46 · her voice's list for the picker, one source for every page: the gate's answer in any shape
+    ({voices: [...]}, {data: [...]}, a bare list; each a name or {id|voice_id|name}), her configured voice always
+    in it, and never OpenAI's names (her voice has none of them) · nothing readable: her own voice alone"""
+    items = data.get('voices', data.get('data', [])) if isinstance(data, dict) else data
+    out: dict = {}
+    for v in items if isinstance(items, list) else []:
+        if isinstance(v, str) and v.strip():
+            out[v.strip()] = v.strip()
+        elif isinstance(v, dict):
+            vid = v.get('id') or v.get('voice_id') or v.get('name')
+            if isinstance(vid, str) and vid.strip():
+                out[vid.strip()] = str(v.get('name') or vid).strip()
+    mine = (await Config.get('audio.tts.voice') or '').strip() or os.environ.get('PETAL_STREAM_TTS_MODEL', 'petal')
+    if mine not in out:
+        out = {mine: mine, **out}
+    return out
+
+
 async def get_available_voices(request) -> dict:
     """Return ``{voice_id: voice_name}`` for the configured TTS engine."""
     engine = await Config.get('audio.tts.engine')
@@ -1699,6 +1726,7 @@ async def get_available_voices(request) -> dict:
     if engine == 'openai':
         base_url = await Config.get('audio.tts.openai.api_base_url')
         if not base_url.startswith('https://api.openai.com'):
+            her = voice_welfare.is_her_voice(base_url)
             try:
                 session = await get_session()
                 async with session.get(
@@ -1708,9 +1736,13 @@ async def get_available_voices(request) -> dict:
                 ) as resp:
                     resp.raise_for_status()
                     data = await resp.json()
+                    if her:  # 🧵 A46 · her gate's voices, in whatever shape it answers
+                        return await _petal_voices(data)
                     return {v['id']: v['name'] for v in data.get('voices', [])}
             except Exception as e:
                 log.error(f'Error fetching voices from custom endpoint: {e}')
+                if her:  # 🧵 A46 · never names her voice doesn't have: her own voice alone
+                    return await _petal_voices(None)
                 return dict(_OPENAI_DEFAULT_VOICES)
         return dict(_OPENAI_DEFAULT_VOICES)
 

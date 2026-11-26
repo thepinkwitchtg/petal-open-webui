@@ -3,6 +3,7 @@
 	// the focus, or to a lone bubble when nothing does
 	const bubbles = new Set<HTMLElement>();
 	let made = 0; // each bubble's own gradient id (its pink glyph)
+	let noted = 0; // 🧵 A46 · the last note said (a split view holds two bubbles: said once)
 </script>
 
 <script lang="ts">
@@ -24,6 +25,7 @@
 	// and its tooltip names that reply by its first words. only while her voice plays does the chat's scroll
 	// reach it, for the words-near fade above (they move under it between the observer's steps).
 	import { getContext, onDestroy, onMount } from 'svelte';
+	import { toast } from 'svelte-sonner';
 	import type { Writable } from 'svelte/store';
 	import type { i18n as i18nType } from 'i18next';
 
@@ -37,6 +39,7 @@
 		voiceReplies,
 		voiceTap,
 		voiceTarget,
+		voiceNotes,
 		voiceUI,
 		watchSoon,
 		type VoiceUI
@@ -243,6 +246,13 @@
 		voiceTap(tapTarget()); // A33 · read at the moment of the tap, never the target she hovered
 	};
 
+	// 🧵 A46 · a break her voice couldn't heal is said, once (her voice never stops in silence)
+	const offNotes = voiceNotes.subscribe((n) => {
+		if (!n || n.seq === noted) return;
+		noted = n.seq;
+		toast.warning(`🎙️ ${n.note}`);
+	});
+
 	onMount(() => {
 		bubbles.add(root);
 		placeBar();
@@ -256,6 +266,7 @@
 		window.addEventListener('resize', placeBar, { passive: true });
 	});
 	onDestroy(() => {
+		offNotes();
 		bubbles.delete(root);
 		if (wakeTimer) clearTimeout(wakeTimer);
 		barRO?.disconnect();

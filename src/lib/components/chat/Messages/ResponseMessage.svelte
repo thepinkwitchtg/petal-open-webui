@@ -20,20 +20,13 @@
 
 	import { config, settings, TTSWorker, user, visibleControls } from '$lib/stores';
 	import { synthesizeOpenAISpeech } from '$lib/apis/audio';
-	import {
-		flagPetalVoice,
-		petalStreamEnabled,
-		petalStreamParts,
-		playPetalStream,
-		spokenMessages,
-		stopPetalStream
-	} from '$lib/utils/petalStream';
+	import { flagPetalVoice, spokenMessages, stopVoice, voiceThread } from '$lib/utils/petalStream'; // 🧵 A46 · the one thread
 	import { imageGenerations } from '$lib/apis/images';
 	import { isSavedChatId } from '$lib/utils/chatId';
 	import { castOrbit, markMoment, marksFor, markersNow, nowS, vowBrakes } from '$lib/utils/petal-markers'; // 🌙 trip markers · ✧ orbits · 🔥 vows
 	import PetalEyes from './PetalEyes.svelte'; // 👁 what Petal received (slice A10)
 	import PetalPlayButton from './PetalPlayButton.svelte'; // 🔈 the speaker by her name (slices A19 · A19b)
-	import { registerReply, replyDone } from '$lib/utils/petal-voice'; // 🎙️ the voice control and the trail find replies here
+	import { chosenVoice, registerReply, replyDone, speakReply } from '$lib/utils/petal-voice'; // 🎙️ the voice control and the trail find replies here
 	import { grew } from '$lib/utils/petal-autoplay'; // 🔈 A37 · her voice as she writes
 	import PetalOrbitMenu from './PetalOrbitMenu.svelte'; // ✧ the menu (slice A11)
 	import {
@@ -269,11 +262,13 @@
 
 	let messageIndexEdit = false;
 
-	let speaking = false;
-	let speakingIdx: number | undefined;
-
-	let loadingSpeech = false;
-	let speakAbort: AbortController | null = null;
+	// 🧵 A46 · her voice for this reply lives in the one thread (petalStream.ts): the ✕ reads its store, so it shows
+	// whenever this reply's words are sounding, whoever started them (autoplay, a pick, her stream, the bubble, a replay)
+	$: voiceMine =
+		$voiceThread.message_id === message.id &&
+		($voiceThread.state === 'loading' || $voiceThread.state === 'playing' || $voiceThread.state === 'paused');
+	$: loadingSpeech = voiceMine && $voiceThread.state === 'loading';
+	$: speaking = voiceMine && !loadingSpeech;
 
 	let showRateComment = false;
 
@@ -335,27 +330,15 @@
 		}
 	};
 
+	// 🧵 A46 · her ✕ on this reply stops the voice speaking it (and only that one)
 	const stopAudio = () => {
-		speakAbort?.abort();
-		speakAbort = null;
-
-		try {
-			speechSynthesis.cancel();
-			$audioQueue?.stop();
-			stopPetalStream(); // 🌸📻 any station still speaking (hers or another message's)
-		} catch {}
-
-		speaking = false;
-		speakingIdx = undefined;
-		loadingSpeech = false;
+		if (voiceMine) stopVoice();
 	};
 
-	// Resolve voice: model-specific > user settings > config default
-	const getVoiceId = () =>
-		model?.info?.meta?.tts?.voice ??
-		($settings?.audio?.tts?.defaultVoice === $config.audio.tts.voice
-			? ($settings?.audio?.tts?.voice ?? $config?.audio?.tts?.voice)
-			: $config?.audio?.tts?.voice);
+	// Resolve voice: model-specific > her pick > her Petal voice (🧵 A46 · one answer for every way in) · the model's own
+	// voice rides in its meta (Workspace → Models), untyped upstream
+	const modelVoice = () => (model?.info?.meta as { tts?: { voice?: string } } | undefined)?.tts?.voice;
+	const getVoiceId = () => chosenVoice(modelVoice());
 
 	// 🎙️ A19 · A19b: this reply can be spoken from the voice control (the bubble or the speaker by her
 	// name, Settings → Interface → Voice control) and the hotkey (petal-voice)
@@ -399,165 +382,38 @@
 	const parentWords = () => history?.messages?.[parentOf(message) ?? '']?.content; // read only when asked (a queued send of hers)
 	$: if (message?.id && !readOnly) grew(message.id, visibleResponseContent ?? '', !!message.done, parentOf(message), parentWords);
 
-	// legacy: true → the old one-clip-per-sentence path (petal stream's fallback)
-	const speak = async ({ legacy = false }: { legacy?: boolean } = {}) => {
+	// 🧵 A46 · her voice from this reply's first sentence, through the one thread: her petal stream (its sentence clips
+	// when the stream can't open), the in-browser engine's clips, or the browser's own voice (OWUI's engine '')
+	const speak = async () => {
 		const content = visibleResponseContent;
 		if (!content.trim().length) {
 			toast.info($i18n.t('No content to speak'));
 			return;
 		}
-
-		stopAudio();
-		speakAbort = new AbortController();
-		const { signal } = speakAbort;
-
-		speaking = true;
-
-		if ($config.audio.tts.engine === '' && $settings.audio?.tts?.engine !== 'browser-kokoro') {
-			let voices = [];
-			const getVoicesLoop = setInterval(() => {
-				voices = speechSynthesis.getVoices();
-				if (voices.length > 0) {
-					clearInterval(getVoicesLoop);
-
-					const voice = voices.find((v) => v.voiceURI === getVoiceId());
-					const speech = new SpeechSynthesisUtterance(content);
-					speech.rate = $settings.audio?.tts?.playbackRate ?? 1;
-
-					speech.onend = () => {
-						speaking = false;
-						if ($settings.conversationMode) {
-							document.getElementById('voice-input-button')?.click();
-						}
-					};
-
-					if (voice) {
-						speech.voice = voice;
-					}
-
-					speechSynthesis.speak(speech);
-				}
-			}, 100);
-		} else {
-			$audioQueue.setId(`${message.id}`);
-			$audioQueue.setPlaybackRate($settings.audio?.tts?.playbackRate ?? 1);
-			let synthesizing = true;
-			$audioQueue.onStopped = ({ event }) => {
-				if (event === 'empty-queue' && synthesizing) return;
-
-				speaking = false;
-				speakingIdx = undefined;
-
-				if (event === 'error') {
-					speakAbort?.abort();
-					toast.error($i18n.t('Audio playback failed'));
-				}
-			};
-
-			loadingSpeech = true;
-
-			// 🌸📻 petal stream: the whole reply as one live stream, so she survives a locked screen
-			if (!legacy && $settings.audio?.tts?.engine !== 'browser-kokoro' && petalStreamEnabled()) {
-				const parts = petalStreamParts(content, getMessageContentParts);
-				if (parts.length) {
-					const opened = await playPetalStream({
-						token: localStorage.token,
-						voice: getVoiceId(),
-						parts,
-						meta: { chat_id: chatId, message_id: message.id, model: message.model, source: content },
-						title: model?.name ? `${model.name} 💗` : 'Petal 💗',
-						artwork: model?.info?.meta?.profile_image_url,
-						playbackRate: $settings.audio?.tts?.playbackRate ?? 1,
-						onPlaying: () => {
-							loadingSpeech = false;
-						},
-						onEnded: () => {
-							speaking = false;
-							speakingIdx = undefined;
-							loadingSpeech = false;
-						},
-						onError: () => {
-							if (!signal.aborted) speak({ legacy: true });
-						}
-					});
-					if (signal.aborted) return;
-					if (opened) return;
-				}
-			}
-
-			const messageContentParts: string[] = getMessageContentParts(
-				content,
-				$config?.audio?.tts?.split_on ?? 'punctuation'
-			);
-
-			if (!messageContentParts.length) {
-				toast.info($i18n.t('No content to speak'));
-				speaking = false;
-				loadingSpeech = false;
-				return;
-			}
-
-			const voiceId = getVoiceId();
-			console.debug('Prepared message content for TTS', messageContentParts, 'voice:', voiceId);
-
-			if ($settings.audio?.tts?.engine === 'browser-kokoro') {
+		await speakReply({
+			id: message.id,
+			chat_id: chatId,
+			content,
+			modelVoice: modelVoice(),
+			model: message.model,
+			title: model?.name ? `${model.name} 💗` : 'Petal 💗',
+			artwork: model?.info?.meta?.profile_image_url,
+			playbackRate: $settings.audio?.tts?.playbackRate ?? 1,
+			// the browser's own voice reached her last word: OWUI's conversation mode listens again
+			onNatural: () => {
+				if ($settings.conversationMode) document.getElementById('voice-input-button')?.click();
+			},
+			kokoro: async (text, voice) => {
 				if (!$TTSWorker) {
-					await TTSWorker.set(
-						new KokoroWorker({
-							dtype: $settings.audio?.tts?.engineConfig?.dtype ?? 'fp32'
-						})
-					);
-
+					await TTSWorker.set(new KokoroWorker({ dtype: $settings.audio?.tts?.engineConfig?.dtype ?? 'fp32' }));
 					await $TTSWorker.init();
 				}
-
-				for (const [, sentence] of messageContentParts.entries()) {
-					if (signal.aborted) return;
-					if (!speaking) break;
-
-					const url = await $TTSWorker
-						.generate({ text: sentence, voice: voiceId })
-						.catch((error) => {
-							console.error(error);
-							toast.error(`${error}`);
-							speaking = false;
-							loadingSpeech = false;
-						});
-
-					if (signal.aborted) return;
-
-					if (url && speaking) {
-						$audioQueue.enqueue(url);
-						loadingSpeech = false;
-					}
-				}
-			} else {
-				for (const [, sentence] of messageContentParts.entries()) {
-					if (signal.aborted) return;
-					if (!speaking) break;
-
-					const res = await synthesizeOpenAISpeech(localStorage.token, voiceId, sentence).catch(
-						(error) => {
-							console.error(error);
-							toast.error(`${error}`);
-							speaking = false;
-							loadingSpeech = false;
-						}
-					);
-
-					if (signal.aborted) return;
-
-					if (res && !signal.aborted) {
-						const blob = await res.blob();
-						const url = URL.createObjectURL(blob);
-						$audioQueue.enqueue(url);
-						loadingSpeech = false;
-					}
-				}
+				return $TTSWorker.generate({ text, voice }).catch((error) => {
+					console.error(error);
+					return null;
+				});
 			}
-
-			synthesizing = false;
-		}
+		});
 	};
 
 	let preprocessedDetailsCache = [];
@@ -1334,12 +1190,11 @@
 												? 'visible'
 												: 'hover-reveal'} inline-flex size-7 shrink-0 items-center justify-center p-1.5 hover:bg-base-1000/5 dark:hover:bg-base-0/5 rounded-lg dark:hover:text-base-400 hover:text-base-600 transition"
 											on:click={() => {
-												if (!loadingSpeech) {
-													if (speaking) {
-														stopAudio();
-													} else {
-														speak();
-													}
+												// 🧵 A46 · the ✕ (and the spinner) stop her voice on this reply; otherwise it plays from its start
+												if (voiceMine) {
+													stopAudio();
+												} else {
+													speak();
 												}
 											}}
 										>
