@@ -359,7 +359,7 @@ async def produce(session, parts: list[dict], voice: str, q: asyncio.Queue, c: d
 
     try:
         async for i, part in each_part(parts):  # 🌱 a growing reply is waited for, part by part
-            text = sieve(part["text"], mood)  # 🎀 the voice's own floor + mood (her gate runs it again, idempotent)
+            text = sieve(part["text"], mood, tr.id if tr else None)  # 🎀 the voice's own floor + mood (+ Lily's open floor, by group)
             last = i == len(parts) - 1 and getattr(parts, "done", True)
             take = tr.takes[i] if tr and i < len(tr.takes) else None
             if take:

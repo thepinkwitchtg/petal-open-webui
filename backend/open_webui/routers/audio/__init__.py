@@ -54,7 +54,7 @@ from open_webui.env import (
 from open_webui.events import EVENTS, publish_event
 from open_webui.models.config import Config
 from open_webui.routers.audio import realtime
-from open_webui.routers.audio.tts_sieve import chosen_mood, sieve_speech_body, silent_mp3
+from open_webui.routers.audio.tts_sieve import chosen_mood, clip_group, sieve_speech_body, silent_mp3
 from open_webui.routers.audio import voice_events, voice_welfare
 from open_webui.utils.access_control import has_permission
 from open_webui.utils.auth import get_admin_user, get_verified_user
@@ -800,7 +800,7 @@ def _petal_voice_headers(request) -> dict:
     ask = getattr(st, 'petal_ask', None) or {}
     if ask.get('message_id'):
         h['X-Petal-Message'] = str(ask['message_id'])[:200]
-        h['X-Petal-Group'] = 'clip-' + ''.join(ch for ch in str(ask['message_id']) if ch.isalnum() or ch in '-_')[:64]
+        h['X-Petal-Group'] = clip_group(ask['message_id'])
         h['X-Petal-Idx'] = str(int(ask.get('idx') or 0))
     return h
 
@@ -840,7 +840,7 @@ async def speech(request: Request, user=Depends(get_verified_user)):
     # eats, never what the chat shows. the mood is the one her valves chose (tts-sieve.json "mood")
     mood = chosen_mood()
     request.state.petal_mood, request.state.petal_ask = mood, petal_ask
-    body, sieved_empty = sieve_speech_body(body, mood)
+    body, sieved_empty = sieve_speech_body(body, mood, clip_group((petal_ask or {}).get('message_id')))
     if sieved_empty:
         quiet = silent_mp3()
         if quiet is not None:

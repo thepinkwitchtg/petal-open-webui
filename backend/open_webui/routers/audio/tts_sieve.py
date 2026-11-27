@@ -91,19 +91,30 @@ def chosen_mood(cfg: dict | None = None) -> str:
     return LEGACY.get(cfg.get("mode"), "strict")
 
 
-def sieve(text: str, mood: str | None = None) -> str:
+def sieve(text: str, mood: str | None = None, group: str | None = None) -> str:
     """what the voice will eat ("" = nothing to say). never raises; without the voice's sieve the
-    words go as written (her gate is the floor then)"""
+    words go as written (her gate is the floor then). group: where the line belongs in her voice's
+    black box (st-… a reply, clip-<msg> the speaker button), so Lily's open floor (V2) keeps its scope here too"""
     vs = voice_sieve()
     if vs is None:
         return text
     try:
-        return vs.sift(text, mood or chosen_mood()).text
+        try:
+            return vs.sift(text, mood or chosen_mood(), group=group).text
+        except TypeError:  # a voice older than V2: no open floor there either
+            return vs.sift(text, mood or chosen_mood()).text
     except Exception:
         return text
 
 
-def sieve_speech_body(body: bytes, mood: str | None = None) -> tuple[bytes, bool]:
+def clip_group(message_id) -> str | None:
+    """the speaker button's group for a message (the same one its X-Petal-Group header names)"""
+    if not message_id:
+        return None
+    return 'clip-' + ''.join(ch for ch in str(message_id) if ch.isalnum() or ch in '-_')[:64]
+
+
+def sieve_speech_body(body: bytes, mood: str | None = None, group: str | None = None) -> tuple[bytes, bool]:
     """for OWUI's /audio/speech: sieve the JSON body's "input" → (body, emptied).
     an untouched text returns the original bytes, so the speech cache keeps its keys"""
     try:
@@ -111,7 +122,7 @@ def sieve_speech_body(body: bytes, mood: str | None = None) -> tuple[bytes, bool
         text = payload.get("input") if isinstance(payload, dict) else None
         if not isinstance(text, str) or not text.strip():
             return body, False
-        out = sieve(text, mood)
+        out = sieve(text, mood, group)
         if out == text:
             return body, False
         if not out.strip():
