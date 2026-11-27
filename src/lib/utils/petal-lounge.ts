@@ -568,7 +568,7 @@ export async function loungeTurnOff(chatId: string): Promise<void> {
 	const w = watcherOf(chatId);
 	setOn(chatId, null);
 	const ui = get(voiceUI);
-	if (ui.state !== 'idle' && ui.message_id && w?.host.history()?.messages?.[ui.message_id]?.petal_stream) stopAllVoice();
+	if (ui.state !== 'idle' && ui.message_id && w?.host.history()?.messages?.[ui.message_id]?.petal_stream) stopAllVoice('the lounge turned off');
 	if (w) {
 		w.state = { chat_id: chatId, on: false };
 		w.clear();

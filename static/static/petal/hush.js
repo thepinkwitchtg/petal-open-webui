@@ -1,6 +1,17 @@
 /* ═══════════════════════════════════════════════════════════
-   🌸 petal · hush  ·  v0.15 · open + reply + linger + pin + pulse + reflex · she writes it in
+   🌸 petal · hush  ·  v0.16 · open + reply + linger + pin + pulse + reflex · she writes it in
    the empty chat field whispers — and Petal writes the words.
+
+   v0.16 · as she writes it (A47): a live line streams from the model into the field while
+          Petal writes it (the server's {"stream": true}: each step the part of the line it is
+          sure of), drawn once per frame and never behind what arrived; the instant her line is
+          whole, the dial holds it. open mode asks live as you open a chat (the pool and any
+          queued line only carry the room when she can't); after your message the server
+          answers her reply's pace first ({"wait": "only"}), you read her, and then she writes
+          her line live (begin answering first and nothing is asked); a linger streams too.
+          a line written earlier (the pool, a line kept for this chat, the rest line, her
+          thank-you) shows whole at once: nothing replays at a typing pace any more. begin
+          writing over a line she's still writing and it stops where it was, her ask let go.
 
    v0.15 · chat tabs (A44): the field is the chat field on screen — the main one (#chat-input)
           or a chat tab's (chat-tab-input-…), never a note's. a tab mirrors its chat into the
@@ -193,10 +204,13 @@
 			.trim() +
 		'"';
 
-	/* she writes it in (v0.14, A33): petal type paces it to its length at her speed and steps on frames.
-	   the field gets the growing line, written straight to the chat field (one placeholder restyled per
-	   step, not the whole page); the <html> dial holds nothing until the line is whole, then holds it (the
-	   truth) — so a field drawn mid-way starts empty, never with the whole line pre-written. */
+	/* her words as she writes them (v0.16, A47): a live whisper streams from the model into the field while
+	   Petal writes it. each step is drawn once, on the next frame (one placeholder restyled, never the whole
+	   page), never behind what has arrived: a hidden tab draws nothing and catches up on its first frame
+	   back. the moment her line is done the <html> dial holds it (the truth), so a field drawn mid-way starts
+	   empty and catches up on the next step. a line written earlier (the pool, a reply line kept for this
+	   chat, the rest line, her thank-you) shows whole at once: nothing is replayed at a typing pace any more
+	   (petal type keeps the interface's own little words). */
 	const graphemes = (s) =>
 		typeof Intl !== 'undefined' && Intl.Segmenter
 			? [...new Intl.Segmenter(undefined, { granularity: 'grapheme' }).segment(s)].map((g) => g.segment)
@@ -220,53 +234,62 @@
 		return seen.find((el) => el.contains(active)) ?? seen[0] ?? all[0];
 	};
 	const emptyP = () => field()?.querySelector('p.is-editor-empty') ?? null;
-	let typing = null; // the job in hand (petal type)
-	let fieldWait = null; // the line is waiting for the field to be drawn (a page still arriving)
-	let fieldWaitTimer = null;
-	const stopTyping = () => {
-		typing?.cancel(); // stops where it was: no more letters from the line that gave way
-		typing = null;
-		fieldWait?.disconnect();
-		fieldWait = null;
-		clearTimeout(fieldWaitTimer);
+	let flowing = null; // the live line in hand: { text, raf, ctrl } (v0.16)
+	let flowSteps = 0; // frames that drew a live step (numbers only, for her console and the tests)
+	/* the live line lets go: no frame left waiting, and its ask is let go too (the model stops writing it) */
+	const stopFlow = (abort = true) => {
+		const f = flowing;
+		flowing = null;
+		if (!f) return;
+		if (f.raf) cancelAnimationFrame(f.raf);
+		if (abort) f.ctrl?.abort();
 	};
 	const whole = (line) => {
 		document.documentElement.style.setProperty('--p-hush', toCss(line));
 		for (const el of fields()) el.style.removeProperty('--p-hush'); // every field, a tab left behind too
 	};
-	const writeIn = (line) => {
-		stopTyping();
-		const root = document.documentElement;
-		const T = window.petalType;
-		if (!line || !T) return whole(line); // no engine (it loads first, so almost never): the line shows whole
-		root.style.setProperty('--p-hush', '""'); // until it's written, nothing pre-written anywhere
-		if (!field()) {
-			// the field isn't drawn yet: she writes it in the moment it is (one observer, gone once it's there)
-			fieldWait = new MutationObserver(() => {
-				if (!field()) return;
-				stopTyping();
-				writeIn(line);
-			});
-			fieldWait.observe(document.body, { childList: true, subtree: true });
-			fieldWaitTimer = setTimeout(() => (stopTyping(), whole(line)), 20000); // no field came: just the dial
-			return;
-		}
-		typing = T.run({
-			text: line,
-			write: (part, done) => {
-				if (done) {
-					typing = null;
-					return whole(line); // done: the <html> line takes over, nothing left running
-				}
-				field()?.style.setProperty('--p-hush', toCss(part));
-			}
-		});
+	const flowDraw = () => {
+		const f = flowing;
+		if (!f) return;
+		f.raf = 0;
+		flowSteps++;
+		field()?.style.setProperty('--p-hush', toCss(f.text)); // the field she can see: the line so far
+	};
+	/* a live line begins: the field empties at once (never a flash of the line before), the dial holds nothing
+	   until her line is whole */
+	const flowStart = (from, mode, lingered = 0, ctrl = null) => {
+		stopFlow();
+		delete document.documentElement.dataset.pHushTall;
+		whole('');
+		flowing = { text: '', raf: 0, ctrl };
+		shown = { line: '', from, mode, at: Date.now(), lingered, live: true };
+		stillest = 0;
+		return flowing;
+	};
+	/* more of her line is certain: drawn on the next frame (a frame draws only the newest text, so the field is
+	   never behind what arrived by more than that frame) */
+	const flowLine = (f, text) => {
+		if (flowing !== f) return;
+		f.text = text;
+		shown.line = text;
+		if (!f.raf) f.raf = requestAnimationFrame(flowDraw);
+	};
+	/* her line is whole: the dial holds it this instant (no frame to wait for) · false when it was let go */
+	const flowEnd = (f, line, from) => {
+		if (flowing !== f) return false;
+		const { mode, lingered, at } = shown;
+		const still = stillest; // the stillness while it streamed belongs to this line
+		stopFlow(false);
+		paint(line, from, mode, lingered, at);
+		stillest = still;
+		return true;
 	};
 
-	const paint = (line, from, mode = 'open', lingered = 0) => {
+	const paint = (line, from, mode = 'open', lingered = 0, at = Date.now()) => {
+		stopFlow(); // a live line still in hand gives way (its ask is let go)
 		delete document.documentElement.dataset.pHushTall; // a second row belongs to the line that asked for it
-		writeIn(line); // every line types in, her thank-you too (v0.14)
-		shown = { line, from, mode, at: Date.now(), lingered };
+		whole(line ?? ''); // written already: shown whole, at once (v0.16 · nothing replays at a typing pace)
+		shown = { line, from, mode, at, lingered };
 		stillest = 0;
 		if (mode === 'open' && line) {
 			const recent = load(K.recent, []).filter((l) => l !== line);
@@ -368,6 +391,109 @@
 		return { ok: r.ok, status: r.status, data };
 	};
 
+	/* a live ask (v0.16, A47): her line arrives as she writes it — onLine(text) at each step (the line so far,
+	   every letter the server is sure of), onLine('') when she begins again because it grew past the field,
+	   then the very answer a whole ask gets. an older server answers JSON: read as before */
+	const askLive = async (why, extra, signal, onLine) => {
+		const t = token();
+		if (!t) {
+			note('no token — not signed in on this page');
+			return { ok: false, status: -1, data: null };
+		}
+		const mode = extra.mode ?? 'open';
+		const model = pageModel();
+		note('ask', { why, mode, chat: short(extra.chat_id), model: model ?? '(server picks)', live: true });
+		const t0 = performance.now();
+		let r = null;
+		let data = null;
+		let firstMs = null;
+		let steps = 0;
+		try {
+			r = await rawFetch(LIVE_URL, {
+				method: 'POST',
+				signal,
+				headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${t}` },
+				body: JSON.stringify({
+					model,
+					device: phone ? 'phone' : 'computer',
+					avoid: load(K.recent, []).slice(0, 6),
+					...extra,
+					stream: true,
+					...(debug ? { debug: true } : {})
+				})
+			});
+			const type = r.headers.get('content-type') ?? '';
+			if (r.ok && type.includes('ndjson') && r.body) {
+				const reader = r.body.getReader();
+				const dec = new TextDecoder();
+				let buf = '';
+				const take = (raw) => {
+					if (!raw.trim()) return;
+					let ev = null;
+					try {
+						ev = JSON.parse(raw);
+					} catch (_) {
+						return;
+					}
+					if (ev?.t === 'line') {
+						firstMs ??= Math.round(performance.now() - t0);
+						steps++;
+						onLine(String(ev.text ?? ''));
+					} else if (ev?.t === 'again') {
+						note('she begins again, shorter', { why: ev.why });
+						onLine('');
+					} else if (ev?.t === 'done') {
+						const { t: _t, ...rest } = ev;
+						data = rest;
+					}
+				};
+				for (;;) {
+					const { value, done } = await reader.read();
+					if (done) break;
+					buf += dec.decode(value, { stream: true });
+					let i;
+					while ((i = buf.indexOf('\n')) >= 0) {
+						take(buf.slice(0, i));
+						buf = buf.slice(i + 1);
+					}
+				}
+				take(buf + dec.decode());
+			} else data = await r.json().catch(() => null);
+		} catch (e) {
+			if (e?.name === 'AbortError') {
+				note('ask let go', { mode, why: 'a newer message, a new chat, or you began writing' });
+				return { ok: false, status: -1, data: null, aborted: true };
+			}
+			if (leaving) return { ok: false, status: -1, data: null };
+			const ms = Math.round(performance.now() - t0);
+			lastAsk = { at: new Date().toLocaleTimeString(), mode, ms, status: 0, body: { detail: e?.message ?? 'offline' } };
+			note('ask failed (network)', { ms, error: e?.message });
+			return { ok: false, status: 0, data: null };
+		}
+		const ms = Math.round(performance.now() - t0);
+		const status = data?.status ?? r.status; // a stream that failed says so in its last word
+		const ok = r.ok && !(Number(data?.status) >= 400);
+		lastAsk = { at: new Date().toLocaleTimeString(), mode, ms, status, body: data, first_ms: firstMs, steps };
+		note(ok ? 'answer' : 'refused', {
+			mode,
+			status,
+			ms,
+			first_ms: firstMs,
+			steps,
+			chars: data?.whisper ? data.whisper.length : 0,
+			model: data?.model,
+			picked_by: data?.picked_by,
+			reason: data?.reason,
+			detail: data?.detail
+		});
+		if (debug && data?.debug) {
+			console.groupCollapsed('🌸 hush · what the server saw (numbers only)');
+			console.log(data.debug);
+			console.groupEnd();
+		}
+		return { ok, status, data };
+	};
+
 	const miss = (why, tried) => {
 		misses++;
 		if (misses === 1) {
@@ -382,7 +508,15 @@
 	};
 
 	/* ── open mode: a new chat ────────────────────────────── */
+	/* v0.16 · she writes the line live, as you open the chat (one ask, the one a refill always made); the pool
+	   (and any line still queued from before) carries the room only when she can't: resting, missed, gently
+	   stopped, or signed out — shown whole */
 	const show = () => {
+		if (live && !inflight && restingAt !== navs && token()) return void openLive();
+		showPool();
+	};
+
+	const showPool = () => {
 		const queue = freshQueue();
 		const fromQueue = queue.shift()?.line;
 		const line = fromQueue ?? pick(pool, load(K.recent, [])[0]);
@@ -391,49 +525,42 @@
 			paint(line, fromQueue ? 'queue (petal, written earlier)' : 'pool', 'open');
 			lingerArm(null, 0);
 		} else note('nothing to paint', { pool: pool.length, queue: queue.length });
-		refill();
 	};
 
-	const refill = async () => {
-		if (chatIdOf()) return; // the open queue is for new chats — inside a chat, reply mode speaks
-		if (!live || inflight || restingAt === navs || freshQueue().length >= cap) return;
+	const openLive = async () => {
+		if (chatIdOf()) return; // the open line is for new chats — inside a chat, reply mode speaks
 		inflight = true;
 		const navAtAsk = navs;
-		let ok = false;
+		const ctrl = new AbortController();
+		const f = flowStart('live (petal, as she writes it)', 'open', 0, ctrl);
+		let res;
 		try {
-			const { ok: httpOk, status, data } = await askPetal('refill');
-			const line = data?.whisper;
-			if (status > 0 && !httpOk) miss(`${status} ${data?.detail ?? ''}`.trim(), data?.tried);
-			else if (status === 0) miss(lastAsk?.body?.detail ?? 'offline'); // -1 = not signed in, not a miss
-			if (line) {
-				ok = true;
-				misses = 0;
-				if (navAtAsk === navs && shown.from === 'pool' && fieldIsEmpty() && !chatIdOf()) {
-					paint(line, 'live (petal, just now)', 'open'); // she answered while only a pool line showed
-					lingerArm(null, 0);
-				} else {
-					const queue = freshQueue();
-					queue.push({ line, at: Date.now() });
-					save(K.queue, queue.slice(-cap));
-					note('queued', { chars: line.length, queue: queue.length });
-				}
-			} else if (httpOk && data?.gentle_stop) {
-				note('gentle stop — Petal is being tucked in, the pool carries the room');
-			} else if (httpOk) {
-				tellOnce('trimmed', 'Petal answered but the line was trimmed —', data?.reason ?? 'no reason given', '· petalHush.peek() shows her words, for your eyes');
-			} else if (status === 404) {
-				live = false;
-				note('live off: endpoint missing (404)');
-			}
+			res = await askLive('a new chat', { mode: 'open' }, ctrl.signal, (text) => flowLine(f, text));
 		} finally {
 			inflight = false;
 		}
-		if (!ok) {
-			restingAt = navAtAsk;
-			note('resting until next navigation');
+		if (res.aborted || navAtAsk !== navs || chatIdOf()) return; // she moved on: whatever is there now stays
+		const { ok, status, data } = res;
+		const line = data?.whisper;
+		if (line) {
+			misses = 0;
+			if (flowEnd(f, line, 'live (petal, as she wrote it)')) lingerArm(null, 0);
 			return;
 		}
-		if (freshQueue().length < cap && navAtAsk === navs) refill();
+		if (status > 0 && !ok) miss(`${status} ${data?.detail ?? ''}`.trim(), data?.tried);
+		else if (status === 0) miss(lastAsk?.body?.detail ?? 'offline'); // -1 = not signed in, not a miss
+		if (ok && data?.gentle_stop) note('gentle stop — Petal is being tucked in, the pool carries the room');
+		else if (ok) tellOnce('trimmed', 'Petal answered but the line was trimmed —', data?.reason ?? 'no reason given', '· petalHush.peek() shows her words, for your eyes');
+		else if (status === 404) {
+			live = false;
+			note('live off: endpoint missing (404)');
+		}
+		restingAt = navAtAsk;
+		note('resting until next navigation');
+		if (flowing === f) {
+			stopFlow(false);
+			showPool(); // the pool carries the room
+		}
 	};
 
 	/* ── reply mode: inside a chat ────────────────────────── */
@@ -446,15 +573,21 @@
 		return Math.max(0, need - (+pace.gen_ms || 0));
 	};
 
+	/* v0.16 · after your message the server waits for her reply and answers its pace only ({ready, pace}): you
+	   read her first, and then she writes her line live, so the words in the field are the ones she's writing
+	   right then (begin answering before that and nothing is asked at all). opening a chat she already
+	   finished asks live at once */
 	const askReply = async (chatId, messageId, why) => {
 		if (!replyLive) return;
 		replyCtrl?.abort(); // one reply ask at a time — the newest message wins
 		const ctrl = new AbortController();
 		replyCtrl = ctrl;
 		replyFor = { chatId, messageId };
+		const fresh = why === 'after your message';
+		if (!fresh) return streamReply(chatId, messageId, why, ctrl);
 		const res = await askPetal(
 			why,
-			{ mode: 'reply', chat_id: chatId, message_id: messageId, avoid: replyRecent.get(chatId) ?? [] },
+			{ mode: 'reply', chat_id: chatId, message_id: messageId, avoid: replyRecent.get(chatId) ?? [], wait: 'only' },
 			ctrl.signal
 		);
 		if (replyCtrl === ctrl) {
@@ -464,9 +597,15 @@
 		if (res.aborted) return;
 		const { ok, status, data } = res;
 		const line = data?.whisper;
-		const fresh = why === 'after your message';
 		if (fresh && data?.pace && chatIdOf() === chatId)
 			anchor = { at: Date.now() - (+data.pace.gen_ms || 0), kind: 'reply' }; // when she finished, near enough
+		if (data?.ready) {
+			if (chatIdOf() !== chatId) return note('you left before she whispered', { chat: short(chatId) });
+			if (!fieldIsEmpty() || pulse) return note('you were already answering — no whisper asked');
+			const wait = readWait(data.pace);
+			if (wait > 0) return readStart(chatId, null, wait, data.pace, messageId);
+			return void streamReply(chatId, messageId, 'after your message');
+		}
 		if (line) {
 			misses = 0;
 			replyCache.set(chatId, line);
@@ -488,6 +627,50 @@
 			note('gentle stop — no reply whisper while Petal is tucked in');
 		} else if (ok && data?.reason && !/superseded|page left/.test(data.reason)) {
 			tellOnce('reply-' + data.reason, 'no reply whisper —', data.reason);
+		}
+	};
+
+	/* v0.16 · her reply line, live: it streams into the field as she writes it; a miss lets the field go back to
+	   what it said before (the rest line, a reply line of the pool) */
+	const streamReply = async (chatId, messageId, why, ctrl = null) => {
+		if (!replyLive || chatIdOf() !== chatId) return;
+		if (!ctrl || ctrl !== replyCtrl) {
+			replyCtrl?.abort();
+			ctrl = ctrl ?? new AbortController();
+		}
+		replyCtrl = ctrl;
+		replyFor = { chatId, messageId };
+		const before = { ...shown };
+		const f = flowStart('reply (petal, as she writes it)', 'reply', 0, ctrl);
+		const res = await askLive(
+			why,
+			{ mode: 'reply', chat_id: chatId, message_id: messageId, avoid: replyRecent.get(chatId) ?? [] },
+			ctrl.signal,
+			(text) => flowLine(f, text)
+		);
+		if (replyCtrl === ctrl) {
+			replyCtrl = null;
+			replyFor = null;
+		}
+		if (res.aborted) return;
+		const { ok, status, data } = res;
+		const line = data?.whisper;
+		if (line) {
+			misses = 0;
+			replyCache.set(chatId, line);
+			replyRecent.set(chatId, [line, ...(replyRecent.get(chatId) ?? []).filter((l) => l !== line)].slice(0, 6));
+			if (flowEnd(f, line, 'reply (petal, as she wrote it)')) lingerArm(chatId, 0);
+			return;
+		}
+		if (status > 0 && !ok) miss(`${status} ${data?.detail ?? ''}`.trim(), data?.tried);
+		else if (status === 0) miss(lastAsk?.body?.detail ?? 'offline');
+		else if (ok && data?.gentle_stop) note('gentle stop — no reply whisper while Petal is tucked in');
+		else if (ok && data?.reason && !/superseded|page left/.test(data.reason))
+			tellOnce('reply-' + data.reason, 'no reply whisper —', data.reason);
+		if (flowing === f) {
+			stopFlow(false);
+			if (before.line != null && chatIdOf() === chatId)
+				paint(before.line, before.from, before.mode, before.lingered, before.at); // what the field said before
 		}
 	};
 
@@ -547,9 +730,9 @@
 			rd.resumedAt = null;
 		}
 	};
-	const readStart = (chatId, line, needMs, pace) => {
+	const readStart = (chatId, line, needMs, pace, messageId = null) => {
 		readStop('a newer whisper');
-		rd = { chatId, line, needMs, bankedMs: 0, resumedAt: null, timer: null };
+		rd = { chatId, line, messageId, needMs, bankedMs: 0, resumedAt: null, timer: null }; // line null: she writes it after
 		note('she waits while you read', {
 			seconds: Math.round(needMs / 1000),
 			reply_chars: pace?.reply_chars,
@@ -562,7 +745,9 @@
 		const r = rd;
 		rd = null;
 		if (!r || chatIdOf() !== r.chatId) return;
-		if (!fieldIsEmpty() || pulse) return note('you began first — her line stays in the cache');
+		if (!fieldIsEmpty() || pulse)
+			return note(r.line ? 'you began first — her line stays in the cache' : 'you began first — no whisper asked');
+		if (!r.line) return void streamReply(r.chatId, r.messageId ?? null, 'after you read her'); // v0.16: live now
 		paint(r.line, 'reply (petal, after you read her)', 'reply');
 		lingerArm(r.chatId, 0);
 	};
@@ -661,19 +846,24 @@
 		const count = lw.count + 1;
 		const ctrl = new AbortController();
 		lw.ctrl = ctrl;
-		const res = await askPetal(
+		const before = { ...shown };
+		const lastWhisper = shown.line ?? '';
+		// v0.16 · her new line streams in as she writes it, over the one that glowed
+		const f = flowStart(`linger ${count} (petal, as she writes it)`, chatId ? 'reply' : 'open', count, ctrl);
+		const res = await askLive(
 			chatId ? 'you have been quiet' : 'you have not begun yet',
 			{
 				mode: 'linger',
 				...(chatId ? { chat_id: chatId, avoid: replyRecent.get(chatId) ?? [] } : {}),
 				quiet_seconds: quiet,
 				linger_count: count,
-				last_whisper: shown.line ?? '',
+				last_whisper: lastWhisper,
 				presence: Math.round(confidence() * 100),
 				last_active_seconds: Math.round((Date.now() - lastStir) / 1000),
 				device: phone ? 'phone' : 'computer'
 			},
-			ctrl.signal
+			ctrl.signal,
+			(text) => flowLine(f, text)
 		);
 		if (res.aborted || !lw || lw.ctrl !== ctrl) return;
 		lw.ctrl = null;
@@ -684,12 +874,15 @@
 				replyCache.set(chatId, line);
 				replyRecent.set(chatId, [line, ...(replyRecent.get(chatId) ?? []).filter((l) => l !== line)].slice(0, 6));
 			}
-			if (chatIdOf() === chatId && fieldIsEmpty()) {
-				paint(line, `linger ${count} (petal, after ${quiet}s of quiet)`, chatId ? 'reply' : 'open', count);
+			if (chatIdOf() === chatId && flowEnd(f, line, `linger ${count} (petal, after ${quiet}s of quiet)`))
 				lingerArm(chatId, count);
-			} else lingerStop('you came back first');
+			else lingerStop('you came back first');
 		} else {
 			if (res.status > 0 && !res.ok) miss(`${res.status} ${res.data?.detail ?? ''}`.trim(), res.data?.tried);
+			if (flowing === f) {
+				stopFlow(false);
+				if (before.line != null) paint(before.line, before.from, before.mode, before.lingered, before.at); // the line before stays
+			}
 			lingerStop(res.data?.reason ?? 'no line this time');
 		}
 	};
@@ -751,6 +944,14 @@
 		(e) => {
 			if (!fieldOf(e.target) || !fieldIsEmpty()) return;
 			readStop('you began answering'); // she won't type over you
+			if (flowing) {
+				// v0.16 · you began over a line she was still writing: it stops where it was (her ask is let go),
+				// and the words you saw are the ones you answer
+				const f = flowing;
+				stopFlow(true);
+				if (f.text) whole(f.text);
+				note('you began over her live line', { chars: f.text.length });
+			}
 			if (!shown.line || shown.mode === 'rest') return void (held = null); // the rest line isn't her whisper
 			const now = Date.now();
 			// she came back to answer: the stillness that just ended, if it ended while her line glowed
@@ -1105,6 +1306,8 @@
 			'reply lens': sources?.reply_lens ?? null,
 			'still exposed': sources?.exposed?.length ? sources.exposed.join(', ') : 'none 🌸',
 			'live open/reply': `${live}/${replyLive}`,
+			'live line': flowing ? `${flowing.text.length} chars so far` : 'none', // v0.16 · numbers only
+			'live steps drawn': flowSteps,
 			'reply on open': replyOnOpen,
 			'open queue': `${freshQueue().length}/${cap}`,
 			'reply waiting': replyFor ? `for chat ${short(replyFor.chatId)}` : 'no',
@@ -1174,7 +1377,7 @@
 		return `all well 🌸 — the field shows a line from ${shown.from}`;
 	};
 
-	/* ── the reflex: a line that takes the field at once, typed (v0.13 · v0.14) ──── */
+	/* ── the reflex: a line that takes the field at once, whole (v0.13 · v0.16) ──── */
 	let measure = null;
 	const fitsOneRow = (line) => {
 		const p = emptyP();
@@ -1207,14 +1410,14 @@
 		else el.style.removeProperty('--p-hush');
 		if (!empty || unquote(drawn) !== unquote(toCss(line)))
 			return note('reflex not seen', { why: 'the field does not draw the dial' }), false;
-		// whatever hush had on its way lets go: this line wins, typed from its first letter (v0.14)
+		// whatever hush had on its way lets go: this line wins, whole at once (v0.16 · a live line's ask let go)
 		replyCtrl?.abort();
 		replyCtrl = null;
 		replyFor = null;
 		clearTimeout(openTimer);
 		readStop('a reflex line');
 		lingerStop('a reflex line');
-		const interrupted = !!typing;
+		const interrupted = !!flowing; // a live line she was still writing gives way (v0.16)
 		paint(line, from, kind === 'thanks' ? 'thanks' : 'reflex', 0);
 		if (!fitsOneRow(line)) root.dataset.pHushTall = '2';
 		note('reflex', { chars: line.length, kind, rows: root.dataset.pHushTall ? 2 : 1, interrupted });
@@ -1222,7 +1425,7 @@
 	};
 
 	window.petalHush = {
-		/** her thank-you (A27), typed in at once over whatever was typing (A33) · true when the field shows it */
+		/** her thank-you (A27), whole at once over whatever was showing or streaming (A47) · true when the field shows it */
 		reflex,
 		status() {
 			const f = facts();

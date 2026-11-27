@@ -332,7 +332,7 @@
 
 	// 🧵 A46 · her ✕ on this reply stops the voice speaking it (and only that one)
 	const stopAudio = () => {
-		if (voiceMine) stopVoice();
+		if (voiceMine) stopVoice('her ✕ on this reply');
 	};
 
 	// Resolve voice: model-specific > her pick > her Petal voice (🧵 A46 · one answer for every way in) · the model's own

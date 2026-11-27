@@ -4,13 +4,13 @@
 	// the branch she's on, the other stays a sibling, never deleted, and the pair goes to the ledger through the
 	// thumbs queue (👍🏻 / 👎🏻, both marked petal_pick). nothing to tap while they arrive; at rest nothing moves.
 	// A30 · blind: nothing here says which one is pulled until her 💗 (a steered one can start a few seconds later,
-	// which would tell them apart). A30d · twin streaming: both type at once, at one shared pace (utils/petal-twin.ts):
-	// each side keeps what arrives, the cards show only as much as both have received (nothing until both have
-	// begun), and once one is done the other types on at its own speed. "together" keeps the A30 hold (still
-	// cards until both are written), "live" shows each as it comes (timing can tell). plain picks arrive the same way
-	// A35 · full beauty while she can see it: a step on every frame (no ~30 a second gate). in a hidden tab, or with
-	// the pick off her screen, both hold where they are and type on from there when she's back (nothing jumps
-	// ahead); none once both are shown
+	// which would tell them apart). A30d · twin streaming: both type at once (utils/petal-twin.ts): each side keeps
+	// what arrives, the cards show only as much as both have received (nothing until both have begun), and once one is
+	// done the other shows all it has received, then types on as its words arrive. "together" keeps the A30 hold
+	// (still cards until both are written), "live" shows each as it comes (timing can tell). plain picks arrive the
+	// same way. ✍🏻 A47 · the twin gate is the one hold: a step runs in the task her words arrive in, so the cards draw
+	// them on the next frame (never a pace of its own, never a backlog typed out) · A35 · in a hidden tab, or with the
+	// pick off her screen, nothing is drawn; the first look back shows where both are now · nothing runs at rest
 	import { getContext, onDestroy, onMount, tick } from 'svelte';
 	import { get, type Writable } from 'svelte/store';
 
@@ -29,8 +29,6 @@
 	import { lendPickFocus, pickFocus } from '$lib/utils/petal-voice';
 	import { watchSight } from '$lib/utils/petal-sight';
 	import {
-		Pace,
-		paceFor,
 		reach,
 		reachedOf,
 		sideOf,
@@ -80,13 +78,10 @@
 	$: arrive = arrivalFor(rulesOf($settings)); // A30d · twin · together · live, for every pick
 	$: held = !pair.ready && arrive === 'together'; // A30 · both show together, once both are written
 
-	// ── A30d · twin: both type at once, at one shared pace ───────────────────────────────────────────────────
-	const FRAME_MS = 16; // the first step after a rest counts one frame (A35: a step on every frame)
-	const paces = [new Pace(), new Pace()]; // each side's own speed (a backlog types at it, never in a burst)
+	// ── A30d · twin: both type at once, in step · ✍🏻 A47: as their words arrive, the twin gate the one hold ─────
 	let view = history; // what the cards show: the replies cut at the shared count while they type
 	let shown = -1; // the shared count, in units (-1: not started)
 	let raf = 0;
-	let last = 0;
 	const isHidden = () => typeof document !== 'undefined' && document.visibilityState === 'hidden';
 	let hidden = isHidden();
 	let away = false; // A35 · the pick is off her screen: both hold where they are, and type on from there
@@ -111,28 +106,27 @@
 	}
 	$: complete = sides[0].done && sides[1].done && shown >= Math.max(sides[0].units, sides[1].units);
 	$: typing = arrive === 'twin' && !complete;
-	$: {
-		// every change of the history: note each side's speed, and let the next step show it (batched)
-		const now = performance.now();
-		paces[0].see(sides[0].units, now);
-		paces[1].see(sides[1].units, now);
-		if (!typing) view = history;
-		else {
-			if (view === history) view = twinView(history, pair.a, pair.b, shown); // never a frame of more
-			wake();
-		}
-	}
+	$: if (!typing) view = history;
+	$: if (typing && view === history) view = twinView(history, pair.a, pair.b, shown); // never a frame of more
+	// ✍🏻 A47 · every change of the history is stepped in the task it arrived in: the cards' frame draws it next
+	$: if (typing) wake(history);
 	$: Object.assign(twinStats, { arrive, typing, target, shown: Math.max(0, shown), hidden, away });
 	$: if (complete) reach(pair.a, null);
 
-	const wake = () => {
-		if (raf || hidden || away || typeof requestAnimationFrame === 'undefined') return;
-		raf = requestAnimationFrame(frame);
+	let queued = false;
+	let holding: string | null = null; // A33 · a reply that just finished while the other types: drawn typing for a frame
+	let scrolling = 0;
+	/** a step, once this update has settled (a microtask: still before the frame that draws it) */
+	const wake = (_changed?: unknown) => {
+		if (queued || hidden || away) return;
+		queued = true;
+		queueMicrotask(step);
 	};
-	/** hidden or off her screen: no step runs, and the time away never counts (it types on from where it was) */
+	/** hidden or off her screen: nothing is drawn there · back: the first step shows where both are now (A47) */
 	const pause = () => {
 		if (raf) cancelAnimationFrame(raf);
-		[raf, last] = [0, 0];
+		raf = 0;
+		holding = null; // its frame is gone: it's whole when she's back
 	};
 
 	// the chat follows a growing card while she's at its bottom (its own setting), as it does while words arrive
@@ -142,36 +136,44 @@
 		return box && box.scrollHeight - box.scrollTop <= box.clientHeight + 50 ? box : null;
 	};
 
-	const frame = async (t: number) => {
-		raf = 0;
+	const step = async () => {
+		queued = false;
 		if (!typing || hidden || away) return;
-		const dt = last ? t - last : FRAME_MS;
-		last = t;
-		const [a, b] = sides;
 		const box = following();
 		const before = shown;
-		shown = twinStep(shown, target, !a.done && !b.done, dt, paceFor(a, b, shown, paces[0], paces[1]));
+		shown = twinStep(shown, target); // A47 · straight to what may show: both while both type, all once free
 		reach(pair.a, shown);
-		// A33 · a reply finishing while the other types draws on the same frame as it (held for this one step)
-		const hold = twinHold(history, pair.a, pair.b, shown, before);
+		// A33 · a reply finishing while the other types draws on the same frame as it, held as typing until the next
+		const hold = holding ?? twinHold(history, pair.a, pair.b, shown, before);
+		if (hold && !holding && typeof requestAnimationFrame !== 'undefined') {
+			holding = hold;
+			raf = requestAnimationFrame(() => {
+				raf = 0;
+				holding = null;
+				wake(); // the next frame lets it be done
+			});
+		}
 		view = twinView(history, pair.a, pair.b, shown, hold);
-		twinStats.frames += 1;
-		if (shown < target || hold) raf = requestAnimationFrame(frame); // held: the next step lets it be done
-		if (box) {
-			await tick();
-			box.scrollTo({ top: box.scrollHeight });
+		twinStats.frames += 1; // steps (the name stays for the eyes and the tests): only when words arrive
+		if (box && !scrolling && typeof requestAnimationFrame !== 'undefined') {
+			const top = box.scrollTop; // where she was as they grew: if she scrolls up before the frame, she stays there
+			await tick(); // the cards asked for their frame: ours comes after it, once they've grown
+			scrolling = requestAnimationFrame(() => {
+				scrolling = 0;
+				if (box.scrollTop >= top - 1) box.scrollTo({ top: box.scrollHeight });
+			});
 		}
 	};
 
-	// hidden: nothing runs · back: both carry on from where they were (A35), in step as ever
+	// hidden: nothing runs · back: both show where they are now, in step as ever (A47: no backlog typed out)
 	const onVisibility = () => {
 		hidden = isHidden();
 		if (hidden) return pause();
 		if (typing) wake();
 	};
 
-	// A35 · off her screen (the chat scrolled away from the pick while it types): both hold where they are; back on
-	// it, they type on from there · watched only while they type (her sight, utils/petal-sight.ts)
+	// A35 · off her screen (the chat scrolled away from the pick while it types): nothing is drawn; back on it, both
+	// show where they are now (A47) · watched only while they type (her sight, utils/petal-sight.ts)
 	let root: HTMLElement;
 	let unsee: (() => void) | null = null;
 	const sighted = (on: boolean) => {
@@ -286,7 +288,8 @@
 		if (get(pickFocus)?.ids.includes(pair.a)) pickFocus.set(null);
 		if (typeof document !== 'undefined') document.removeEventListener('visibilitychange', onVisibility);
 		if (raf) cancelAnimationFrame(raf);
-		raf = 0;
+		if (scrolling) cancelAnimationFrame(scrolling);
+		raf = scrolling = 0;
 	});
 </script>
 

@@ -696,6 +696,15 @@ async def generate_moa_response(request: Request, form_data: dict, user=Depends(
 # v0.17 · the pin knows her thank-you (A27): the line she wrote for your feedback now lives in the whisper
 #         (hush.js v0.13's reflex). answer it and the pin says so — kind 'thanks' — instead of calling it
 #         an opening line. verdict-blind like the line itself: it never says how you rated.
+# v0.18 · her line as she writes it (A47): a page asking with "stream": true gets application/x-ndjson —
+#         {"t":"line","text":…} each time more of the line is certain (utils/petal_hush_stream.py: the same
+#         rules as _petal_hush_clean, cut where her words have reached), {"t":"again"} when a line grew past
+#         the field and she begins once more, shorter (the second ask, as before), and {"t":"done",…} with
+#         exactly what the JSON answer always held. the model is stopped the moment her first line ends,
+#         or the moment it can no longer fit. thinking is off for the streamed ask (ch11: thinking is off,
+#         everywhere). "wait": "only" (reply mode) waits for her reply to finish and answers its pace
+#         without asking her anything: the page reads out the reading time first, then asks live.
+#         answers that never reach the model (reasons, the gentle stop) stay plain JSON.
 #
 ##################################
 
@@ -720,6 +729,8 @@ from open_webui.utils.models import get_all_models as _petal_get_all_models
 from open_webui.utils.task import prompt_template as _petal_prompt_template
 from open_webui.utils.task import replace_messages_variable as _petal_replace_messages
 from open_webui.utils.task import replace_prompt_variable as _petal_replace_prompt
+from fastapi.responses import StreamingResponse as _PetalStreamingResponse
+from open_webui.utils import petal_hush_stream as _petal_hush_stream  # 🌸 A47 · her line as she writes it
 
 # your lenses — hand-tuned, never generated, never served. git-invisible by your own .gitignore.
 # (this file is grafted into backend/open_webui/routers/tasks.py → parents[3] is the fork root)
@@ -1143,6 +1154,140 @@ async def _petal_hush_ask(request, user, models, model_id, content):
     return _petal_hush_unwrap(res)
 
 
+async def _petal_hush_ask_stream(request, user, models, model_id, content):
+    """🌸 A47 · the same ask, streamed · (code, body, response): `response` is the model's live stream while
+    she writes; None when her answer came whole or failed (code and body say which)"""
+    if _petal_gentle_stop() is not None:
+        return 503, {'error': 'gentle stop — Petal is resting'}, None
+    payload = {
+        'model': model_id,
+        'messages': [{'role': 'user', 'content': content}],
+        'stream': True,
+        'temperature': 1.0,
+        'max_tokens': 512,
+        'chat_template_kwargs': {'enable_thinking': False},  # ch11: thinking is off, everywhere
+        'metadata': {
+            **(request.state.metadata if hasattr(request.state, 'metadata') else {}),
+            'task': 'petal_hush',
+            'task_body': {},
+            'chat_id': None,  # never saved into any chat
+        },
+    }
+    payload = await process_pipeline_inlet_filter(request, payload, user, models)
+    try:
+        res = await generate_chat_completion(request, form_data=payload, user=user)
+    except Exception as e:
+        return 502, {'error': _petal_hush_reason(e)}, None
+    if hasattr(res, 'body_iterator') and getattr(res, 'status_code', 200) < 400:
+        return 200, {}, res
+    code, body = _petal_hush_unwrap(res)
+    return code, body, None
+
+
+async def _petal_hush_let_go(iterator) -> None:
+    """stop the model mid-line: closing her stream closes its request (the voice of the GPU goes quiet)"""
+    close = getattr(iterator, 'aclose', None)
+    if close is None:
+        return
+    try:
+        await close()
+    except Exception:
+        pass
+
+
+async def _petal_hush_stream_body(request, user, models, form_data, model_id, picked_by, content, mode, stats,
+                                  device, max_chars, max_words):
+    """🌸 A47 · application/x-ndjson: her line as it becomes certain, then the same answer the JSON route gives"""
+    t0 = _petal_time.monotonic()
+    label = f'{_petal_hush_base(models, model_id)} · picked from {picked_by}'
+    first_ms = None
+    lines = 0
+    prompt = content
+    retried = None
+    text = ''
+    whisper, why = None, None
+    for attempt in (1, 2):
+        code, body, res = await _petal_hush_ask_stream(request, user, models, model_id, prompt)
+        cut = _petal_hush_stream.LineCut(max_chars, max_words)
+        if res is None:
+            if code >= 400:
+                err = _petal_hush_err(body)
+                log.warning('petal hush[%s]: %s failed → %s', mode, label, err)
+                if attempt == 2:  # the shorter ask failed: the first line was too big, and that's the reason
+                    whisper, why = None, f'{retried} · the second ask failed ({err})'
+                    break
+                out = {'whisper': None, 'mode': mode, 'status': 502, 'detail': 'petal hush: no whisper',
+                       'tried': [{'model': label, 'error': err}]}
+                if code == 503 and 'gentle stop' in err:
+                    out = _petal_hush_resting(mode, _petal_gentle_stop())
+                yield _petal_hush_stream.event('done', **out)
+                return
+            try:  # it came whole (a pipe that doesn't stream): one piece
+                cut.feed((body['choices'][0].get('message') or {}).get('content') or '')
+            except (KeyError, IndexError, TypeError, AttributeError):
+                pass
+            if cut.visible and not cut.over:
+                first_ms = first_ms if first_ms is not None else round((_petal_time.monotonic() - t0) * 1000)
+                lines += 1
+                yield _petal_hush_stream.event('line', text=cut.visible)
+        else:
+            it = res.body_iterator
+            try:
+                async for piece in _petal_hush_stream.deltas(it):
+                    before = cut.visible
+                    cut.feed(piece)
+                    if cut.over:
+                        break  # past the field: never shown, the model stops here
+                    if cut.visible != before:
+                        if first_ms is None:
+                            first_ms = round((_petal_time.monotonic() - t0) * 1000)
+                        lines += 1
+                        yield _petal_hush_stream.event('line', text=cut.visible)
+                    if cut.done:
+                        break  # her first line ended: a whisper is one line, the rest is never written
+            except Exception as e:  # the stream broke mid-line: what she wrote so far is all there is
+                log.warning('petal hush[%s]: %s broke mid-line → %s', mode, label, _petal_hush_reason(e))
+            finally:
+                await _petal_hush_let_go(it)
+        text = cut.text
+        whisper, why = _petal_hush_clean(text, max_chars, max_words)
+        too_big = cut.over or (not whisper and bool(why) and why.startswith(('too long', 'too many words')))
+        if not too_big:
+            break
+        if not why or not why.startswith(('too long', 'too many words')):
+            why = f'too long (past {max_chars} characters or {max_words} words)'
+        whisper = None
+        if attempt == 2:
+            why = f'{retried} · still too big after a second ask ({why})'
+            break
+        if _petal_gentle_stop() is not None:  # never a second ask while she's being tucked in
+            break
+        retried = why
+        stats['retried'] = why
+        log.info('petal hush[%s]: %s — asking once more, shorter', mode, why)
+        yield _petal_hush_stream.event('again', why=why)
+        prompt = (content + f'\n\n(shorter please — at most {max_words} words and {max_chars} characters, '
+                  f'it has to fit a small field on her {device})')
+    ms = round((_petal_time.monotonic() - t0) * 1000)
+    waited = f" waited {stats['waited_ms']}ms," if stats.get('waited_ms') else ''
+    if whisper:
+        log.info('petal hush[%s]: %s (%s)%s streamed in %dms → %d chars', mode, model_id, picked_by, waited, ms, len(whisper))
+    else:
+        log.info('petal hush[%s]: %s (%s)%s streamed in %dms → trimmed: %s', mode, model_id, picked_by, waited, ms, why)
+    out = {'whisper': whisper, 'mode': mode, 'model': model_id, 'picked_by': picked_by, 'streamed': True}
+    if not whisper:
+        out['reason'] = why
+    if mode == 'reply':
+        out['pace'] = {'reply_chars': stats.get('reply_chars', 0), 'stream_ms': stats.get('waited_ms', 0), 'gen_ms': ms}
+    if form_data.get('debug'):  # numbers only — safe to paste anywhere
+        out['debug'] = {'mode': mode, 'model': _petal_hush_base(models, model_id), 'picked_by': picked_by,
+                        'prompt_chars': len(content), 'raw_chars': len(text), 'ms': ms, 'first_ms': first_ms,
+                        'lines': lines, **stats}
+    if form_data.get('peek'):  # the one door to the words — your console, your eyes
+        out['peek'] = {'prompt': content, 'raw': text}
+    yield _petal_hush_stream.event('done', **out)
+
+
 def _petal_hush_reason(e) -> str:
     detail = getattr(e, 'detail', None)  # HTTPException keeps its words here, str(e) is ''
     if isinstance(detail, dict):
@@ -1388,6 +1533,12 @@ async def petal_hush(request: Request, form_data: dict, user=Depends(get_verifie
             log.info('petal hush[%s]: no whisper — %s', mode, got.get('reason'))
             return got
         model_id, picked_by, content, stats = got
+        if mode == 'reply' and form_data.get('wait') == 'only':
+            # 🌸 A47 · her reply is done: its pace only, nothing asked yet (the page reads out the reading time,
+            # then asks live, so the line she sees is the line Petal is writing right then)
+            return {'whisper': None, 'mode': mode, 'ready': True, 'model': model_id, 'picked_by': picked_by,
+                    'pace': {'reply_chars': stats.get('reply_chars', 0), 'stream_ms': stats.get('waited_ms', 0),
+                             'gen_ms': 0}}
     else:
         # the model the next new chat will open on — Petal with her own style.
         model_id, picked_by = _petal_hush_pick_model(models, form_data.get('model'), user, admin_defaults)
@@ -1420,6 +1571,13 @@ async def petal_hush(request: Request, form_data: dict, user=Depends(get_verifie
     if stop is not None:
         log.info('petal hush[%s]: gentle stop began while reading — nothing asked', mode)
         return _petal_hush_resting(mode, stop)
+    if form_data.get('stream') is True:  # 🌸 A47 · her line as she writes it
+        return _PetalStreamingResponse(
+            _petal_hush_stream_body(request, user, models, form_data, model_id, picked_by, content, mode, stats,
+                                    device, max_chars, max_words),
+            media_type='application/x-ndjson',
+            headers={'Cache-Control': 'no-store', 'X-Accel-Buffering': 'no'},
+        )
     t0 = _petal_time.monotonic()
     code, body = await _petal_hush_ask(request, user, models, model_id, content)
     label = f'{_petal_hush_base(models, model_id)} · picked from {picked_by}'

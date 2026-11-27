@@ -222,7 +222,26 @@ export class Trail {
 		}
 		this.leadAnim = this.lead.animate(frames, { duration: this.ms, easing: 'linear', fill: 'forwards' });
 		this.leadAnim.pause();
-		this.lead.classList.add('pv-on');
+		// 🧵 A47 · it shows once it's pinned to her clock (the next pin): never a frame at the sentence's first word
+		// while her voice is further on (that flash read as the trail going back)
+		this.lead.classList.remove('pv-on');
+	}
+
+	/** 🧵 A47 · the sentence's true length is known (the road was laid on an estimate): the road is timed again and the
+	 *  lead keeps its place on it (never a step back); the next pin meets her clock from there */
+	retime(ms: number) {
+		const next = Math.max(120, ms);
+		const anim = this.leadAnim;
+		if (!anim || next === this.ms) {
+			this.ms = next;
+			return;
+		}
+		const frac = this.ms > 0 ? Math.min(1, Number(anim.currentTime ?? 0) / this.ms) : 0;
+		this.ms = next;
+		try {
+			anim.effect?.updateTiming({ duration: next });
+			anim.currentTime = frac * next;
+		} catch {}
 	}
 
 	/** she can see it: its block on screen, the tab visible */
@@ -298,6 +317,7 @@ export class Trail {
 	 *  until her voice catches up (the next pin lets it go) · true when it had to wait for her */
 	pin(at: number, rate: number): boolean {
 		if (!this.leadAnim) return false;
+		this.lead?.classList.add('pv-on'); // 🧵 A47 · placed on her clock: now it may show
 		const want = Math.max(0, Math.min(this.ms, at * 1000));
 		const ahead = Number(this.leadAnim.currentTime ?? 0) - want;
 		this.ahead = Math.max(0, ahead);
@@ -422,7 +442,9 @@ export class Trail {
 			particles: this.dust.size, // marks on the page (falling or held)
 			held: this.held.size, // marks holding off her screen or in a hidden tab
 			at: Math.round(Number(this.leadAnim?.currentTime ?? 0)), // ms into the road
-			ahead: Math.round(this.ahead) // ms ahead of her voice at the last pin
+			ahead: Math.round(this.ahead), // ms ahead of her voice at the last pin
+			ms: Math.round(this.ms), // 🧵 A47 · the road's length (an estimate until the take is over)
+			on: !!this.lead?.classList.contains('pv-on') // 🧵 A47 · the lead shows (only once pinned to her clock)
 		};
 	}
 }

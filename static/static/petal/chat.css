@@ -1,7 +1,9 @@
 /* ═══════════════════════════════════════════════════════════
-   🌸 petal · chat  ·  v0.3
+   🌸 petal · chat  ·  v0.4
    pinning the mockup's signature moves onto real elements.
    grows as we look at more of the interface together.
+   v0.4 (A47) · her words arrive legible: the per-word fade is a
+   touch from 0.4, never from nothing (end of this file).
    ═══════════════════════════════════════════════════════════ */
 
 /* ── primary buttons ────────────────────────────────────────
@@ -200,4 +202,95 @@ html.petal.dark [data-petal-bar='temporary'] {
 }
 html.petal.dark [data-petal-bar='temporary']:is(:hover, :focus-within) {
 	border-color: var(--color-gray-700);
+}
+
+/* ── her words as they arrive (A47) ─────────────────────────
+   a streaming reply wraps each new word in .fade-in-token, and
+   upstream fades it in from nothing (0 → 1 over 100 ms): the
+   word Petal just wrote is invisible on the frame it lands, and
+   the end of a reply is still dim a few frames after it's whole.
+   the touch starts legible instead, 0.4 → 1 in the same 100 ms,
+   so what has arrived is readable on its first frame and the
+   fade never holds a word back. every skin: these are her words.
+   (html raises it over upstream's own .fade-in-token rule.)
+   ──────────────────────────────────────────────────────────── */
+@keyframes petal-word-touch {
+	from {
+		opacity: 0.4;
+	}
+	to {
+		opacity: 1;
+	}
+}
+html .fade-in-token {
+	animation-name: petal-word-touch;
+}
+
+/* ── why did she stop (A47 · Ctrl+Alt+V) ────────────────────
+   her voice's last 20 transitions, hidden until asked for:
+   drawn only while open, never animated, every skin.
+   ──────────────────────────────────────────────────────────── */
+[data-petal-voice-trace] {
+	position: fixed;
+	right: 12px;
+	bottom: 12px;
+	z-index: 10000;
+	width: min(760px, calc(100vw - 24px));
+	max-height: min(60vh, 520px);
+	overflow: auto;
+	padding: 10px 12px;
+	border-radius: 14px;
+	border: 1px solid rgb(244 114 182 / 0.35);
+	background: rgb(18 10 20 / 0.94);
+	color: #f6e9f1;
+	font: 11.5px/1.45 ui-monospace, 'JetBrains Mono', monospace;
+	box-shadow: 0 10px 30px rgb(0 0 0 / 0.45);
+}
+[data-petal-voice-trace] header {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	margin-bottom: 6px;
+}
+[data-petal-voice-trace] header b {
+	flex: 1;
+	font-weight: 600;
+	color: #f9a8d4;
+}
+[data-petal-voice-trace] header button {
+	padding: 2px 9px;
+	border-radius: 999px;
+	border: 1px solid rgb(244 114 182 / 0.4);
+	background: transparent;
+	color: inherit;
+	cursor: pointer;
+}
+[data-petal-voice-trace] ol {
+	margin: 0;
+	padding: 0;
+	list-style: none;
+}
+[data-petal-voice-trace] li {
+	display: grid;
+	grid-template-columns: 7.6em 2.6em 9.5em 1fr;
+	gap: 2px 10px;
+	padding: 3px 0;
+	border-top: 1px solid rgb(255 255 255 / 0.06);
+}
+[data-petal-voice-trace] li[data-state='ended'] .pvt-state,
+[data-petal-voice-trace] li[data-state='error'] .pvt-state {
+	color: #f9a8d4;
+	font-weight: 600;
+}
+[data-petal-voice-trace] .pvt-at,
+[data-petal-voice-trace] .pvt-seq,
+[data-petal-voice-trace] .pvt-where {
+	opacity: 0.65;
+}
+[data-petal-voice-trace] .pvt-where,
+[data-petal-voice-trace] .pvt-note {
+	grid-column: 2 / -1;
+}
+[data-petal-voice-trace] .pvt-note:empty {
+	display: none;
 }

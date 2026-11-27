@@ -50,7 +50,7 @@
 		data-petal-voice-stop
 		title={$i18n.t('Stop her voice')}
 		aria-label={$i18n.t('Stop her voice')}
-		on:click={() => stopAllVoice()}
+		on:click={() => stopAllVoice('her ⏹ (the ear chip)')}
 	>
 		<svg viewBox="0 0 24 24" class="pec-square" aria-hidden="true">
 			<rect x="6.5" y="6.5" width="11" height="11" rx="2.5" />

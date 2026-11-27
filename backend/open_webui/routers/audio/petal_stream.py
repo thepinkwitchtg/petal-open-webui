@@ -26,6 +26,14 @@ random bits, for the same signed-in user only):
   (gentle-stop-petal-voice.json) or it's out of reach, the stream waits for it (≤ PETAL_STREAM_VOICE_WAIT_S, 90)
   with the station's quiet holding the line · a voice the gate refuses is asked once in her own (OMNI_MODEL)
 
+🧵 A47 · on her clock: a take's first sample placed in the stream is told at once (`saying` · idx, text, start),
+  before its length is known (`sentence` follows with the exact duration when the take is over) · a take her voice
+  makes slower than she hears it lets her player run dry inside the sentence: the station's clock waits with her,
+  so the next sentence starts where her ears are (never seconds of quiet "owed" in one burst) · her voice's maker
+  failing mid-reply stops the stream naming it (`stop`, reason "broken · <error>"), never a quiet `end` (the page heals);
+  so does the follower breaking ("broken · follow · <error>"); a reply gone quiet for good ends with `end` + why
+  · 🚩 a flag carries the page's last voice transitions ("thread": state, why, cause, ids, idx, time)
+
 the voice asks each sentence as soon as it's fed; while the next one isn't written yet she simply waits
 between sentences, and the station's little quiet holds the line (the same care as a late voice). done
 (or GROW_IDLE_S with nothing fed) lets her finish. the events door tells each sentence as always.
@@ -233,6 +241,8 @@ class Growing(list):
         self._more = asyncio.Event()
         self.keep: set[str] | None = None  # 🧵 A45 · her 💗 cut a followed stream: only these replies are said
         self.over = False  # 🧵 A45 · the stream itself ended (done only means nothing more will be fed)
+        self.broken: str | None = None  # 🧵 A47 · what fed it broke (the follower): the stream stops naming it
+        self.why: str | None = None  # 🧵 A47 · why it was done early (a reply that went quiet): told with its `end`
 
     def feed(self, parts: list[dict], done: bool = False) -> int:
         """adds what fits (MAX_PARTS · MAX_CHARS across the whole reply) → how many were taken"""
@@ -261,6 +271,8 @@ class Growing(list):
             left = GROW_IDLE_S - (time.monotonic() - self.fed_at)
             if left <= 0:
                 self.done = True
+                # 🧵 A47 · her end says why (nothing more came: the reply went quiet, or the page that fed it left)
+                self.why = self.why or f"the reply went quiet for {int(GROW_IDLE_S)} s: she said all it had"
                 return
             try:
                 await asyncio.wait_for(self._more.wait(), timeout=left)
@@ -535,6 +547,11 @@ async def produce(session, parts: list[dict], voice: str, q: asyncio.Queue, c: d
             if shaped and (spoke or last):
                 await put(silence(gap_ms(text, part.get("para_end", False), last, c)))
             await q.put(BOUNDARY)
+    except asyncio.CancelledError:
+        raise
+    except Exception as e:  # 🧵 A47 · an error nobody caught: the station stops naming it (it used to read as her end)
+        log.warning("petal stream: her voice's maker failed mid-reply (%s)", type(e).__name__)
+        await q.put(voice_events.Broke(type(e).__name__))
     finally:
         if tally["sentences"]:
             voice_welfare.log_reply(temp=temp, **tally)
@@ -594,6 +611,17 @@ async def station(session, parts: list[dict], voice: str, tr=None, events=None):
             events.publish("sentence", idx=m.idx if m.ix is None else m.ix, text=m.text,
                            start=voice_events.clock(s["start"]), duration=round(seconds, 3), **mine)
 
+    def say(s: dict) -> None:
+        """🧵 A47 · a take's first sample is placed: the page learns where it begins on the player's clock before its
+        length is known, so the trail meets her voice on her clock instead of when the take is finished"""
+        if events is not None:
+            m = s["m"]
+            mine = {"message_id": m.message_id} if m.message_id else {}
+            if m.cue:
+                mine["cue"] = True
+            events.publish("saying", idx=m.idx if m.ix is None else m.ix, text=m.text,
+                           start=voice_events.clock(s["start"]), **mine)
+
     def heard(b: bytes) -> bytes:
         if tr and b and tr.room():
             tr.heard += b
@@ -623,7 +651,17 @@ async def station(session, parts: list[dict], voice: str, tr=None, events=None):
                     pcm, filler = silence(100), True  # the next sentence is late: hold the line with quiet
             else:
                 pcm = await q.get()  # mid-sentence: never insert anything, just wait for her
+                starved = time.monotonic() - t0 - sent
+                if starved > 0:
+                    # 🧵 A47 · her player ran dry inside the sentence and waited with her: so does the clock. without
+                    # this, the quiet after a slow take was "owed" in one burst and the next sentence started late
+                    t0 += starved
+                    flow.t0 = t0
             if pcm is None:
+                broken = getattr(parts, "broken", None)  # 🧵 A47 · fed by a follower that broke: never her finish
+                if broken:
+                    reason = f"broken · {broken}"
+                    break
                 completed = True
                 break
             if pcm is BOUNDARY:
@@ -642,6 +680,9 @@ async def station(session, parts: list[dict], voice: str, tr=None, events=None):
                     tell(saying, pcm.seconds)
                 saying = None
                 continue
+            if isinstance(pcm, voice_events.Broke):  # 🧵 A47 · the maker failed: the stream stops, the page heals
+                reason = f"broken · {pcm.why}"
+                break
             if isinstance(pcm, voice_events.Skipped):  # 🧵 A46 · a part given up: the page says so, right here
                 keep = getattr(parts, "keep", None)
                 if keep is not None and pcm.message_id and pcm.message_id not in keep:
@@ -659,6 +700,8 @@ async def station(session, parts: list[dict], voice: str, tr=None, events=None):
                 saying["start"] = sent  # where the take's first sample sits in the stream
                 if saying["m"].seconds is not None:
                     tell(saying, saying["m"].seconds)  # the whole take is here: the page knows at once
+                else:
+                    say(saying)  # 🧵 A47 · where it begins, now; its exact length follows once the take is over
             take = tr.takes[pi] if tr and not filler and pi < len(tr.takes) else None
             if take and take.start_s is None:
                 take.start_s = round(sent, 3)
@@ -673,8 +716,9 @@ async def station(session, parts: list[dict], voice: str, tr=None, events=None):
             if out:
                 yield heard(out)
         out = enc.flush()
-        if events is not None:
-            events.publish("end", at=voice_events.clock(sent))
+        if events is not None and completed:  # 🧵 A47 · `end` only when she reached it (a broken maker says `stop`)
+            ended_why = getattr(parts, "why", None)  # 🧵 A47 · done early (a reply gone quiet): the end says why
+            events.publish("end", at=voice_events.clock(sent), **({"why": ended_why} if ended_why else {}))
         if out:
             yield heard(out)
     except Exception:
@@ -858,7 +902,7 @@ if __name__ != "__main__":
         tr = voice_trace.find(user.id, body.get("trace"), body.get("message_id"))
         if not tr:
             raise HTTPException(404, "no recent petal stream to flag (only the last few replies are kept, and only since OWUI started)")
-        f = voice_trace.flag(tr, body.get("at_s"), body.get("note"), body.get("via"))
+        f = voice_trace.flag(tr, body.get("at_s"), body.get("note"), body.get("via"), body.get("thread"))
         # 🚩 the voice's black box keeps it (it holds every take); the station hands over what only it knows
         out = await asyncio.to_thread(voice_trace.to_voice, tr, f)
         if out is not None:

@@ -10,6 +10,12 @@
 // requestAnimationFrame by the pick (PetalPick.svelte), and nothing runs once both are shown or while the page is
 // hidden. her choice, Settings → 🍒 Arms → How they arrive: twin (default) · together (the A30 hold: still cards
 // until both are written) · live (each as it arrives: timing can tell). plain picks arrive the same way as arms.
+//
+// ✍🏻 A47 · what she sees is what Petal is writing now: the twin gate is the one hold left. while both type, both show
+// min(received_a, received_b); once one is done, the other shows everything it has received (it runs at its own
+// arrival pace: a backlog shows at once, never typed out behind her); once both are done, both are whole within the
+// frame. no per-unit delay, no pace of the page's own (A30d's measured pace is gone). a step is batched per frame;
+// off her screen or in a hidden tab nothing is drawn, and the first frame back shows where both are now.
 import { getOutputText, type OutputItem } from '$lib/components/chat/Messages/structuredOutput';
 
 export type Arrival = 'twin' | 'together' | 'live';
@@ -62,55 +68,11 @@ export function twinTarget(a: Side, b: Side): number {
 	return a.done ? b.units : a.units;
 }
 
-export const PACE_FLOOR = 0.04; // units per ms: 40 a second, never slower
-export const PACE_GUESS = 0.25; // units per ms until a side's own speed is known (about 60 tokens a second)
-export const STEP_MAX_MS = 100; // a step never covers more than this much time: no burst after a pause
-
-/** the next shared count. gated (both still typing): straight to the target, it already moves at the slower
- * side's speed. otherwise toward it at `perMs`, the speed the remaining words came in, so a backlog types out the
- * way it arrived and never jumps */
-export function twinStep(
-	shown: number,
-	target: number,
-	gated: boolean,
-	dtMs: number,
-	perMs: number
-): number {
-	if (target <= shown) return shown;
-	if (gated) return target;
-	const dt = Math.min(STEP_MAX_MS, Math.max(0, dtMs));
-	const step = Math.max(1, Math.round(Math.max(PACE_FLOOR, perMs) * dt));
-	return Math.min(target, shown + step);
-}
-
-/** a side's own speed: the units it received since its first, over the time they took */
-export class Pace {
-	private t0 = -1; // not begun
-	private u0 = 0;
-	private t = 0;
-	private u = 0;
-	see(units: number, now: number) {
-		if (units <= 0) return;
-		if (this.t0 < 0) {
-			[this.t0, this.u0, this.t, this.u] = [now, units, now, units];
-		} else if (units > this.u) {
-			[this.t, this.u] = [now, units];
-		}
-	}
-	perMs(fallback = PACE_GUESS): number {
-		const [dt, du] = [this.t - this.t0, this.u - this.u0];
-		return dt >= 250 && du > 0 ? du / dt : fallback;
-	}
-}
-
-/** the speed a free step moves at: the side still typing, at its own speed (it goes on freely); once both are
- * done, the side that still has words to show (both: the slower) */
-export function paceFor(a: Side, b: Side, shown: number, pa: Pace, pb: Pace): number {
-	if (a.done !== b.done) return a.done ? pb.perMs() : pa.perMs();
-	const [aLeft, bLeft] = [a.units > shown, b.units > shown];
-	if (aLeft && !bLeft) return pa.perMs();
-	if (bLeft && !aLeft) return pb.perMs();
-	return Math.min(pa.perMs(), pb.perMs());
+/** the next shared count (A47): straight to the target, always. while both type that's what both have received (the
+ * twin gate), once one is done it's all the other has received, once both are done it's all of both: the reveal is
+ * never behind what arrived (beyond the frame that draws it), and never goes back */
+export function twinStep(shown: number, target: number): number {
+	return target > shown ? target : shown;
 }
 
 // ── cutting without splitting a glyph ──────────────────────────────────────────────────────────────────────

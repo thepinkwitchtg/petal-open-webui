@@ -527,7 +527,7 @@
 			{/if}
 			{#if speaking}
 				<div class="phh-row" data-petal-heart-row="voice:stop">
-					<button type="button" class="phh-go" data-petal-heart-go on:click={() => (stopAllVoice(), close())}>
+					<button type="button" class="phh-go" data-petal-heart-go on:click={() => (stopAllVoice('her ⏹ (the heart)'), close())}>
 						<span class="phh-ico" aria-hidden="true">⏹</span>
 						<span class="phh-main"><span class="phh-name">{$i18n.t('Stop her voice')}</span></span>
 					</button>

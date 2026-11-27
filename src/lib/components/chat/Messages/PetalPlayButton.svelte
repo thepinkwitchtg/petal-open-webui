@@ -28,7 +28,7 @@
 	aria-label={label}
 	title={label}
 	aria-pressed={mine ? playing : undefined}
-	on:click|stopPropagation={() => (mine ? togglePause() : playReply(id))}
+	on:click|stopPropagation={() => (mine ? togglePause() : playReply(id, 'her play button on a reply'))}
 >
 	{#if loading}
 		<!-- OWUI's own: the speaker's spinner while her voice gets ready -->

@@ -4027,7 +4027,7 @@
 		if (!$voiceCall && !bridge?.connected && autoAfter(message.id, message.parentId, history.messages[message.parentId]?.content)) {
 			await tick();
 			// 🧵 A46 · through the one thread, never a click on the speaker (a click is a toggle: it could stop her)
-			playReply(message.id);
+			playReply(message.id, 'after she finishes (autoplay)');
 		}
 		return visibleContent;
 	};

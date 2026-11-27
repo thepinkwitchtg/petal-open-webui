@@ -29,6 +29,7 @@ import { config, settings } from '$lib/stores';
 import { getMessageContentParts } from '$lib/utils';
 import {
 	onSounding,
+	onVoiceStep,
 	petalStreamAudio,
 	petalStreamEnabled,
 	petalStreamParts,
@@ -38,6 +39,7 @@ import {
 	toggleVoice,
 	voiceRows,
 	voiceSpeaking,
+	voiceSteps,
 	voiceThread,
 	voiceUI,
 	type Sounding,
@@ -107,8 +109,8 @@ export const replyOf = (id: string): VoiceReply | undefined => replies.get(id);
 
 /** ⏹ A37 · her voice stops, whatever was speaking (🧵 A46 · one thread: the stream, a quote's line, sentence clips, the
  *  browser's own voice all live there) */
-export function stopAllVoice() {
-	stopVoice();
+export function stopAllVoice(cause: string) {
+	stopVoice(cause);
 	try {
 		if (typeof speechSynthesis !== 'undefined' && speechSynthesis.speaking) speechSynthesis.cancel();
 	} catch {}
@@ -360,11 +362,18 @@ export function chosenVoice(modelVoice?: string | null): string {
 let livePlayer: ((id: string) => boolean) | null = null;
 export const setLivePlayer = (f: ((id: string) => boolean) | null) => void (livePlayer = f);
 
-export function playReply(id: string) {
+// 🧵 A47 · the way in a reply's speak() was asked by (the speaker button names nothing: it's the default)
+let asking: string | null = null;
+export function playReply(id: string, origin = 'a reply asked to speak') {
 	const r = replies.get(id);
 	if (!r) return;
 	if (!r.done() && livePlayer?.(id)) return;
-	r.speak();
+	asking = origin;
+	try {
+		r.speak();
+	} finally {
+		asking = null;
+	}
 }
 
 /** 🧵 A46 · a whole reply, spoken through the one thread (the speaker button, the bubble, a replay, after she
@@ -389,6 +398,7 @@ export function speakReply(r: ReplyVoice): Promise<boolean> {
 	const base = {
 		message_id: r.id,
 		chat_id: r.chat_id ?? null,
+		origin: asking ?? 'the speaker button', // 🧵 A47 · named in her trace
 		title: r.title,
 		artwork: r.artwork,
 		playbackRate: r.playbackRate ?? s.playbackRate ?? 1,
@@ -469,9 +479,9 @@ export function voiceTap(target: string | null = mostInView()) {
 		const f = get(pickFocus);
 		const turned = !!target && !!f && f.ids.includes(target) && f.ids.includes(ui.message_id ?? '');
 		const unheard = target && target !== ui.message_id && (turned || !get(heardReplies).has(target));
-		return unheard ? playReply(target) : togglePause();
+		return unheard ? playReply(target, 'her tap (the bubble, the hotkey): the reply in view') : togglePause();
 	}
-	if (target) playReply(target);
+	if (target) playReply(target, 'her tap (the bubble, the hotkey)');
 }
 
 // ── following her: the sentence sounding now (the thread says, on the audio's own clock) ─────────────────────
@@ -483,6 +493,9 @@ type Shown = {
 	block: Element | null;
 	running: boolean;
 	pos: number; // where its words end in the reply's letters (forward only: her console reads it)
+	ms: number; // 🧵 A47 · the length its road was laid for (an estimate until the take is over)
+	take: number; // 🧵 A47 · the row's take this road belongs to (a take made again begins the road again)
+	rewind: number; // 🧵 A47 · the player's rewinds this road knows of (back to a sentence's start: the road begins again)
 };
 let shown: Shown | null = null;
 let followSeq = 0;
@@ -653,14 +666,18 @@ function observeHost(host: HTMLElement) {
 }
 
 /** her next sentence: its road under its words, in its own reply, and the quotes it reaches */
-function show(seq: number, row: VoiceRow) {
+function show(seq: number, row: VoiceRow, rewind = 0) {
 	const r = replies.get(row.mid ?? '');
 	const live = r?.words() ?? null;
 	const host = live?.isConnected ? live : null;
 	const found = host && r && !row.cue ? place(host, r.content(), row.idx, row.text) : null;
-	shown = { seq, row, range: found?.range ?? null, host, block: found ? blockOf(found.range) : null, running: false, pos: found?.end ?? -1 };
+	const ms = (Number.isFinite(row.duration) ? row.duration : 2) * 1000;
+	shown = {
+		seq, row, range: found?.range ?? null, host, block: found ? blockOf(found.range) : null, running: false,
+		pos: found?.end ?? -1, ms, take: row.take ?? 1, rewind
+	};
 	if (!found || !host) return trail.rest(); // her cue, or words the page doesn't show: the lead rests
-	trail.lay(found.range, host, (Number.isFinite(row.duration) ? row.duration : 2) * 1000);
+	trail.lay(found.range, host, ms);
 	trail.watch(shown.block);
 	for (const q of host.querySelectorAll<HTMLElement>('.petal-quote'))
 		if (found.range.intersectsNode(q)) voiceReveal(q); // her voice reached it: the reveal plays again
@@ -685,9 +702,18 @@ function follow(s: Sounding) {
 		return;
 	}
 	if (shown?.host && (!shown.host.isConnected || (shown.range && !alive(shown.range)))) return relocateSoon(); // A35
-	if (!shown || shown.row !== row || shown.seq !== s.seq) show(s.seq, row);
+	// 🧵 A47 · a new sentence, a take made again, or the player back at a sentence's start: the road begins (again)
+	if (!shown || shown.row !== row || shown.seq !== s.seq || shown.take !== (row.take ?? 1) || shown.rewind !== (s.rewind ?? 0))
+		show(s.seq, row, s.rewind ?? 0);
 	if (!shown?.range) return;
+	const ms = (Number.isFinite(row.duration) ? row.duration : 2) * 1000;
+	if (Math.abs(ms - shown.ms) > 20) {
+		// 🧵 A47 · the take is over: its true length times the road again, the lead staying where it is (never back)
+		trail.retime(ms);
+		shown.ms = ms;
+	}
 	if (s.paused || s.waiting) {
+		trail.pin(s.at, s.rate); // 🧵 A47 · where her voice is, never the sentence's first word while she's elsewhere
 		trail.hold(); // paused, or the stream is waiting for words: the lead holds where she is
 		shown.running = false;
 		return;
@@ -707,6 +733,90 @@ function resync() {
 	if (shown) shown.running = false;
 	if (lineQuote) lineFollowed = false;
 	a.dispatchEvent?.(new Event('timeupdate')); // the thread looks at her clock and tells the trail
+}
+
+// ── 🧵 A47 · why did she stop: Ctrl+Alt+V opens her voice's last transitions (hidden, drawn only while open) ────
+let tracePanel: HTMLElement | null = null;
+let traceOff: (() => void) | null = null;
+const clock = (ms: number) => {
+	const d = new Date(ms);
+	const p = (n: number, w = 2) => String(n).padStart(w, '0');
+	return `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}.${p(d.getMilliseconds(), 3)}`;
+};
+function traceDraw() {
+	const box = tracePanel?.querySelector('[data-pvt-rows]');
+	if (!box) return;
+	const rows = voiceSteps();
+	box.replaceChildren(
+		...(rows.length ? rows : [null]).map((s) => {
+			const li = document.createElement('li');
+			if (!s) {
+				li.textContent = 'nothing yet: her voice has not moved since this page opened';
+				return li;
+			}
+			const ends = s.state === 'ended' || s.state === 'error';
+			li.dataset.state = s.state;
+			const cells: [string, string][] = [
+				[clock(s.at), 'pvt-at'],
+				[`#${s.seq}`, 'pvt-seq'],
+				[s.state + (ends && s.why ? ` · ${s.why}` : ''), 'pvt-state'],
+				[s.cause, 'pvt-cause'],
+				[[s.kind, s.message_id ? `…${s.message_id.slice(-6)}` : null, s.idx !== null ? `s${s.idx}` : null, s.t !== null ? `${s.t.toFixed(1)}s` : null].filter(Boolean).join(' · '), 'pvt-where'],
+				[s.note ?? '', 'pvt-note']
+			];
+			for (const [text, cls] of cells) {
+				const span = document.createElement('span');
+				span.className = cls;
+				span.textContent = text;
+				li.append(span);
+			}
+			return li;
+		})
+	);
+}
+function traceToggle() {
+	if (tracePanel) {
+		traceOff?.();
+		traceOff = null;
+		tracePanel.remove();
+		tracePanel = null;
+		return;
+	}
+	const p = document.createElement('aside');
+	p.dataset.petalVoiceTrace = '';
+	p.setAttribute('role', 'log');
+	p.setAttribute('aria-label', 'her voice, its last transitions');
+	const head = document.createElement('header');
+	const title = document.createElement('b');
+	title.textContent = '🧵 her voice · its last 20 transitions';
+	const copy = document.createElement('button');
+	copy.type = 'button';
+	copy.textContent = 'copy';
+	copy.onclick = () => {
+		void navigator.clipboard
+			?.writeText(JSON.stringify(voiceSteps(), null, 1))
+			.then(() => (copy.textContent = 'copied 💗'))
+			.catch(() => (copy.textContent = 'copy failed'));
+	};
+	const close = document.createElement('button');
+	close.type = 'button';
+	close.textContent = '✕';
+	close.setAttribute('aria-label', 'close (Ctrl+Alt+V)');
+	close.onclick = traceToggle;
+	head.append(title, copy, close);
+	const rows = document.createElement('ol');
+	rows.dataset.pvtRows = '';
+	p.append(head, rows);
+	document.body.append(p);
+	tracePanel = p;
+	traceOff = onVoiceStep(traceDraw); // drawn when she moves, never on a timer
+	traceDraw();
+}
+function traceKey(e: KeyboardEvent) {
+	if (!e.ctrlKey || !e.altKey || e.shiftKey || e.metaKey || e.repeat || e.code !== 'KeyV') return;
+	e.preventDefault();
+	e.stopPropagation();
+	traceToggle();
 }
 
 // ── 🧵 A46 · a line the voice gave up: a dotted pink underline under its words (said, never a silent stop) ──────
@@ -822,6 +932,7 @@ export async function speakQuote(quote: HTMLElement) {
 	lineFollowed = false;
 	const said = speakVoice({
 		kind: 'line',
+		origin: 'a quote she tapped',
 		message_id: mid,
 		voice: voiceFor(quote),
 		revoice: () => voiceFor(quote),
@@ -867,6 +978,7 @@ function wire() {
 		resync();
 	});
 	pickFocus.subscribe(() => look()); // A31 · her eyes moved inside an open pick
+	document.addEventListener('keydown', traceKey, true); // 🧵 A47 · Ctrl+Alt+V: her voice's trace
 	(window as unknown as { petalVoice?: object }).petalVoice = {
 		get eyes() {
 			return { target: get(voiceTarget), ...eyesStats }; // ids and numbers only
@@ -875,13 +987,26 @@ function wire() {
 		get trail() {
 			return trail.state;
 		},
+		/** 🧵 A47 · why did she stop: her voice's last 20 transitions (ids and numbers only) */
+		get steps() {
+			return voiceSteps();
+		},
 		/** 🧵 A46 · the one thread, ids and numbers only: what plays, its part, why it last ended, and its rows */
 		get thread() {
 			const t = get(voiceThread);
 			return {
 				...t,
-				shown: shown ? { mid: shown.row.mid, idx: shown.row.idx, found: !!shown.range, pos: shown.pos } : null,
-				rows: voiceRows().map((r) => ({ mid: r.mid, idx: r.idx, start: r.start, duration: r.duration, cue: r.cue, order: r.order }))
+				shown: shown
+					? { mid: shown.row.mid, idx: shown.row.idx, found: !!shown.range, pos: shown.pos, take: shown.take, ms: Math.round(shown.ms) }
+					: null,
+				rows: voiceRows().map((r) => ({
+					mid: r.mid, idx: r.idx, start: r.start, duration: r.duration, cue: r.cue, order: r.order,
+					estimated: !!r.estimated, take: r.take ?? 1 // 🧵 A47
+				})),
+				clock: (() => {
+					const a = petalStreamAudio(); // 🧵 A47 · her clock, numbers only
+					return a ? { t: Math.round(a.currentTime * 1000) / 1000, rate: a.playbackRate, paused: a.paused } : null;
+				})()
 			};
 		}
 	};

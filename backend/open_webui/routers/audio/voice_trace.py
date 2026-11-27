@@ -179,11 +179,36 @@ def find(user: str, trace_id: str | None = None, message_id: str | None = None) 
     return traces[0] if traces else None
 
 
-def flag(tr: Trace, at_s, note, via) -> dict:
+STEP_KEYS = {"at": (int, float), "state": str, "why": str, "note": str, "cause": str, "kind": str, "message_id": str,
+             "idx": int, "seq": int, "t": (int, float)}
+
+
+def thread_steps(raw) -> list[dict] | None:
+    """🧵 A47 · the page's last voice transitions, as a 🚩 carries them: at most 20, known keys only, short strings
+    (ids, states, causes: never her words)"""
+    if not isinstance(raw, list):
+        return None
+    out = []
+    for s in raw[-20:]:
+        if not isinstance(s, dict):
+            continue
+        row = {}
+        for k, kind in STEP_KEYS.items():
+            v = s.get(k)
+            if v is None or isinstance(v, bool) or not isinstance(v, kind):
+                continue
+            row[k] = v[:200] if isinstance(v, str) else v
+        if row:
+            out.append(row)
+    return out or None
+
+
+def flag(tr: Trace, at_s, note, via, thread=None) -> dict:
     at = float(at_s) if isinstance(at_s, (int, float)) and at_s >= 0 else None
     f = {"wall": time.time(), "local": time.strftime("%Y-%m-%d %H:%M:%S"), "at_s": at,
          "part": tr.part_at(at), "via": str(via or "button")[:24],
-         "note": str(note)[:2000] if note else None, "while_speaking": not tr.done}
+         "note": str(note)[:2000] if note else None, "while_speaking": not tr.done,
+         "thread": thread_steps(thread)}  # 🧵 A47 · why did she stop: the page's last transitions
     tr.flags.append(f)
     return f
 
@@ -209,7 +234,7 @@ def to_voice(tr: Trace, f: dict | None = None) -> dict | None:
     → the voice's answer, or None when her box isn't there (studio, or the gate asleep)"""
     body = {"group": tr.id, "station": tr.station(), "wait": not tr.done}
     if f:
-        body.update({"at_s": f["at_s"], "part": f["part"], "note": f["note"], "via": f["via"]})
+        body.update({"at_s": f["at_s"], "part": f["part"], "note": f["note"], "via": f["via"], "thread": f.get("thread")})
         code, out = _voice("POST", "/v1/petal/flag", json.dumps(body, ensure_ascii=False).encode("utf-8"))
     else:
         code, out = _voice("POST", f"/v1/petal/groups/{tr.id}/station",

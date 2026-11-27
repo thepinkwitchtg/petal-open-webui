@@ -21,6 +21,12 @@
 //    each `skip {message_id, idx, text, at, why}`, then `end` or `stop` (contract 11.6). pause · resume · end · stop
 //    are made here from the <audio> itself, in the same shape
 //  · the phone treats her like music (Media Session: the lock-screen card, earbud play/pause, ⏭ flags her)
+//  · 🧵 A47 · on her clock, never on arrival: a `saying {message_id, idx, text, start}` lands the sentence where its
+//    first sample sits (its length estimated at her pace, open-ended until the next one begins), the `sentence` that
+//    follows gives its exact length · while her player runs dry the lead holds (read from the player on every look) ·
+//    a pause that wasn't hers (an alarm, a call) brings her back at her speed, from the start of the sentence it caught
+//  · 🧵 A47 · why did she stop: her last 20 transitions stay in memory (voiceSteps: state, why, note, kind, message_id,
+//    idx, time, her clock, and the cause), every stop names its cause, a 🚩 carries them, Ctrl+Alt+V shows them
 
 import { get, writable } from 'svelte/store';
 import { AUDIO_API_BASE_URL } from '$lib/constants';
@@ -74,6 +80,64 @@ const IDLE: VoiceThread = {
 };
 export const voiceThread = writable<VoiceThread>({ ...IDLE });
 
+// 🧵 A47 · why did she stop: the thread keeps its last 20 transitions in memory (never stored; a 🚩 carries them): her
+// state, why it ended, the note, the way she spoke, the reply and its sentence, when, her clock, and what moved it.
+// every stop names its cause. ids and numbers only: no word of hers is kept here
+export type VoiceStep = {
+	at: number; // when (ms since 1970)
+	state: VoiceState;
+	why: VoiceWhy | null;
+	note: string | null;
+	cause: string; // what moved it (her ⏹, a new send, the rig's stop, a pause not hers, …)
+	kind: VoiceKind | null;
+	message_id: string | null;
+	idx: number | null; // the sentence sounding: its place in its reply
+	seq: number; // which ask
+	t: number | null; // her clock then (the player's seconds), when it had one
+};
+const STEPS_KEPT = 20;
+const steps: VoiceStep[] = [];
+const stepWatchers = new Set<() => void>();
+const snapshot = (cause: string, over: Partial<VoiceStep> = {}): VoiceStep => {
+	const t = get(voiceThread);
+	return {
+		at: Date.now(),
+		state: t.state,
+		why: t.why,
+		note: t.note,
+		cause,
+		kind: t.kind,
+		message_id: t.message_id,
+		idx: t.part,
+		seq: t.seq,
+		t: el && active?.attached ? Math.round(el.currentTime * 1000) / 1000 : null,
+		...over
+	};
+};
+function step(cause: string, over: Partial<VoiceStep> = {}) {
+	steps.push(snapshot(cause, over));
+	if (steps.length > STEPS_KEPT) steps.splice(0, steps.length - STEPS_KEPT);
+	for (const fn of stepWatchers) {
+		try {
+			fn();
+		} catch {}
+	}
+}
+const secs = (ms: number) => (ms / 1000).toFixed(1);
+/** her voice's last transitions, oldest first · a wait for her stream still going on is told as one more, now */
+export function voiceSteps(): VoiceStep[] {
+	const out = steps.slice();
+	const a = active;
+	if (a?.stallAt && Date.now() - a.stallAt >= 1000)
+		out.push(snapshot(`her stream has kept her waiting ${secs(Date.now() - a.stallAt)} s (still now)`));
+	return out;
+}
+/** told after each new transition (the panel listens only while it's open) */
+export const onVoiceStep = (fn: () => void): (() => void) => {
+	stepWatchers.add(fn);
+	return () => void stepWatchers.delete(fn);
+};
+
 // the controls' mirror (the ✕, the play button, the bubble, the heart, the ear chip): loading · playing · paused, else idle
 export type VoiceUI = { state: 'idle' | 'loading' | 'playing' | 'paused'; message_id: string | null; kind: VoiceKind | null };
 export const voiceUI = writable<VoiceUI>({ state: 'idle', message_id: null, kind: null });
@@ -102,6 +166,7 @@ export type VoiceSentence = {
 };
 export type VoiceEvent =
 	| ({ type: 'sentence' } & VoiceSentence)
+	| ({ type: 'saying' } & Omit<VoiceSentence, 'duration'>) // 🧵 A47 · where a take begins, its length still unknown
 	| { type: 'pause' | 'resume' | 'end' | 'stop'; message_id: string | null; at: number | null };
 type VoiceListener = (e: VoiceEvent, stream: string) => void;
 const voiceListeners = new Set<VoiceListener>();
@@ -120,6 +185,12 @@ export function voiceEvent(raw: unknown, type?: string): VoiceEvent | null {
 	const message_id = typeof o.message_id === 'string' ? o.message_id : null;
 	if (t === 'pause' || t === 'resume' || t === 'end' || t === 'stop')
 		return { type: t, message_id, at: num(o.at) };
+	if (t === 'saying') {
+		const at = num(o.start);
+		const ix = num(o.idx);
+		if (typeof o.text !== 'string' || at === null || ix === null) return null;
+		return { type: 'saying', message_id, idx: ix, text: o.text, start: at, ...(o.cue === true ? { cue: true } : {}) };
+	}
 	if (t !== 'sentence') return null;
 	const start = num(o.start) ?? num(o.start_s);
 	const end = num(o.end_s);
@@ -148,6 +219,8 @@ export type VoiceRow = {
 	cue: boolean;
 	order: number; // when it first arrived: the stream's own order (forward only follows it)
 	stale?: boolean; // its clock belongs to a stream that broke (a healed ask tells it again)
+	estimated?: boolean; // 🧵 A47 · its start is known, its length a guess until the take is over (open-ended till then)
+	take?: number; // 🧵 A47 · counts the times its audio begins: a take made again (or a healed stream) says it anew
 };
 /** a line the voice gave up (said in the trail once the player reaches it) */
 export type VoiceSkip = { mid: string | null; idx: number; text: string; at: number; why: string; told?: boolean };
@@ -162,6 +235,7 @@ export type Sounding = {
 	waiting: boolean; // the player waits for more of the stream (the lead holds)
 	skip?: VoiceSkip; // a line she just reached that the voice gave up
 	ended?: VoiceWhy; // she ended (nothing of the trail stays)
+	rewind?: number; // 🧵 A47 · counts the times the player went back to a sentence's start (the trail goes back with it)
 };
 type SoundingListener = (s: Sounding) => void;
 const soundingListeners = new Set<SoundingListener>();
@@ -185,6 +259,7 @@ export type ClipSource = {
 export type VoiceAsk = {
 	kind: VoiceKind;
 	message_id: string | null;
+	origin?: string; // 🧵 A47 · the way in, for her voice's trace (the speaker button, autoplay as she writes, a quote, …)
 	chat_id?: string | null;
 	token?: string;
 	voice?: string;
@@ -235,6 +310,7 @@ type Ask = VoiceAsk & {
 	marks: { start: number; message_id: string }[]; // 🧵 A45 · where each followed reply begins on the player's clock
 	keep?: string; // 🧵 A45 · her 💗 on this reply: the player ends where the next one begins
 	endSeen: boolean; // the rig said `end`: all of her is in the stream
+	endWhy: string | null; // 🧵 A47 · why the rig ended early (a reply that went quiet for good), when it says
 	stopSeen: string | null; // the rig said `stop` (why)
 	door: EventSource | null;
 	doorTries: number;
@@ -245,6 +321,12 @@ type Ask = VoiceAsk & {
 	clip: { i: number; next: Map<number, Promise<Clip | null>>; urls: string[] } | null;
 	replacedStream: VoiceNow['replaced'] | null;
 	utterance?: SpeechSynthesisUtterance | null;
+	pace: { chars: number; secs: number }; // 🧵 A47 · her voice's measured pace in this ask (an estimate's guide)
+	herPause: boolean; // 🧵 A47 · the pause about to come is hers (anything else pausing the player is an outside pause)
+	outside: { row: VoiceRow | null; at: number } | null; // 🧵 A47 · where an outside pause (an alarm, a call) caught her
+	rewind: number;
+	askedAt: number; // 🧵 A47 · when she was asked (her first sound is told against it)
+	stallAt: number; // 🧵 A47 · since when her player has waited for the stream (0: it isn't)
 };
 
 let el: HTMLAudioElement | null = null; // the one <audio>
@@ -259,12 +341,16 @@ const raf = (f: () => void): number =>
 	typeof requestAnimationFrame === 'function' ? requestAnimationFrame(f) : 0;
 
 // ── the mirrors, written with the store ─────────────────────────────────────────────────────────────────────
-function emit(patch: Partial<VoiceThread>) {
+function emit(patch: Partial<VoiceThread>, cause?: string) {
 	const was = get(voiceThread);
 	const t = { ...was, ...patch };
 	let moved = false;
 	for (const k of Object.keys(t) as (keyof VoiceThread)[]) if (t[k] !== was[k]) moved = true;
 	if (moved) voiceThread.set(t);
+	// 🧵 A47 · a transition (her state, the way she speaks, a new ask, a new note) is kept with what moved it; an end
+	// keeps the sentence she was on
+	if (t.state !== was.state || t.kind !== was.kind || t.seq !== was.seq || (t.note && t.note !== was.note))
+		step(cause ?? 'unnamed', t.part === null && was.part !== null && t.seq === was.seq ? { idx: was.part } : {});
 	const live = t.state === 'loading' || t.state === 'playing' || t.state === 'paused';
 	const ui: VoiceUI = live
 		? { state: t.state as VoiceUI['state'], message_id: t.message_id, kind: t.kind }
@@ -327,11 +413,14 @@ function sound(a: Ask, extra: Partial<Sounding> = {}) {
 		seq: a.seq,
 		kind: a.kind,
 		message_id: a.hearing ?? a.message_id,
-		row: row && !extra.ended && t >= row.start && t < row.start + row.duration && !row.stale ? row : null,
+		row: row && !extra.ended && t >= row.start && (row.estimated || t < row.start + row.duration) && !row.stale ? row : null,
 		at: row ? Math.max(0, t - row.start) : 0,
 		rate: (el && el.playbackRate) || 1,
 		paused: !!el?.paused || get(voiceThread).state === 'paused',
-		waiting: false,
+		// 🧵 A47 · her player ran dry (a take still being made): read from the player itself on every look, so a look
+		// in the middle of a stall (a sentence event, a heal) never sets the lead running while her voice is still
+		waiting: !!el && a.attached && !el.paused && !el.ended && el.readyState < 3,
+		rewind: a.rewind,
 		...extra
 	};
 	for (const fn of soundingListeners) {
@@ -360,13 +449,28 @@ const element = (): HTMLAudioElement => {
 		const a = mine();
 		if (a && a.pausedOnce) pageEvent(a, 'resume');
 		if (a) a.pausedOnce = false;
+		if (a?.outside) backFromOutside(a); // 🧵 A47 · an alarm or a call paused her: from the sentence's start
 	});
 	e.addEventListener('playing', () => {
 		const a = mine();
 		if (!a) return;
+		const first = !a.started;
+		const from = get(voiceThread).state;
+		if (a.stallAt) {
+			const waited = Date.now() - a.stallAt;
+			a.stallAt = 0;
+			if (waited >= 1000) step(`her stream kept her waiting ${secs(waited)} s, then flowed again`);
+		}
 		a.started = true;
 		setSession('playing');
-		emit({ state: 'playing', message_id: a.hearing ?? a.message_id });
+		emit(
+			{ state: 'playing', message_id: a.hearing ?? a.message_id },
+			first
+				? `the player began (her first sound ${secs(Date.now() - a.askedAt)} s after she was asked)`
+				: from === 'paused'
+					? 'the player plays again (resumed)'
+					: 'the player plays again'
+		);
 		if (a.began === 'stream' && a.kind === 'stream') sayStream(a, 'playing');
 		if (!a.playingTold) {
 			a.playingTold = true;
@@ -379,9 +483,14 @@ const element = (): HTMLAudioElement => {
 	e.addEventListener('pause', () => {
 		const a = mine();
 		if (!a || e.ended) return;
+		// 🧵 A47 · not hers (and not a let-go: a detach unmarks the ask before it pauses): an outside pause, kept
+		const hers = a.herPause;
+		if (!a.herPause && !a.outside) a.outside = { row: a.sounding, at: e.currentTime };
+		a.herPause = false;
 		a.pausedOnce = true;
+		a.stallAt = 0;
 		setSession('paused');
-		emit({ state: 'paused' });
+		emit({ state: 'paused' }, hers ? 'her pause' : 'a pause not hers (the system, a call, an alarm, another app)');
 		if (a.began === 'stream' && a.kind === 'stream') sayStream(a, 'paused');
 		pageEvent(a, 'pause');
 		sound(a);
@@ -396,7 +505,9 @@ const element = (): HTMLAudioElement => {
 	});
 	e.addEventListener('waiting', () => {
 		const a = mine();
-		if (a) sound(a, { waiting: true });
+		if (!a) return;
+		if (a.started && !a.stallAt) a.stallAt = Date.now(); // 🧵 A47 · told in her trace once it lasts a second
+		sound(a, { waiting: true });
 	});
 	for (const t of ['timeupdate', 'seeked', 'ratechange'])
 		e.addEventListener(t, () => {
@@ -459,7 +570,7 @@ function teardown(a: Ask) {
 	setSession('none');
 }
 
-function end(a: Ask, why: VoiceWhy, note: string | null = null) {
+function end(a: Ask, why: VoiceWhy, cause: string, note: string | null = null) {
 	if (active !== a) return;
 	if (a.began === 'stream')
 		last = {
@@ -470,7 +581,7 @@ function end(a: Ask, why: VoiceWhy, note: string | null = null) {
 		};
 	teardown(a);
 	active = null;
-	emit({ state: why === 'broken' ? 'error' : 'ended', why, note: note ?? get(voiceThread).note, part: null });
+	emit({ state: why === 'broken' ? 'error' : 'ended', why, note: note ?? get(voiceThread).note, part: null }, cause);
 	if (a.kind === 'stream') streamEnded(a, why);
 	sound(a, { ended: why, row: null });
 	try {
@@ -517,6 +628,7 @@ export function speakVoice(o: VoiceAsk): Promise<boolean> {
 		hearing: null,
 		marks: [],
 		endSeen: false,
+		endWhy: null,
 		stopSeen: null,
 		door: null,
 		doorTries: 0,
@@ -525,9 +637,26 @@ export function speakVoice(o: VoiceAsk): Promise<boolean> {
 		skipped: 0,
 		frame: 0,
 		clip: null,
-		replacedStream: null
+		replacedStream: null,
+		pace: { chars: 0, secs: 0 },
+		herPause: false,
+		outside: null,
+		rewind: 0,
+		askedAt: Date.now(),
+		stallAt: 0
 	};
+	const origin = wayIn(o);
 	if (prev) {
+		// 🧵 A47 · her voice moves to a newer ask: the one it leaves is told as stopped, by that ask
+		step(`a newer ask took her voice (#${a.seq} · ${origin})`, {
+			state: 'ended',
+			why: 'stopped',
+			note: null,
+			kind: prev.kind,
+			message_id: prev.hearing ?? prev.message_id,
+			idx: prev.sounding ? prev.sounding.idx : null,
+			seq: prev.seq
+		});
 		if (prev.attached) pageEvent(prev, 'stop');
 		if (prev.began === 'stream')
 			last = { trace: prev.trace, token: prev.token, message_id: prev.hearing ?? prev.message_id, at: el && prev.attached ? el.currentTime : null };
@@ -548,7 +677,7 @@ export function speakVoice(o: VoiceAsk): Promise<boolean> {
 		note: null,
 		skipped: 0,
 		resumed: 0
-	});
+	}, `asked: ${origin}`);
 	if (a.kind === 'stream') sayStream(a, 'loading');
 	else if (prev?.kind === 'stream') streamEnded(prev, 'stopped');
 	if (prev) {
@@ -563,12 +692,28 @@ export function speakVoice(o: VoiceAsk): Promise<boolean> {
 	return startClips(a, 0);
 }
 
-/** her voice stops, whatever it was saying (her ⏹, the lock screen's stop, a new send, another tab speaking) */
-export function stopVoice() {
+/** the way in, for her trace (an ask that didn't name itself is named by its kind) */
+const wayIn = (o: VoiceAsk): string =>
+	o.origin ??
+	(o.kind === 'stream'
+		? o.follow
+			? 'a stream following the reply'
+			: o.growing
+				? 'a growing stream, as she writes'
+				: 'a whole reply'
+		: o.kind === 'line'
+			? 'a quote'
+			: o.kind === 'clips'
+				? 'sentence clips'
+				: "the browser's own voice");
+
+/** her voice stops, whatever it was saying · 🧵 A47 · always with its cause (her ⏹, the lock screen's stop, a new
+ *  send, another tab speaking, …): it's what her trace tells */
+export function stopVoice(cause: string) {
 	const a = active;
 	if (!a) return;
 	if (a.attached) pageEvent(a, 'stop');
-	end(a, 'stopped');
+	end(a, 'stopped', cause);
 }
 export const pauseVoice = () => {
 	const a = active;
@@ -577,10 +722,13 @@ export const pauseVoice = () => {
 		try {
 			speechSynthesis.pause();
 		} catch {}
-		emit({ state: 'paused' });
+		emit({ state: 'paused' }, 'her pause');
 		return;
 	}
-	if (a.attached && el && !el.paused) el.pause();
+	if (a.attached && el && !el.paused) {
+		a.herPause = true; // 🧵 A47 · hers: she resumes where she left off
+		el.pause();
+	}
 };
 export const resumeVoice = () => {
 	const a = active;
@@ -589,7 +737,7 @@ export const resumeVoice = () => {
 		try {
 			speechSynthesis.resume();
 		} catch {}
-		emit({ state: 'playing' });
+		emit({ state: 'playing' }, 'she resumed');
 		return;
 	}
 	if (a.attached && el?.paused)
@@ -662,6 +810,7 @@ async function openStream(a: Ask): Promise<boolean> {
 	a.trace = opened.trace ?? null;
 	a.feed = opened.feed ?? null;
 	a.endSeen = false;
+	a.endWhy = null;
 	a.stopSeen = null;
 	if (a.message_id && a.trace) {
 		const mid = a.message_id;
@@ -683,7 +832,12 @@ async function openStream(a: Ask): Promise<boolean> {
 /** the stream couldn't open (the rig out of reach, lameenc missing): a whole reply speaks as sentence clips */
 function cantOpen(a: Ask): boolean | Promise<boolean> {
 	if (a.fallback && a.parts?.length && !a.resumed) return toClips(a, 0);
-	end(a, 'broken', a.resumed ? 'her voice broke off and could not come back' : null);
+	end(
+		a,
+		'broken',
+		a.resumed ? 'her stream could not be opened again after a break' : 'her stream could not be opened (the rig out of reach)',
+		a.resumed ? 'her voice broke off and could not come back' : null
+	);
 	return false;
 }
 
@@ -693,7 +847,7 @@ function toClips(a: Ask, from: number): Promise<boolean> {
 	const first = a.first ?? 0;
 	a.kind = 'clips';
 	a.clips = { count: parts.length, idx: (i) => first + i, text: (i) => parts[i]?.text ?? '' };
-	emit({ kind: 'clips', ticket: null });
+	emit({ kind: 'clips', ticket: null }, 'her stream could not go on before her first sound: her sentence clips instead');
 	streamEnded(a, 'broken');
 	return startClips(a, from);
 }
@@ -709,7 +863,7 @@ function broke(a: Ask, why: string) {
 			void toClips(a, 0);
 			return;
 		}
-		return end(a, 'broken');
+		return end(a, 'broken', `before her first sound: ${why}`);
 	}
 	heal(a, why);
 }
@@ -722,31 +876,47 @@ function teardownStream(a: Ask) {
 	detach(a);
 }
 
-/** the element reached its end: the rig said `end` → she finished · otherwise the stream was cut short → it heals */
+/** the element reached its end: the rig said `end` → she finished · otherwise the stream was cut short → it heals ·
+ *  🧵 A47 · named, never guessed: a stream that ended before her first sound broke (it never said "finished"), and a
+ *  stream whose events door told nothing ends as heard, saying so */
 function ended(a: Ask) {
 	if (a.kind === 'clips' || a.kind === 'line') return clipEnded(a);
 	if (a.kind !== 'stream') return;
-	if (a.endSeen || !a.started || (!a.rows.size && !a.lastSeq)) {
+	if (a.endSeen) {
 		pageEvent(a, 'end');
-		return end(a, 'natural');
+		return end(
+			a,
+			'natural',
+			a.endWhy ? `she said all the rig had (${a.endWhy})` : 'she finished: the rig said end and the player played all of it'
+		);
 	}
-	heal(a, a.stopSeen ? `the stream was cut (${a.stopSeen})` : 'the stream ended early');
+	if (!a.started) return broke(a, a.stopSeen ? `the stream was cut (${a.stopSeen})` : 'the stream ended before her first sound');
+	if (!a.rows.size && !a.lastSeq && !a.stopSeen) {
+		pageEvent(a, 'end');
+		return end(a, 'natural', 'the player played all it was given (her events door told nothing: no end, no cut)');
+	}
+	heal(a, a.stopSeen ? `the stream was cut (${a.stopSeen})` : 'the stream ended early (no end from the rig)');
 }
 
 /** 🧵 A46 · a stream that broke after her first sound picks up once, where it broke: from the sentence she was on
  *  (said again from its start) or, if she had heard it through, the next · a second break ends her with a note */
-function heal(a: Ask, why: string) {
+function heal(a: Ask, why: string, counts = true) {
 	if (active !== a) return;
-	const from = resumeFrom(a);
+	const from = resumeFrom(a, counts);
 	if (from === 'done') {
 		pageEvent(a, 'end');
-		return end(a, 'natural');
+		return end(a, 'natural', `she had said all of it when the stream let go (${why})`);
 	}
-	if (a.resumed >= 1 || !from) {
+	if ((counts && a.resumed >= 1) || !from) {
 		pageEvent(a, 'stop');
-		return end(a, 'broken', `her voice broke off twice (${why}): it stopped here`);
+		return end(
+			a,
+			'broken',
+			from ? `a second break (${why})` : `a break with nowhere to pick up from (${why})`,
+			`her voice broke off twice (${why}): it stopped here`
+		);
 	}
-	a.resumed += 1;
+	if (counts) a.resumed += 1; // 🧵 A47 · an outside pause asks again without spending her one heal
 	console.info(`🧵 her voice broke (${why}): picking up where it broke`);
 	teardownStream(a);
 	for (const r of a.rows.values()) r.stale = true; // their clock was the broken stream's
@@ -755,18 +925,52 @@ function heal(a: Ask, why: string) {
 	a.parts = from.parts ?? a.parts;
 	a.first = from.first ?? a.first;
 	a.follow = from.follow ?? a.follow;
-	emit({ state: 'loading', resumed: a.resumed, ticket: null });
+	emit({ state: 'loading', resumed: a.resumed, ticket: null }, `picking up where it broke (${why})`);
 	sayStream(a, 'loading');
 	void openStream(a);
 }
 
+/** 🧵 A47 · an alarm, a call (anything but her) paused the player mid-sentence: she comes back from that sentence's
+ *  start at her own speed. the player goes back itself when it can (the stream still holds it); else the stream is
+ *  asked again from that sentence (a heal that never counts as a break) */
+function backFromOutside(a: Ask) {
+	const o = a.outside;
+	a.outside = null;
+	const e = el;
+	if (!o || !e || active !== a || !a.attached) return;
+	try {
+		e.defaultPlaybackRate = a.rate;
+		e.playbackRate = a.rate; // at her speed, whatever the pause did to the player
+	} catch {}
+	const row = o.row && !o.row.stale ? o.row : null;
+	if (!row || o.at - row.start < 0.35) return; // caught at a sentence's very start (or between two): on from there
+	let can = false;
+	try {
+		for (let i = 0; i < e.seekable.length; i++)
+			if (e.seekable.start(i) <= row.start + 0.01 && e.seekable.end(i) >= row.start) can = true;
+	} catch {}
+	if (can) {
+		a.rewind += 1; // the trail goes back with her, to the sentence's first word
+		try {
+			e.currentTime = row.start;
+		} catch {}
+		console.info('🧵 an outside pause: she picks up from the start of her sentence');
+		step("back after a pause not hers: from her sentence's start, at her speed");
+		return look(a);
+	}
+	if (a.kind !== 'stream' || !a.ticket) return;
+	console.info('🧵 an outside pause: her stream is asked again from the start of her sentence');
+	heal(a, 'an outside pause', false);
+}
+
 /** where a broken stream picks up: the parts (a whole reply) or the replies (followed) from the sentence she was on */
-function resumeFrom(a: Ask): 'done' | { parts?: PetalPart[]; first?: number; follow?: FollowSegment[] } | null {
+function resumeFrom(a: Ask, broken = true): 'done' | { parts?: PetalPart[]; first?: number; follow?: FollowSegment[] } | null {
 	const t = el && a.attached ? el.currentTime : a.sounding ? a.sounding.start + a.sounding.duration : 0;
 	// the last sentence she reached (sounding now, or begun before a quiet stretch), forward only
 	let s = a.sounding;
 	for (const r of a.rows.values()) if (!r.stale && r.start <= t && (!s || r.order > s.order)) s = r;
-	const through = !!s && t >= s.start + s.duration - 0.25; // heard to its end
+	// heard to its end (🧵 A47 · an outside pause always says its sentence again: it caught her inside it)
+	const through = broken && !!s && !s.estimated && t >= s.start + s.duration - 0.25;
 	if (a.follow?.length) {
 		const segs = a.follow;
 		const at = s ? Math.max(0, segs.findIndex((g) => g.message_id === s.mid)) : 0;
@@ -816,15 +1020,20 @@ function openDoor(a: Ask, after = 0) {
 		if (typeof raw?.seq === 'number') a.lastSeq = Math.max(a.lastSeq, raw.seq);
 		if (t === 'end') {
 			a.endSeen = true;
+			a.endWhy = typeof raw?.why === 'string' ? raw.why.slice(0, 160) : null;
+			step(`the rig said end${a.endWhy ? ` (${a.endWhy})` : ''}: all of her is in the stream (the player plays on from what it holds)`);
 			return closeDoor(a); // the rig is done saying what she'll say: the player plays on from what it holds
 		}
 		if (t === 'stop') {
 			a.stopSeen = typeof raw?.reason === 'string' ? raw.reason : 'cut';
+			step(`the rig stopped her stream (${a.stopSeen})`);
 			return closeDoor(a);
 		}
 		if (t === 'skip') return addSkip(a, raw);
+		if (t === 'saying') return addSaying(a, raw); // 🧵 A47 · where a take begins, ahead of its length
 		addRow(a, raw, t);
 	};
+	es.addEventListener('saying', (ev) => take(ev, 'saying'));
 	es.addEventListener('sentence', (ev) => take(ev, 'sentence'));
 	es.addEventListener('skip', (ev) => take(ev, 'skip'));
 	es.addEventListener('end', (ev) => take(ev, 'end'));
@@ -835,6 +1044,7 @@ function openDoor(a: Ask, after = 0) {
 		a.door = null;
 		// 🧵 A46 · a door shut while she still speaks: asked again once, from the last event it gave
 		if (active === a && a.ticket === ticket && !a.endSeen && !a.stopSeen && a.doorTries < 1) {
+			step('her events door shut: asked again once');
 			a.doorTries += 1;
 			setTimeout(() => {
 				if (active === a && a.ticket === ticket && !a.door) openDoor(a, a.lastSeq);
@@ -876,16 +1086,55 @@ function addRow(a: Ask, raw: unknown, type: string) {
 	const mid = e.message_id ?? a.message_id;
 	const k = rowKey(mid, e.idx);
 	const had = a.rows.get(k);
-	if (had) {
+	if (had && had.estimated && !had.stale && Math.abs(e.start - had.start) < 0.05) {
+		// 🧵 A47 · the take is over: its exact length now (the start was already known · the trail re-times, never back)
+		had.duration = e.duration;
+		had.text = e.text;
+		had.estimated = false;
+	} else if (had) {
 		// told again (a take made again, a healed stream telling it on its own clock): the later start wins, its order stays
 		if (!had.stale && e.start <= had.start) return;
 		had.start = e.start;
 		had.duration = e.duration;
 		had.text = e.text;
 		had.stale = false;
+		had.estimated = false;
+		had.take = (had.take ?? 1) + 1; // its audio begins again from its start: the trail begins it again too
 	} else
-		a.rows.set(k, { mid, idx: e.idx, text: e.text, start: e.start, duration: e.duration, cue: !!e.cue, order: ++a.order });
+		a.rows.set(k, { mid, idx: e.idx, text: e.text, start: e.start, duration: e.duration, cue: !!e.cue, order: ++a.order, take: 1 });
+	if (!e.cue && e.duration > 0.3 && e.text) {
+		a.pace.chars += e.text.length; // her voice's own pace, for the next estimate
+		a.pace.secs += e.duration;
+	}
 	tell(a, e);
+	look(a);
+}
+
+const PACE_GUESS = 14; // characters a second, until this ask has heard her (her voice runs about 13–16)
+/** how long a sentence will take, before its take is over: its letters at her pace so far (an estimate, open-ended) */
+const estimate = (a: Ask, text: string) =>
+	Math.max(0.4, text.length / (a.pace.secs > 1.5 ? a.pace.chars / a.pace.secs : PACE_GUESS));
+
+/** 🧵 A47 · a take's first sample is in the stream: the sentence begins here on her clock (its exact length follows) */
+function addSaying(a: Ask, raw: unknown) {
+	const e = voiceEvent(raw, 'saying');
+	if (!e || e.type !== 'saying') return;
+	if (e.message_id) noteReply(a, e.message_id, e.start);
+	if (a.keep && e.message_id && e.message_id !== a.keep) return look(a);
+	const mid = e.message_id ?? a.message_id;
+	const k = rowKey(mid, e.idx);
+	const had = a.rows.get(k);
+	const duration = estimate(a, e.text);
+	if (had) {
+		if (!had.stale && e.start <= had.start) return; // known already (its sentence came first, or this again)
+		had.start = e.start;
+		had.duration = duration;
+		had.text = e.text;
+		had.stale = false;
+		had.estimated = true;
+		had.take = (had.take ?? 1) + 1;
+	} else
+		a.rows.set(k, { mid, idx: e.idx, text: e.text, start: e.start, duration, cue: !!e.cue, order: ++a.order, estimated: true, take: 1 });
 	look(a);
 }
 
@@ -910,7 +1159,7 @@ function look(a: Ask) {
 		if (cut !== null && t >= cut - 0.05) {
 			// her 💗 kept this reply, and the voice had gone ahead into the next: she ends here, as at a natural end
 			pageEvent(a, 'end');
-			return end(a, 'natural');
+			return end(a, 'natural', 'her 💗 kept this reply: she ends where the next one begins');
 		}
 		if (a.marks.length > 1) {
 			let at = a.marks[0].message_id;
@@ -920,7 +1169,7 @@ function look(a: Ask) {
 	}
 	let cur: VoiceRow | null = null;
 	for (const r of a.rows.values())
-		if (!r.stale && r.start <= t && t < r.start + r.duration && (!cur || r.order > cur.order)) cur = r;
+		if (!r.stale && r.start <= t && (r.estimated || t < r.start + r.duration) && (!cur || r.order > cur.order)) cur = r;
 	if (cur && a.sounding && cur.order < a.sounding.order) cur = null; // forward only: never back to an earlier sentence
 	if (cur && cur !== a.sounding) a.sounding = cur;
 	let reached: VoiceSkip | undefined;
@@ -938,14 +1187,14 @@ function look(a: Ask) {
 		...(reached
 			? { note: `her voice skipped a line it could not say (${reached.why})` }
 			: {})
-	});
+	}, reached ? 'her voice reached a line the rig gave up' : undefined);
 	if (a.began === 'stream' && a.kind === 'stream' && state !== 'loading' && state !== 'idle')
 		sayStream(a, el.paused ? 'paused' : 'playing');
 	sound(a, reached ? { skip: reached } : {});
 	// the next edge: only in its last 300 ms is her clock read again on the next frame (no timer ever decides)
 	if (el.paused || !visible() || a.frame) return;
 	const rate = el.playbackRate || 1;
-	let edge = cur ? cur.start + cur.duration : Infinity;
+	let edge = cur && !cur.estimated ? cur.start + cur.duration : Infinity;
 	for (const r of a.rows.values()) if (!r.stale && r.start > t && r.start < edge) edge = r.start;
 	for (const s of a.skips) if (!s.told && s.at > t && s.at < edge) edge = s.at;
 	if (edge < Infinity && (edge - t) / rate < 0.3)
@@ -1025,7 +1274,7 @@ async function playClip(a: Ask, i: number): Promise<boolean> {
 	if (active !== a || !a.clip || !a.clips) return false;
 	const count = a.clips.count;
 	if (i >= count) {
-		end(a, 'natural');
+		end(a, 'natural', 'she said every sentence clip');
 		return true;
 	}
 	a.clip.i = i;
@@ -1038,7 +1287,7 @@ async function playClip(a: Ask, i: number): Promise<boolean> {
 		const why = got?.skip ?? 'the voice failed it twice';
 		a.skips.push({ mid: a.message_id, idx, text: a.clips.text(i), at: 0, why, told: true });
 		a.skipped += 1;
-		emit({ skipped: a.skipped, note: `her voice skipped a line it could not say (${why})` });
+		emit({ skipped: a.skipped, note: `her voice skipped a line it could not say (${why})` }, 'a sentence clip was given up');
 		sound(a, { skip: { mid: a.message_id, idx, text: a.clips.text(i), at: 0, why, told: true }, row: null });
 		if (got?.url) a.clip.urls.push(got.url);
 		return playClip(a, i + 1);
@@ -1069,22 +1318,22 @@ async function playClip(a: Ask, i: number): Promise<boolean> {
 	return true;
 }
 function clipEnded(a: Ask) {
-	if (!a.clip) return end(a, 'natural');
+	if (!a.clip) return end(a, 'natural', 'the clip played to its end');
 	const i = a.clip.i;
 	teardownClip(a);
 	void playClip(a, i + 1);
 }
 function clipBroke(a: Ask) {
-	if (!a.clip) return end(a, 'broken');
+	if (!a.clip) return end(a, 'broken', 'the clip could not play');
 	const i = a.clip.i;
 	const idx = a.clips?.idx ? a.clips.idx(i) : (a.first ?? 0) + i;
 	const text = a.clips?.text(i) ?? '';
 	a.skips.push({ mid: a.message_id, idx, text, at: 0, why: 'the clip would not play', told: true });
 	a.skipped += 1;
-	emit({ skipped: a.skipped, note: 'her voice skipped a line it could not play' });
+	emit({ skipped: a.skipped, note: 'her voice skipped a line it could not play' }, 'a sentence clip would not play');
 	sound(a, { skip: { mid: a.message_id, idx, text, at: 0, why: 'the clip would not play', told: true }, row: null });
 	teardownClip(a);
-	if (!a.started && a.kind === 'line') return end(a, 'broken', 'her voice could not say this line');
+	if (!a.started && a.kind === 'line') return end(a, 'broken', 'the line could not play', 'her voice could not say this line');
 	void playClip(a, i + 1);
 }
 function teardownClip(a: Ask) {
@@ -1096,7 +1345,7 @@ function teardownClip(a: Ask) {
 // ── the browser's own voice (OWUI's engine '' : no server) ─────────────────────────────────────────────────
 function startBrowser(a: Ask): boolean {
 	if (typeof speechSynthesis === 'undefined' || typeof SpeechSynthesisUtterance === 'undefined') {
-		end(a, 'broken', 'this browser has no voice of its own');
+		end(a, 'broken', 'no browser voice here', 'this browser has no voice of its own');
 		return false;
 	}
 	const go = () => {
@@ -1108,10 +1357,17 @@ function startBrowser(a: Ask): boolean {
 		u.onstart = () => {
 			if (active !== a) return;
 			a.started = true;
-			emit({ state: 'playing' });
+			emit({ state: 'playing' }, "the browser's voice began");
 		};
-		u.onend = () => active === a && end(a, 'natural');
-		u.onerror = () => active === a && end(a, a.started ? 'stopped' : 'broken');
+		u.onend = () => active === a && end(a, 'natural', "the browser's voice reached her last word");
+		// 🧵 A47 · an error is never "she stopped it": interrupted by another speaker (stopped), or it failed (broken)
+		u.onerror = (ev) => {
+			if (active !== a) return;
+			const err = (ev as SpeechSynthesisErrorEvent | undefined)?.error ?? 'error';
+			if (a.started && (err === 'interrupted' || err === 'canceled'))
+				return end(a, 'stopped', `the browser's voice was ${err} (not by her)`);
+			end(a, 'broken', `the browser's voice failed (${err})`);
+		};
 		a.utterance = u;
 		speechSynthesis.speak(u);
 	};
@@ -1136,7 +1392,7 @@ function mediaSession(a: Ask) {
 		navigator.mediaSession.metadata = new MediaMetadata({ title: a.title, artist: 'Petal', album: 'Petal Rig', artwork: art });
 		navigator.mediaSession.setActionHandler('play', () => resumeVoice());
 		navigator.mediaSession.setActionHandler('pause', () => pauseVoice());
-		navigator.mediaSession.setActionHandler('stop', () => stopVoice());
+		navigator.mediaSession.setActionHandler('stop', () => stopVoice("the lock screen's ⏹"));
 		// 🚩 earbuds' "next track" (double press) / the lock screen's ⏭ = flag what she's saying right now
 		navigator.mediaSession.setActionHandler('nexttrack', () => {
 			flagPetalVoice({ via: 'earbud' }).catch(() => {});
@@ -1185,7 +1441,14 @@ export const flagPetalVoice = async (
 	const res = await fetch(`${AUDIO_API_BASE_URL}/petal-stream/flag`, {
 		method: 'POST',
 		headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-		body: JSON.stringify({ trace: trace ?? undefined, message_id: o.message_id, at_s: at, note: o.note, via: o.via ?? 'button' })
+		body: JSON.stringify({
+			trace: trace ?? undefined,
+			message_id: o.message_id,
+			at_s: at,
+			note: o.note,
+			via: o.via ?? 'button',
+			thread: voiceSteps() // 🧵 A47 · her voice's last transitions ride along (ids and numbers only)
+		})
 	}).catch(() => null);
 	if (!res) return { ok: false, error: 'the rig is out of reach' };
 	const j = await res.json().catch(() => ({}));
@@ -1244,11 +1507,13 @@ type Play = {
 	revoice?: () => string | undefined;
 	fallback?: boolean;
 	first?: number;
+	origin?: string; // 🧵 A47 · the way in, for her trace
 };
 /** a stream, through the one door (autoplay, her stream's words) → true when it was opened and handed to the player */
 export const playPetalStream = (p: Play): Promise<boolean> =>
 	speakVoice({
 		kind: 'stream',
+		origin: p.origin,
 		message_id: p.meta?.message_id ?? null,
 		chat_id: p.meta?.chat_id ?? null,
 		token: p.token,
@@ -1271,8 +1536,8 @@ export const playPetalStream = (p: Play): Promise<boolean> =>
 	});
 
 /** the stream stops (only a stream: a quote's line or clips asked on their own are left be) */
-export const stopPetalStream = () => {
-	if (active?.began === 'stream') stopVoice();
+export const stopPetalStream = (cause: string) => {
+	if (active?.began === 'stream') stopVoice(cause);
 };
 
 export const petalStreamActive = () => active?.began === 'stream';

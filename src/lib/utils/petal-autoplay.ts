@@ -394,6 +394,7 @@ async function open(w: Writing, ready: ReturnType<typeof wholeParts>) {
 		revoice: () => replyOf(w.id)?.voice() ?? r.voice() ?? '', // 🧵 A46 · a voice she picks while she speaks
 		parts: [], // 🧵 A45 · the rig gives every sentence, her cue first, as it follows the reply
 		follow: segmentsOf(w),
+		origin: w.lounge ? 'her stream (the lounge), as it is written' : w.pick ? 'autoplay: a pick, read as it is written' : w.eager ? 'her tap: the reply as it is written' : 'autoplay, as she writes',
 		meta: { chat_id: m.chat_id, message_id: w.id, model: m.model, source: w.content },
 		title: m.title,
 		artwork: m.artwork,
@@ -410,7 +411,7 @@ async function open(w: Writing, ready: ReturnType<typeof wholeParts>) {
 			if (writing === w) letGo(w, false);
 			handled.delete(w.id);
 			if (w.pick && reading === w.pick) reading = null; // 🍒 a broken voice reads no further
-			else if (w.finished && !w.pick) playReply(w.id); // 🧵 A45 · a whole reply still gets its sentence clips
+			else if (w.finished && !w.pick) playReply(w.id, 'autoplay: the whole reply again (its stream broke before her first sound)'); // 🧵 A45 · a whole reply still gets its sentence clips
 		}
 	});
 	w.opening = false;
@@ -424,14 +425,14 @@ async function open(w: Writing, ready: ReturnType<typeof wholeParts>) {
 	if (writing !== w) {
 		// a new send (or her stop) let go of it while it opened: the stream it opened doesn't speak on
 		const v = get(voiceNow);
-		if (opened && v.state !== 'idle' && v.message_id === w.id) stopPetalStream();
+		if (opened && v.state !== 'idle' && v.message_id === w.id) stopPetalStream('a new send (or her stop) let go of it while it opened');
 		return;
 	}
 	if (!opened || !w.feed) {
 		letGo(w, false);
 		handled.delete(w.id); // never opened: after-she-finishes gets its chance
 		if (w.pick && reading === w.pick) reading = null;
-		if (w.lounge) playReply(w.id); // 🌊 her own words have no after-she-finishes: the clips, as before A45
+		if (w.lounge) playReply(w.id, 'her stream (the lounge): its words as clips'); // 🌊 her own words have no after-she-finishes: the clips, as before A45
 		return;
 	}
 	w.stream = get(voiceNow).id;
@@ -516,7 +517,7 @@ export function picked(id: string): boolean {
 		}
 		reading = null;
 		if (writing) letGo(writing, true);
-		if (ui.state !== 'idle') stopAllVoice();
+		if (ui.state !== 'idle') stopAllVoice('she picked the other reply (it reads from its start)');
 		const content = replyOf(id)?.content() ?? p.shows[id]?.content ?? '';
 		why('picked the other: from its start', id);
 		markHeard(id);
@@ -538,7 +539,7 @@ function lateWhole(id: string, parentId?: string | null) {
 	if (replyOf(id)?.pick?.()) return why('late waits: a pick', id);
 	const ok = autoAfter(id, parentId);
 	why(ok ? 'late speaks' : 'late stays', id);
-	if (ok) playReply(id);
+	if (ok) playReply(id, 'autoplay: a reply that arrived whole');
 }
 
 // ── after she finishes ──────────────────────────────────────────────────────────────────────────────────
@@ -622,7 +623,7 @@ function takeOver() {
 	why('her new reply takes the voice over', yieldTo);
 	yieldTo = null;
 	if (writing) letGo(writing, true);
-	stopAllVoice();
+	stopAllVoice('her new reply takes the voice over (it spoke for another chat)');
 }
 
 /** a new send of hers (Chat, with the chat it's sent in): the voice speaking for that chat stops, and her tap
@@ -642,7 +643,7 @@ export function newSend(chatId?: string | null) {
 	reading = null;
 	lounged.length = 0;
 	if (writing) letGo(writing, true);
-	if (ui.state !== 'idle') stopAllVoice();
+	if (ui.state !== 'idle') stopAllVoice('a new send of hers (the voice for this chat stops)');
 }
 
 /** 🔈 A40 · the play button on a reply still being written: her voice joins it from its first sentence and follows
@@ -656,7 +657,7 @@ export function playLive(id: string): boolean {
 	yieldTo = null;
 	reading = null;
 	if (writing) letGo(writing, true);
-	if (get(voiceUI).state !== 'idle') stopAllVoice();
+	if (get(voiceUI).state !== 'idle') stopAllVoice('her tap joins a reply as it is written');
 	handled.delete(id);
 	const w = begin(id, r.content() ?? '', false);
 	w.eager = true;
@@ -685,7 +686,7 @@ export function installAutoplay() {
 		bc = new BroadcastChannel('petal-voice');
 		bc.onmessage = (ev) => {
 			const d = ev.data as { t?: string; tab?: string } | null;
-			if (d?.t === 'speaking' && d.tab !== TAB && get(voiceUI).state !== 'idle') stopAllVoice();
+			if (d?.t === 'speaking' && d.tab !== TAB && get(voiceUI).state !== 'idle') stopAllVoice('another tab of hers began speaking');
 		};
 	} catch {}
 	let was = 'idle';

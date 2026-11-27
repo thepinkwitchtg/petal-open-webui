@@ -25,12 +25,18 @@ and a stream fed by the page (A37) starves at the end of what was queued. so the
 
 the page opens the stream once and never feeds it: waking up, it finds the rig already ahead.
 memory only: no word of hers is written by this module.
+
+🧵 A47 · why did she stop: a follower that breaks marks the stream broken (Growing.broken → the stream's `stop`,
+"broken · follow · <error>", which the page heals), never her finish · a reply that goes quiet for good is said
+whole up to its last complete sentence (a sentence cut mid-way stays unsaid) and her `end` says why · while it
+follows, the follower keeps the stream's one idle clock.
 """
 
 from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import time
 
 try:
@@ -138,6 +144,9 @@ class Segment:
         return cls(raw["message_id"][:128], chat, lead[:400], raw.get("whole") is True, text, raw.get("finished") is True, given)
 
 
+SENTENCE_END = re.compile(r"[.!?…~。！？]['\"”’)\]*_~]*\s*$")  # 🧵 A47 · a whole sentence, said when a reply goes quiet
+
+
 class Follower:
     """feeds one growing stream from the replies it follows (see the module's note)"""
 
@@ -197,7 +206,18 @@ class Follower:
             if snap is None or (not snap[1] and snap[2] == pulse):
                 if time.monotonic() - quiet_since > self.idle_s:  # no source, or a reply that stopped moving
                     log.info("🧵 petal follow: %s went quiet for good, she finishes here", seg.message_id[:8])
+                    if snap is not None:  # 🧵 A47 · what it still held back (its last sentence) is said too: all it had
+                        rest = words.whole(snap[0], True)
+                        fresh = [{"text": p["text"], "para_end": p["para_end"], "mid": seg.message_id, "ix": given + k}
+                                 for k, p in enumerate(rest[given:])]
+                        while fresh and not SENTENCE_END.search(fresh[-1]["text"]):
+                            fresh.pop()  # a sentence cut mid-way stays unsaid (never half a word)
+                        if fresh:
+                            self._feed(seg, fresh, False, snap[0])
+                    # 🧵 A47 · said with her end: she stopped because the reply did, not because it was finished
+                    self.parts.why = f"the reply went quiet for {int(self.idle_s)} s: she said all it had"
                     return True
+                self.parts.fed_at = time.monotonic()  # 🧵 A47 · while it follows, the follower keeps the time (one clock)
                 await asyncio.sleep(POLL_S)
                 if snap is None:
                     continue
@@ -233,8 +253,9 @@ class Follower:
             self.parts.feed([], done=True)  # all of it is in the stream: she finishes, then the stream ends
         except asyncio.CancelledError:
             raise
-        except Exception as e:  # never costs her the stream: she says what she has, then ends
+        except Exception as e:  # never costs her the stream: she says what she has, then the stream stops naming it
             log.warning("🧵 petal follow broke (%s): she finishes what she has", e.__class__.__name__)
+            self.parts.broken = f"follow · {e.__class__.__name__}"  # 🧵 A47 · a `stop` the page heals, never her `end`
             self.parts.feed([], done=True)
 
     def start(self) -> "Follower":

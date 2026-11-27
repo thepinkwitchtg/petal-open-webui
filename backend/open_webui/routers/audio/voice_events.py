@@ -18,6 +18,11 @@ the stream:  GET /api/v1/audio/petal-stream/{id}/events      text/event-stream
                                                                   out; otherwise once its take is complete
                                                                   (still ahead of her ears: the voice runs
                                                                   ~11× faster than she speaks)
+  saying    {type, seq, message_id, idx, text, start}             🧵 A47 · a take's first sample is placed:
+                                                                  where the sentence begins, before its
+                                                                  length is known (its `sentence` follows
+                                                                  with the same start once the take is over;
+                                                                  a whole take is told as `sentence` at once)
   skip      {type, seq, message_id, idx, text, at, why}           🧵 A46 · a part given up (the voice failed it
                                                                   twice, or welfare spent every take): the
                                                                   page says so in the trail, at `at`
@@ -93,6 +98,13 @@ class Skipped:
     message_id: str | None = None
     ix: int | None = None
     why: str = "broken"
+
+
+@dataclass
+class Broke:
+    """🧵 A47 · the voice's maker failed mid-reply (an error nobody caught): the stream stops naming it, never `end`"""
+
+    why: str
 
 
 @dataclass
