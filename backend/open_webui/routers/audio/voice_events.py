@@ -31,6 +31,9 @@ the stream:  GET /api/v1/audio/petal-stream/{id}/events      text/event-stream
   stop      {type, seq, message_id, at, reason}                   the stream was cut short at `at`
                                                                   (reason: gone · broken · unplayed)
 
+  🔓 A48 · sentence and saying carry "floor": "open" | "closed" when the gate named it (X-Petal-Floor on that
+  take's own answer, V2): open means the veil was up for that sentence, and the page marks it.
+
   start · duration · at are seconds on the player's own clock (audio.currentTime, the mp3's 46 ms
   delay included), so the page lights a sentence while start ≤ currentTime < start + duration: right
   through pauses, buffering and any playback rate. idx is the part's place in its own reply: in the
@@ -87,6 +90,7 @@ class Saying:
     message_id: str | None = None  # 🧵 A45 · a followed stream's reply this take belongs to (🍒 a pick reads two)
     ix: int | None = None  # 🧵 A45 · its place in that reply (🧵 A46: her cue is -1), the follower's idx
     cue: bool = False  # 🧵 A46 · her cue before a reply (🍒): said, never part of the reply's words
+    floor: str | None = None  # 🔓 A48 · the gate's X-Petal-Floor for this take: open | closed (V2's mark)
 
 
 @dataclass

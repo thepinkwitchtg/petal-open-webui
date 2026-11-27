@@ -7,6 +7,10 @@ only what the voice can't see, in memory, for the last few replies: the stream e
 reached your ears (heard), when each sentence sat on that timeline, the pacing, welfare's kills and
 the ceiling.
 
+🎧 A48 · her playback rides with a 🚩: the page's last ~90 s of what it played (and its play/pause/seek timeline)
+waits in memory beside the trace until the voice names the incident, then goes to its clip door
+(POST <voice>/v1/petal/incidents/<id>/clip + PUT …/clip/<name>/timeline) and is let go.
+
 a flag (the 🚩 on a message, or your earbuds' "next track" while she speaks) goes to the voice:
 
   POST <voice>/v1/petal/flag                {group: <this trace's id>, at_s, part, note, via, station}
@@ -35,6 +39,7 @@ import sys
 import threading
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 import wave
 from collections import OrderedDict
@@ -102,6 +107,7 @@ class Trace:
     folder: Path | None = None
     ceiling: dict | None = None  # 🛡️ set when the voice ceiling had to turn this reply down
     at_voice: str | None = None  # the incident's name once the voice has planted it
+    clip: dict | None = None  # 🎧 A48 · her playback, sent with her 🚩 (memory only until the voice names the incident)
 
     def rel(self) -> float:
         return round(time.monotonic() - self.t0, 3)
@@ -213,6 +219,86 @@ def flag(tr: Trace, at_s, note, via, thread=None) -> dict:
     return f
 
 
+# ── 🎧 A48 · her playback: what the page played, riding with a 🚩 ─────────────────
+# the page keeps the last ~90 s of what it played (and when she paused, sought, skipped) in memory; a 🚩 hands that
+# here at once. it waits in memory beside the trace until the voice names the incident (at once when she had already
+# finished, at the station's last word otherwise), then goes to the incident's clip door, and is let go. studio wears
+# her: it lands in the folder planted here instead.
+CLIP_MAX = 40 * 1024 * 1024
+TIMELINE_MAX = 256 * 1024
+CLIP_EXT = {"audio/wav": "wav", "audio/x-wav": "wav", "audio/wave": "wav", "audio/webm": "webm", "audio/ogg": "ogg",
+            "audio/mpeg": "mp3", "audio/mp4": "m4a", "audio/flac": "flac"}
+
+
+def hold_clip(tr: Trace, data: bytes, ctype: str) -> None:
+    c = tr.clip or {"lock": threading.Lock(), "data": None, "ctype": None, "timeline": None, "name": None,
+                    "timeline_sent": False, "error": None, "bytes": 0}
+    with c["lock"]:
+        c.update({"data": bytes(data), "ctype": (ctype or "audio/wav").split(";")[0].strip().lower(), "name": None,
+                  "timeline_sent": False, "error": None, "bytes": len(data)})
+    tr.clip = c
+
+
+def hold_timeline(tr: Trace, timeline) -> None:
+    if tr.clip is None:
+        hold_clip(tr, b"", "audio/wav")
+        tr.clip["data"] = None
+    with tr.clip["lock"]:
+        tr.clip["timeline"] = timeline
+        tr.clip["timeline_sent"] = False
+
+
+def clip_state(tr: Trace) -> dict:
+    c = tr.clip or {}
+    return {"incident": tr.at_voice or (tr.folder.name if tr.folder else None), "name": c.get("name"),
+            "timeline": bool(c.get("timeline_sent")), "held": bool(c.get("data")) or (
+                c.get("timeline") is not None and not c.get("timeline_sent")), "bytes": c.get("bytes", 0),
+            "error": c.get("error")}
+
+
+def deliver_clip(tr: Trace) -> dict:
+    """her playback → the incident, once there is one (the voice's clip door, or the folder planted here) · → state"""
+    c = tr.clip
+    if not c:
+        return clip_state(tr)
+    with c["lock"]:
+        if tr.at_voice:
+            iid = urllib.parse.quote(tr.at_voice, safe="")
+            if c["data"] and not c["name"]:
+                code, out = _voice("POST", f"/v1/petal/incidents/{iid}/clip", c["data"], c["ctype"] or "audio/wav",
+                                   timeout=120)
+                if code == 200 and isinstance(out.get("name"), str):
+                    c["name"], c["data"], c["error"] = out["name"], None, None
+                    log.info("🎧 her playback joined %s as %s", tr.at_voice, c["name"])
+                else:
+                    c["error"] = f"clip door {code}: {out.get('detail') or 'no answer'}"[:200]
+            if c["name"] and c["timeline"] is not None and not c["timeline_sent"]:
+                name = urllib.parse.quote(c["name"], safe="")
+                body = json.dumps(c["timeline"], ensure_ascii=False).encode("utf-8")
+                code, out = _voice("PUT", f"/v1/petal/incidents/{iid}/clip/{name}/timeline", body)
+                if code == 200:
+                    c["timeline_sent"], c["timeline"] = True, None
+                else:
+                    c["error"] = f"timeline door {code}: {out.get('detail') or 'no answer'}"[:200]
+        elif tr.folder is not None and tr.folder.exists():  # 🌙 studio: the folder planted here keeps it
+            try:
+                if c["data"] and not c["name"]:
+                    n = 1 + len(list(tr.folder.glob("clip-*.*"))) - len(list(tr.folder.glob("clip-*.json")))
+                    name = f"clip-{n}.{CLIP_EXT.get(c['ctype'] or '', 'wav')}"
+                    path = tr.folder / name
+                    path.write_bytes(c["data"])
+                    os.chmod(path, 0o600)
+                    c["name"], c["data"] = name, None
+                if c["name"] and c["timeline"] is not None and not c["timeline_sent"]:
+                    tp = tr.folder / (c["name"].rsplit(".", 1)[0] + ".json")
+                    tp.write_text(json.dumps(c["timeline"], ensure_ascii=False) + "\n", encoding="utf-8")
+                    os.chmod(tp, 0o600)
+                    c["timeline_sent"], c["timeline"] = True, None
+            except OSError as e:
+                c["error"] = f"could not write beside the incident ({e.__class__.__name__})"
+    return clip_state(tr)
+
+
 # ── the voice's black box ────────────────────────────────────────────────────
 def _voice(method: str, path: str, body: bytes | None = None, ctype: str = "application/json", timeout: float = 15):
     req = urllib.request.Request(f"{VOICE_URL}{path}", data=body, method=method,
@@ -245,6 +331,8 @@ def to_voice(tr: Trace, f: dict | None = None) -> dict | None:
         _voice("PUT", f"/v1/petal/groups/{tr.id}/heard", bytes(tr.heard), "audio/mpeg", timeout=60)
     if out.get("incident"):
         tr.at_voice = out["incident"]
+        if tr.clip:  # 🎧 A48 · her playback waited for this name
+            deliver_clip(tr)
     return out
 
 
@@ -319,6 +407,8 @@ def plant_here(tr: Trace) -> Path | None:
         except Exception as e:
             log.info("voice trace: the analysis waits for the voice's report (%s)", e.__class__.__name__)
         log.info("🚩 voice incident planted here (studio fallback): %s", folder)
+        if tr.clip:  # 🎧 A48 · her playback, beside it
+            deliver_clip(tr)
         return folder
     except Exception as e:  # a flag must never hurt her stream
         log.warning("voice trace: could not plant incident (%s)", e)

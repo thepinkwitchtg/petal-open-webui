@@ -17,6 +17,10 @@ takes to know it belongs to the line:
     the model and asks once more, shorter, as it always did
 
 this module only reads text: no network, no state between whispers.
+
+A48 · how it streamed, told in numbers: every live line's last word carries `how {steps, first_ms, span_ms, pieces,
+chunks, thinking, whole?}` (the route logs the same line), so a line that seems to land whole names why: the model
+answered whole, her stream carried only thinking, one piece, or simply that she wrote it in a blink (span_ms).
 """
 
 from __future__ import annotations
@@ -110,31 +114,40 @@ class LineCut:
             self.over = True
 
 
-async def deltas(body_iterator) -> AsyncIterator[str]:
+async def deltas(body_iterator, seen: dict | None = None) -> AsyncIterator[str]:
     """the text pieces of an OpenAI-style SSE stream (chat chunks, or Responses' output_text deltas);
-    her reasoning pieces are never yielded"""
+    her reasoning pieces are never yielded · A48: `seen` (a dict) counts what came, numbers only: chunks (network
+    pieces), pieces (text pieces yielded), thinking (reasoning pieces, never shown)"""
+    seen = seen if seen is not None else {}
+    for k in ('chunks', 'pieces', 'thinking'):
+        seen.setdefault(k, 0)
     buf = b''
     async for chunk in body_iterator:
         if isinstance(chunk, str):
             chunk = chunk.encode('utf-8')
+        elif not isinstance(chunk, (bytes, bytearray)):
+            continue  # an object in the stream is no text: never a crash mid-line
+        seen['chunks'] += 1
         buf += chunk
         while b'\n' in buf:
             raw, buf = buf.split(b'\n', 1)
-            piece = _piece(raw)
+            piece = _piece(raw, seen)
             if piece is None:
                 continue
             if piece is _END:
                 return
+            seen['pieces'] += 1
             yield piece
-    piece = _piece(buf)
+    piece = _piece(buf, seen)
     if piece and piece is not _END:
+        seen['pieces'] += 1
         yield piece
 
 
 _END = object()
 
 
-def _piece(raw: bytes):
+def _piece(raw: bytes, seen: dict | None = None):
     line = raw.strip()
     if not line.startswith(b'data:'):
         return None
@@ -149,12 +162,36 @@ def _piece(raw: bytes):
         return None
     if obj.get('type') == 'response.output_text.delta' and isinstance(obj.get('delta'), str):
         return obj['delta']
+    if obj.get('type') == 'response.reasoning_text.delta':
+        if seen is not None:
+            seen['thinking'] = seen.get('thinking', 0) + 1
+        return None
     try:
         delta = obj['choices'][0].get('delta') or {}
     except (KeyError, IndexError, TypeError, AttributeError):
         return None
-    text = delta.get('content') if isinstance(delta, dict) else None
+    if not isinstance(delta, dict):
+        return None
+    if seen is not None and (delta.get('reasoning_content') or delta.get('reasoning')):
+        seen['thinking'] = seen.get('thinking', 0) + 1
+    text = delta.get('content')
     return text if isinstance(text, str) and text else None
+
+
+def how(seen: dict, steps: int, first_ms: int | None, span_ms: int | None, answered_whole: bool = False) -> dict:
+    """🌸 A48 · how a live line reached the page, numbers only (the route's last word carries it, her console reads
+    it: petalHush.why()) · whole: why it came in one step, when it did"""
+    out = {'steps': steps, 'first_ms': first_ms, 'span_ms': span_ms, 'pieces': seen.get('pieces', 0),
+           'chunks': seen.get('chunks', 0), 'thinking': seen.get('thinking', 0)}
+    if answered_whole:
+        out['whole'] = 'the model answered whole (it does not stream: a pipe, or a server without streaming)'
+    elif not seen.get('pieces') and seen.get('thinking'):
+        out['whole'] = 'her stream carried only thinking, no words (a reasoning parser with thinking off?)'
+    elif seen.get('pieces') == 1 and steps <= 1:
+        out['whole'] = 'her stream carried the whole line in one piece'
+    elif steps == 1 and seen.get('pieces', 0) > 1:
+        out['whole'] = 'every piece of her line came in one network read (her words arrived together)'
+    return out
 
 
 def event(kind: str, **data) -> bytes:

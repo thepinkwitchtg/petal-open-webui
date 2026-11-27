@@ -1,9 +1,12 @@
 /* ═══════════════════════════════════════════════════════════
-   🌸 petal · chat  ·  v0.4
+   🌸 petal · chat  ·  v0.5
    pinning the mockup's signature moves onto real elements.
    grows as we look at more of the interface together.
    v0.4 (A47) · her words arrive legible: the per-word fade is a
    touch from 0.4, never from nothing (end of this file).
+   v0.5 (A48) · hush's ink: a live whisper lands dimmer and a light
+   follows her words (beside the whisper rule) · a reply off her
+   screen fades nothing (end of this file).
    ═══════════════════════════════════════════════════════════ */
 
 /* ── primary buttons ────────────────────────────────────────
@@ -145,6 +148,36 @@ html.petal :is(#chat-input, [id^='chat-tab-input-']) p.is-editor-empty:first-chi
 	content: var(--p-hush);
 	color: var(--whisper);
 	opacity: 0.85;
+}
+
+/* ── her ink (A48) ───────────────────────────────────────────
+   on the rig Petal writes a whisper in about a tenth of a second:
+   drawn as it arrived, it landed in a few frames, to the eye at
+   once. a live line now lands legible but dimmer, and a light
+   follows her words along the line: --p-hush-lit is the light's
+   edge in px (hush.js sets it to the width of what has arrived;
+   the transition eases toward it, so every letter is lit within
+   0.32 s of landing). nothing is held back: each letter is drawn
+   the frame it lands. a line written earlier never wears the ink.
+   reduced motion: the light keeps up at once.
+   🔋 the edge lives on the whisper alone (never inherited): hush.js
+   sets it in one rule aimed at the field's ::before, so a frame of
+   the light restyles that one pseudo, never the page around it
+   ──────────────────────────────────────────────────────────── */
+@property --p-hush-lit {
+	syntax: '<length>';
+	inherits: false;
+	initial-value: 100000px;
+}
+html.petal[data-p-hush-ink] :is(#chat-input, [id^='chat-tab-input-']) p.is-editor-empty:first-child:not(.ai-autocompletion)::before {
+	-webkit-mask-image: linear-gradient(90deg, #000 calc(var(--p-hush-lit) - 1.5em), rgb(0 0 0 / 0.42) var(--p-hush-lit));
+	mask-image: linear-gradient(90deg, #000 calc(var(--p-hush-lit) - 1.5em), rgb(0 0 0 / 0.42) var(--p-hush-lit));
+	transition: --p-hush-lit 320ms linear;
+}
+@media (prefers-reduced-motion: reduce) {
+	html.petal[data-p-hush-ink] :is(#chat-input, [id^='chat-tab-input-']) p.is-editor-empty:first-child:not(.ai-autocompletion)::before {
+		transition: none;
+	}
 }
 
 /* her thank-you (hush v0.13's reflex, A27) can be longer than one row of a phone's field:
@@ -293,4 +326,27 @@ html .fade-in-token {
 }
 [data-petal-voice-trace] .pvt-note:empty {
 	display: none;
+}
+
+/* ── battery: what she can't see doesn't move (A48) ─────────
+   a reply off her screen while Petal writes (petal-sight marks
+   it data-petal-offscreen) fades nothing: its words are simply
+   there when she scrolls back, and no paused fade is left
+   holding a frame (a hidden tab already holds every animation:
+   loader.js, A32). on screen, every word keeps its touch.
+   ──────────────────────────────────────────────────────────── */
+html [data-petal-offscreen] .fade-in-token {
+	animation: none !important;
+}
+
+/* ── the open floor (A48) ───────────────────────────────────
+   while a sentence spoken with the floor open sounds (the gate
+   named it on that take), her controls wear a veil ring: the
+   bubble and the speaker by her name. opening the floor stays
+   on the rig; this only shows it, wherever her voice plays.
+   ──────────────────────────────────────────────────────────── */
+html[data-petal-floor='open'] :is(.pvb-main, .pps-on) {
+	outline: 1.5px dashed color-mix(in oklab, var(--candy-glow, #f9a8d4) 85%, transparent);
+	outline-offset: 2px;
+	border-radius: 999px;
 }

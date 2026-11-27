@@ -31,7 +31,7 @@
 </script>
 
 <script>
-	import { onDestroy, setContext } from 'svelte';
+	import { getContext, onDestroy, setContext } from 'svelte';
 	import { replaceTokens, processResponseContent } from '$lib/utils';
 	import { user } from '$lib/stores';
 
@@ -106,15 +106,30 @@
 		}
 	};
 
+	// 🔋 petal (A48): a reply she can't see (off her screen) waits to parse until she can; one parse then
+	/** @type {{ held: () => boolean, whenSeen: (fn: () => void) => () => void } | undefined} */
+	const petalSight = getContext('petal-sight');
+	/** @type {(() => void) | null} */
+	let petalWaiting = null;
+	const petalLatest = () => content; // the newest words (updateHandler's own argument may be older)
+
 	const updateHandler = (content) => {
 		if (content) {
 			if (done) {
 				cancelAnimationFrame(pendingUpdate);
 				pendingUpdate = null;
+				petalWaiting?.();
+				petalWaiting = null;
 				parseTokens();
+			} else if (petalSight?.held()) {
+				petalWaiting ??= petalSight.whenSeen(() => {
+					petalWaiting = null;
+					updateHandler(petalLatest());
+				});
 			} else if (!pendingUpdate) {
 				pendingUpdate = requestAnimationFrame(() => {
 					pendingUpdate = null;
+					if (!done && petalSight?.held()) return updateHandler(petalLatest());
 					parseTokens();
 				});
 			}
@@ -126,6 +141,7 @@
 	// Throttle parsing to once per animation frame while streaming
 	onDestroy(() => {
 		cancelAnimationFrame(pendingUpdate);
+		petalWaiting?.();
 	});
 </script>
 

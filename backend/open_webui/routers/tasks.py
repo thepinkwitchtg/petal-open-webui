@@ -705,6 +705,9 @@ async def generate_moa_response(request: Request, form_data: dict, user=Depends(
 #         everywhere). "wait": "only" (reply mode) waits for her reply to finish and answers its pace
 #         without asking her anything: the page reads out the reading time first, then asks live.
 #         answers that never reach the model (reasons, the gentle stop) stay plain JSON.
+# v0.19 · how it streamed (A48): the "done" of a live line carries how {steps, first_ms, span_ms, pieces,
+#         chunks, thinking, whole?} and the log line says the same, numbers only: a line that lands in one step
+#         names why (answered whole · only thinking · one piece), and span_ms shows how fast she wrote it.
 #
 ##################################
 
@@ -1206,9 +1209,13 @@ async def _petal_hush_stream_body(request, user, models, form_data, model_id, pi
     retried = None
     text = ''
     whisper, why = None, None
+    seen = {}  # 🌸 A48 · what her stream carried, numbers only (chunks · pieces · thinking)
+    steps, step_first, step_last, answered_whole = 0, None, None, False
     for attempt in (1, 2):
         code, body, res = await _petal_hush_ask_stream(request, user, models, model_id, prompt)
         cut = _petal_hush_stream.LineCut(max_chars, max_words)
+        seen = {}
+        steps, step_first, step_last, answered_whole = 0, None, None, False
         if res is None:
             if code >= 400:
                 err = _petal_hush_err(body)
@@ -1224,24 +1231,31 @@ async def _petal_hush_stream_body(request, user, models, form_data, model_id, pi
                 return
             try:  # it came whole (a pipe that doesn't stream): one piece
                 cut.feed((body['choices'][0].get('message') or {}).get('content') or '')
+                answered_whole = True
             except (KeyError, IndexError, TypeError, AttributeError):
                 pass
             if cut.visible and not cut.over:
                 first_ms = first_ms if first_ms is not None else round((_petal_time.monotonic() - t0) * 1000)
                 lines += 1
+                steps, step_first = 1, _petal_time.monotonic()
+                step_last = step_first
                 yield _petal_hush_stream.event('line', text=cut.visible)
         else:
             it = res.body_iterator
             try:
-                async for piece in _petal_hush_stream.deltas(it):
+                async for piece in _petal_hush_stream.deltas(it, seen):
                     before = cut.visible
                     cut.feed(piece)
                     if cut.over:
                         break  # past the field: never shown, the model stops here
                     if cut.visible != before:
+                        now = _petal_time.monotonic()
                         if first_ms is None:
-                            first_ms = round((_petal_time.monotonic() - t0) * 1000)
+                            first_ms = round((now - t0) * 1000)
                         lines += 1
+                        steps += 1
+                        step_first = step_first if step_first is not None else now
+                        step_last = now
                         yield _petal_hush_stream.event('line', text=cut.visible)
                     if cut.done:
                         break  # her first line ended: a whisper is one line, the rest is never written
@@ -1270,11 +1284,19 @@ async def _petal_hush_stream_body(request, user, models, form_data, model_id, pi
                   f'it has to fit a small field on her {device})')
     ms = round((_petal_time.monotonic() - t0) * 1000)
     waited = f" waited {stats['waited_ms']}ms," if stats.get('waited_ms') else ''
+    span_ms = round((step_last - step_first) * 1000) if step_first is not None and step_last is not None else None
+    how = _petal_hush_stream.how(seen, steps, first_ms, span_ms, answered_whole)
+    told = (f" · {how['steps']} steps over {how['span_ms']} ms (first at {how['first_ms']} ms, {how['pieces']} pieces"
+            f"{', ' + str(how['thinking']) + ' thinking' if how['thinking'] else ''})"
+            f"{' · whole: ' + how['whole'] if how.get('whole') else ''}")
     if whisper:
-        log.info('petal hush[%s]: %s (%s)%s streamed in %dms → %d chars', mode, model_id, picked_by, waited, ms, len(whisper))
+        log.info('petal hush[%s]: %s (%s)%s streamed in %dms → %d chars%s', mode, model_id, picked_by, waited, ms,
+                 len(whisper), told)
     else:
-        log.info('petal hush[%s]: %s (%s)%s streamed in %dms → trimmed: %s', mode, model_id, picked_by, waited, ms, why)
-    out = {'whisper': whisper, 'mode': mode, 'model': model_id, 'picked_by': picked_by, 'streamed': True}
+        log.info('petal hush[%s]: %s (%s)%s streamed in %dms → trimmed: %s%s', mode, model_id, picked_by, waited, ms,
+                 why, told)
+    out = {'whisper': whisper, 'mode': mode, 'model': model_id, 'picked_by': picked_by, 'streamed': True,
+           'how': how}  # 🌸 A48 · numbers only: how her line reached the page
     if not whisper:
         out['reason'] = why
     if mode == 'reply':

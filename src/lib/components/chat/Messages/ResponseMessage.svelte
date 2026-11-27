@@ -21,6 +21,9 @@
 	import { config, settings, TTSWorker, user, visibleControls } from '$lib/stores';
 	import { synthesizeOpenAISpeech } from '$lib/apis/audio';
 	import { flagPetalVoice, spokenMessages, stopVoice, voiceThread } from '$lib/utils/petalStream'; // 🧵 A46 · the one thread
+	import { goto as petalGoto } from '$app/navigation'; // 🎧 A48 · a kept incident opens in her voice's diary
+	import { setContext as petalSetContext } from 'svelte';
+	import { sight as petalSight } from '$lib/utils/petal-sight'; // 🔋 A48 · her words move only while she can see them
 	import { imageGenerations } from '$lib/apis/images';
 	import { isSavedChatId } from '$lib/utils/chatId';
 	import { castOrbit, markMoment, marksFor, markersNow, nowS, vowBrakes } from '$lib/utils/petal-markers'; // 🌙 trip markers · ✧ orbits · 🔥 vows
@@ -305,6 +308,30 @@
 	// the server keeps their last 20 sends in memory)
 	let eyesOpen = false;
 
+	// 🔋 A48 · while she writes, this reply is watched (petal-sight): off her screen every css animation inside holds
+	// (the shimmer of a status, a word's fade), and its Markdown waits to parse until she can see it again (one parse
+	// then, never a frame behind once it's in view). done, nothing is watched
+	let petalHeld = false;
+	const petalWakers = new Set<() => void>();
+	const petalSeen = (on: boolean) => {
+		petalHeld = !on;
+		if (!on) return;
+		for (const fn of [...petalWakers]) {
+			petalWakers.delete(fn);
+			try {
+				fn();
+			} catch {}
+		}
+	};
+	petalSetContext('petal-sight', {
+		held: () => petalHeld,
+		whenSeen: (fn: () => void) => {
+			petalWakers.add(fn);
+			return () => void petalWakers.delete(fn);
+		}
+	});
+	$: if (message.done && petalHeld) petalSeen(true); // her reply is whole: whatever waited parses now
+
 	// 🚩 flag the voice: plants this reply's stream as an incident on the rig
 	let flaggingVoice = false;
 	const flagVoice = async () => {
@@ -312,9 +339,17 @@
 		flaggingVoice = true;
 		const r = await flagPetalVoice({ token: localStorage.token, message_id: message.id, via: 'button' });
 		flaggingVoice = false;
+		// 🎧 A48 · her playback rides with it (sent once the flag landed); a kept incident opens in her voice's diary
+		const ride = r.playback ? ` · her playback (${Math.round(r.playback.seconds)} s) rides with it` : '';
+		const open = r.incident
+			? { action: { label: 'open', onClick: () => petalGoto(`/petal/voice?i=${encodeURIComponent(r.incident ?? '')}`) } }
+			: {};
 		if (!r.ok) toast.error(`🚩 ${r.error ?? 'could not flag the voice'}`);
-		else if (r.planted) toast.success(`🚩 voice incident kept · ${r.incident}`);
-		else toast.success('🚩 flagged~ she\'ll be kept once she finishes speaking');
+		else if (r.planted) toast.success(`🚩 voice incident kept · ${r.incident}${ride}`, open);
+		else toast.success(`🚩 flagged~ she\'ll be kept once she finishes speaking${ride}`);
+		r.playback?.sent.then((p) => {
+			if (!p.ok) toast.error(`🎧 ${p.error ?? 'her playback could not be sent'}`);
+		});
 	};
 
 	const copyToClipboard = async (text) => {
@@ -717,6 +752,7 @@
 		id="message-{message.id}"
 		dir={$settings.chatDirection}
 		style="scroll-margin-top: 3rem;"
+		use:petalSight={{ on: !message.done, seen: petalSeen }}
 	>
 		<div class={`shrink-0 ltr:mr-2 rtl:ml-2 hidden @lg:flex mt-0.5 `}>
 			<ProfileImage

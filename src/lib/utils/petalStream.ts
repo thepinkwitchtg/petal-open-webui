@@ -27,9 +27,14 @@
 //    a pause that wasn't hers (an alarm, a call) brings her back at her speed, from the start of the sentence it caught
 //  · 🧵 A47 · why did she stop: her last 20 transitions stay in memory (voiceSteps: state, why, note, kind, message_id,
 //    idx, time, her clock, and the cause), every stop names its cause, a 🚩 carries them, Ctrl+Alt+V shows them
+//  · 🎧 A48 · her playback in every 🚩: the element keeps a ring of the last ~90 s of what it played and a timeline of
+//    how (utils/petal-ring.ts, memory only); a flag hands both to the rig with it (…/petal-stream/flag/clip · timeline)
+//  · 🔓 A48 · the floor she's spoken with: each sentence names the gate's floor (open · closed); while a sentence spoken
+//    with the floor open sounds, voiceThread.floor says so and <html data-petal-floor="open"> marks her controls
 
 import { get, writable } from 'svelte/store';
 import { AUDIO_API_BASE_URL } from '$lib/constants';
+import { ringContext, ringNote, ringSnapshot, ringTap } from '$lib/utils/petal-ring'; // 🎧 A48 · her playback
 
 export type PetalPart = { text: string; para_end: boolean };
 // 🧵 A45 · a reply the rig follows for her voice (it reads the reply as it's written, so a sleeping page starves
@@ -64,6 +69,7 @@ export type VoiceThread = {
 	note: string | null; // what she should know: a line the voice gave up, a break that couldn't heal
 	skipped: number; // lines given up in this ask (each said in the trail)
 	resumed: number; // breaks healed in this ask (at most one)
+	floor?: 'open' | 'closed' | null; // 🔓 A48 · the floor the sounding sentence was spoken with (the gate said it)
 };
 const IDLE: VoiceThread = {
 	state: 'idle',
@@ -76,7 +82,8 @@ const IDLE: VoiceThread = {
 	why: null,
 	note: null,
 	skipped: 0,
-	resumed: 0
+	resumed: 0,
+	floor: null
 };
 export const voiceThread = writable<VoiceThread>({ ...IDLE });
 
@@ -116,6 +123,7 @@ const snapshot = (cause: string, over: Partial<VoiceStep> = {}): VoiceStep => {
 };
 function step(cause: string, over: Partial<VoiceStep> = {}) {
 	steps.push(snapshot(cause, over));
+	ringNote('step', { cause: `${steps[steps.length - 1].state} · ${cause}`.slice(0, 200) }); // 🎧 A48 · on her timeline too
 	if (steps.length > STEPS_KEPT) steps.splice(0, steps.length - STEPS_KEPT);
 	for (const fn of stepWatchers) {
 		try {
@@ -163,6 +171,7 @@ export type VoiceSentence = {
 	start: number;
 	duration: number;
 	cue?: boolean;
+	floor?: 'open' | 'closed'; // 🔓 A48 · the floor the gate spoke it with
 };
 export type VoiceEvent =
 	| ({ type: 'sentence' } & VoiceSentence)
@@ -189,7 +198,15 @@ export function voiceEvent(raw: unknown, type?: string): VoiceEvent | null {
 		const at = num(o.start);
 		const ix = num(o.idx);
 		if (typeof o.text !== 'string' || at === null || ix === null) return null;
-		return { type: 'saying', message_id, idx: ix, text: o.text, start: at, ...(o.cue === true ? { cue: true } : {}) };
+		return {
+			type: 'saying',
+			message_id,
+			idx: ix,
+			text: o.text,
+			start: at,
+			...(o.cue === true ? { cue: true } : {}),
+			...(o.floor === 'open' || o.floor === 'closed' ? { floor: o.floor } : {})
+		};
 	}
 	if (t !== 'sentence') return null;
 	const start = num(o.start) ?? num(o.start_s);
@@ -204,7 +221,8 @@ export function voiceEvent(raw: unknown, type?: string): VoiceEvent | null {
 		text: o.text,
 		start,
 		duration: Math.max(0, duration),
-		...(o.cue === true ? { cue: true } : {})
+		...(o.cue === true ? { cue: true } : {}),
+		...(o.floor === 'open' || o.floor === 'closed' ? { floor: o.floor } : {})
 	};
 }
 
@@ -221,6 +239,7 @@ export type VoiceRow = {
 	stale?: boolean; // its clock belongs to a stream that broke (a healed ask tells it again)
 	estimated?: boolean; // 🧵 A47 · its start is known, its length a guess until the take is over (open-ended till then)
 	take?: number; // 🧵 A47 · counts the times its audio begins: a take made again (or a healed stream) says it anew
+	floor?: 'open' | 'closed'; // 🔓 A48 · the floor the gate spoke it with
 };
 /** a line the voice gave up (said in the trail once the player reaches it) */
 export type VoiceSkip = { mid: string | null; idx: number; text: string; at: number; why: string; told?: boolean };
@@ -352,11 +371,22 @@ function emit(patch: Partial<VoiceThread>, cause?: string) {
 	if (t.state !== was.state || t.kind !== was.kind || t.seq !== was.seq || (t.note && t.note !== was.note))
 		step(cause ?? 'unnamed', t.part === null && was.part !== null && t.seq === was.seq ? { idx: was.part } : {});
 	const live = t.state === 'loading' || t.state === 'playing' || t.state === 'paused';
+	ringContext({ seq: t.seq, kind: t.kind, message_id: t.message_id, idx: t.part, floor: t.floor ?? null }); // 🎧 A48
+	markFloor(live && t.floor === 'open'); // 🔓 A48 · her controls wear the open floor while it sounds
 	const ui: VoiceUI = live
 		? { state: t.state as VoiceUI['state'], message_id: t.message_id, kind: t.kind }
 		: { state: 'idle', message_id: null, kind: null };
 	const u = get(voiceUI);
 	if (u.state !== ui.state || u.message_id !== ui.message_id || u.kind !== ui.kind) voiceUI.set(ui);
+}
+// 🔓 A48 · <html data-petal-floor="open"> while a sentence spoken with the floor open sounds (chat.css marks her
+// controls with it): written only when it changes
+let floorMarked = false;
+function markFloor(open: boolean) {
+	if (open === floorMarked || typeof document === 'undefined') return;
+	floorMarked = open;
+	if (open) document.documentElement.dataset.petalFloor = 'open';
+	else delete document.documentElement.dataset.petalFloor;
 }
 /** autoplay's view of a stream (written after the store and the controls' mirror) */
 function sayStream(a: Ask, state: VoiceNow['state']) {
@@ -442,6 +472,7 @@ const element = (): HTMLAudioElement => {
 	if (el) return el;
 	const e = new Audio();
 	el = e;
+	ringTap(e); // 🎧 A48 · her playback's ring listens beside it (memory only until a 🚩)
 	e.preload = 'auto';
 	e.setAttribute('playsinline', '');
 	(e as any).disableRemotePlayback = true;
@@ -1091,6 +1122,7 @@ function addRow(a: Ask, raw: unknown, type: string) {
 		had.duration = e.duration;
 		had.text = e.text;
 		had.estimated = false;
+		if (e.floor) had.floor = e.floor;
 	} else if (had) {
 		// told again (a take made again, a healed stream telling it on its own clock): the later start wins, its order stays
 		if (!had.stale && e.start <= had.start) return;
@@ -1100,8 +1132,19 @@ function addRow(a: Ask, raw: unknown, type: string) {
 		had.stale = false;
 		had.estimated = false;
 		had.take = (had.take ?? 1) + 1; // its audio begins again from its start: the trail begins it again too
+		if (e.floor) had.floor = e.floor;
 	} else
-		a.rows.set(k, { mid, idx: e.idx, text: e.text, start: e.start, duration: e.duration, cue: !!e.cue, order: ++a.order, take: 1 });
+		a.rows.set(k, {
+			mid,
+			idx: e.idx,
+			text: e.text,
+			start: e.start,
+			duration: e.duration,
+			cue: !!e.cue,
+			order: ++a.order,
+			take: 1,
+			...(e.floor ? { floor: e.floor } : {})
+		});
 	if (!e.cue && e.duration > 0.3 && e.text) {
 		a.pace.chars += e.text.length; // her voice's own pace, for the next estimate
 		a.pace.secs += e.duration;
@@ -1133,8 +1176,20 @@ function addSaying(a: Ask, raw: unknown) {
 		had.stale = false;
 		had.estimated = true;
 		had.take = (had.take ?? 1) + 1;
+		if (e.floor) had.floor = e.floor;
 	} else
-		a.rows.set(k, { mid, idx: e.idx, text: e.text, start: e.start, duration, cue: !!e.cue, order: ++a.order, estimated: true, take: 1 });
+		a.rows.set(k, {
+			mid,
+			idx: e.idx,
+			text: e.text,
+			start: e.start,
+			duration,
+			cue: !!e.cue,
+			order: ++a.order,
+			estimated: true,
+			take: 1,
+			...(e.floor ? { floor: e.floor } : {})
+		});
 	look(a);
 }
 
@@ -1180,9 +1235,11 @@ function look(a: Ask) {
 			reached = s;
 		}
 	const state = get(voiceThread).state;
+	if (reached) ringNote('skip', { idx: reached.idx, cause: reached.why }); // 🎧 A48 · on her playback's timeline
 	emit({
 		message_id: a.hearing ?? a.message_id,
 		part: a.sounding ? a.sounding.idx : null,
+		floor: a.sounding?.floor ?? null, // 🔓 A48
 		skipped: a.skipped,
 		...(reached
 			? { note: `her voice skipped a line it could not say (${reached.why})` }
@@ -1417,7 +1474,49 @@ const markLockScreen = (text: string) => {
 	} catch {}
 };
 
-export type FlagResult = { ok: boolean; planted?: boolean; pending?: boolean; incident?: string; part?: number | null; error?: string };
+export type FlagResult = {
+	ok: boolean;
+	planted?: boolean;
+	pending?: boolean;
+	incident?: string;
+	part?: number | null;
+	error?: string;
+	// 🎧 A48 · her playback riding with it: how long the clip is, and its way to the rig (resolves once the fork holds it)
+	playback?: { seconds: number; sent: Promise<PlaybackSent> } | null;
+};
+export type PlaybackSent = { ok: boolean; held?: boolean; incident?: string | null; name?: string | null; error?: string };
+
+/** 🎧 A48 · her playback (the ring, as it is right now) goes with the 🚩 she just made: the clip, then its timeline.
+ *  the fork holds them in memory until the rig names the incident, then hands them to its clip door */
+async function sendPlayback(
+	snap: { wav: Blob; timeline: unknown },
+	q: { trace?: string | null; message_id?: string | null },
+	token: string
+): Promise<PlaybackSent> {
+	const params = new URLSearchParams();
+	if (q.trace) params.set('trace', q.trace);
+	if (q.message_id) params.set('message_id', q.message_id);
+	const base = `${AUDIO_API_BASE_URL}/petal-stream/flag`;
+	try {
+		const r = await fetch(`${base}/clip?${params}`, {
+			method: 'POST',
+			headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'audio/wav' },
+			body: snap.wav
+		});
+		const j = await r.json().catch(() => ({}));
+		if (!r.ok) return { ok: false, error: j?.detail ?? `her playback was refused (${r.status})` };
+		const t = await fetch(`${base}/timeline?${params}`, {
+			method: 'PUT',
+			headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+			body: JSON.stringify(snap.timeline)
+		});
+		const tj = await t.json().catch(() => ({}));
+		const out = t.ok ? tj : j;
+		return { ok: true, held: !!out?.held, incident: out?.incident ?? null, name: out?.name ?? null, error: out?.error ?? undefined };
+	} catch {
+		return { ok: false, error: 'the rig is out of reach (her playback stays unsent)' };
+	}
+}
 
 // 🚩 flag the stream that's playing, or the last one (for message_id when given). where you were
 // listening goes with it, so the rig knows which sentence it was.
@@ -1455,7 +1554,12 @@ export const flagPetalVoice = async (
 	if (!res.ok) return { ok: false, error: j?.detail ?? `flag failed (${res.status})` };
 	const mm = at != null ? `${Math.floor(at / 60)}:${String(Math.floor(at % 60)).padStart(2, '0')}` : '';
 	markLockScreen(`🚩 flagged${mm ? ' at ' + mm : ''}`);
-	return j as FlagResult;
+	// 🎧 A48 · her playback: the ring as it is this instant, sent after the flag landed (memory only until now)
+	const snap = await ringSnapshot(o.via === 'earbud' ? 'her 🚩 (earbuds)' : 'her 🚩').catch(() => null);
+	const playback = snap
+		? { seconds: snap.seconds, sent: sendPlayback(snap, { trace, message_id: o.message_id }, token as string) }
+		: null;
+	return { ...(j as FlagResult), playback };
 };
 
 // ── the stream's own words (A19 · A37 · A38 · A45), kept for every way in ───────────────────────────────────

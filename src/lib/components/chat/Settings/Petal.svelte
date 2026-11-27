@@ -11,11 +11,13 @@
 	// 25 as her moons accumulate; her two numbers ride with each ask, and the line below shows where it stands now
 	// A37 · her voice plays on its own (utils/petal-autoplay.ts): off · after she finishes · as she writes (default),
 	// chosen per device (this browser only); on the phone only with earphones (🎧 by the mic, or the rig's route)
+	// A48 · her voice's diary + her controls: a door to /petal/voice (the keeper's)
 	import { getContext, onMount } from 'svelte';
 	import type { Writable } from 'svelte/store';
 
 	import { getPulls, type ShelfPulls, type ShelfSearch } from '$lib/apis/petal-shelf';
-	import { settings, user } from '$lib/stores';
+	import { settings, showSettings, user } from '$lib/stores';
+	import { goto } from '$app/navigation'; // 🎙️ A48 · her voice's diary
 	import { formatChord, keybindings, Shortcut } from '$lib/shortcuts';
 	import { loadModes, modes } from '$lib/utils/petal-mode';
 	import { PICK_DEFAULTS, rulesOf, type PickRules } from '$lib/utils/petal-pick';
@@ -311,6 +313,27 @@
 					state={$followRoute}
 					on:change={(e) => setFollowRoute(!!e.detail)}
 				/>
+			</UserSettingRow>
+		{/if}
+		{#if keeper}
+			<!-- 🎙️ A48 · her voice's diary + her controls (the floor, the mood, voice welfare), one page, phone-first -->
+			<UserSettingRow
+				description={$i18n.t(
+					'Every 🚩 she makes lands there with her own playback beside the gate’s take: name it (✦ gift · ✕ intrusion · noise · unsure), give it your categories, write your notes. Her floor, her mood and voice welfare sit at the top.'
+				)}
+				let:labelId
+			>
+				<span slot="label">{$i18n.t('🎙️ Her voice’s diary')}</span>
+				<button
+					type="button"
+					class="px-3 py-1.5 text-xs rounded-full border border-gray-200 dark:border-gray-800"
+					aria-labelledby={labelId}
+					data-petal-voice-diary
+					on:click={() => {
+						showSettings.set(false);
+						goto('/petal/voice');
+					}}>{$i18n.t('open')}</button
+				>
 			</UserSettingRow>
 		{/if}
 	</UserSettingSection>

@@ -1,6 +1,17 @@
 /* ═══════════════════════════════════════════════════════════
-   🌸 petal · hush  ·  v0.16 · open + reply + linger + pin + pulse + reflex · she writes it in
+   🌸 petal · hush  ·  v0.17 · open + reply + linger + pin + pulse + reflex · she writes it in
    the empty chat field whispers — and Petal writes the words.
+
+   v0.17 · you can see her write it (A48): on the rig Petal writes a whole whisper in about a
+          tenth of a second, so a line drawn as it arrived landed in a few frames: to the eye,
+          at once. each arrival now gets the touch her reply's words get: it lands legible but
+          dimmer, and a light follows her words along the line, never more than 0.32 s behind
+          the last letter that came (nothing is held back, nothing waits). the line's story is
+          told in numbers: petalHush.why() says how the last line reached the field (live: its
+          steps, how fast she wrote it, the server's own count; or why it came whole: the pool
+          while live rests, a line kept for this chat, an older server that answered JSON, a
+          model that answers whole). a new chat opened while her open line is still on its way
+          keeps that line (it used to give way to the queue, whole).
 
    v0.16 · as she writes it (A47): a live line streams from the model into the field while
           Petal writes it (the server's {"stream": true}: each step the part of the line it is
@@ -236,6 +247,86 @@
 	const emptyP = () => field()?.querySelector('p.is-editor-empty') ?? null;
 	let flowing = null; // the live line in hand: { text, raf, ctrl } (v0.16)
 	let flowSteps = 0; // frames that drew a live step (numbers only, for her console and the tests)
+	/* the line's story, numbers only (v0.17 · petalHush.why()): where the field's line came from and, for a live
+	   one, how it reached the field: frames drawn on this page, ms from the ask to her first letters and from those
+	   to the whole line, and the server's own count (how) · json: an older server answered whole */
+	let story = null;
+	/* ── the ink (v0.17 · A48): a live line lands legible but dimmer, and a light follows her words along the line,
+	   at most INK_MS behind the newest letter (a css transition on --p-hush-lit, the light's edge in px, eased toward
+	   the width of what has arrived). nothing is held back: every letter is drawn the frame it lands. a line written
+	   earlier shows whole and lit at once (no ink). reduced motion: the light keeps up at once (chat.css) */
+	const INK_MS = 320;
+	let inkFont = null; // the whisper's font, read once per live line
+	let inkTimer = 0;
+	/* the light's edge lives in one rule aimed at the whisper itself (the field's ::before, main field and tabs alike):
+	   a field drawn again mid-line (a new chat's page, a tab) wears it at once, the ink never waits for a field to
+	   exist, and a frame of the light restyles that one pseudo, never the page (🔋 not inherited from <html>: on a
+	   long chat each of those frames was a whole-page restyle, 55–110 ms each on the replica) */
+	const root = document.documentElement;
+	const INK_AT = ":is(#chat-input, [id^='chat-tab-input-']) p.is-editor-empty:first-child:not(.ai-autocompletion)::before";
+	let inkSheet = null;
+	const inkRule = () => {
+		try {
+			if (!inkSheet?.isConnected || !inkSheet.sheet?.cssRules?.length) {
+				inkSheet?.remove();
+				inkSheet = document.createElement('style');
+				inkSheet.id = 'petal-hush-ink';
+				inkSheet.textContent = `${INK_AT}{}`;
+				document.head.appendChild(inkSheet);
+			}
+			return inkSheet.sheet?.cssRules?.[0] ?? null;
+		} catch (_) {
+			return null;
+		}
+	};
+	const inkEdge = (px) => {
+		const r = inkRule();
+		if (!r) return;
+		if (px == null) r.style.removeProperty('--p-hush-lit');
+		else r.style.setProperty('--p-hush-lit', `${px}px`);
+	};
+	const inkStop = () => {
+		clearTimeout(inkTimer);
+		inkTimer = 0;
+		delete root.dataset.pHushInk;
+		if (inkSheet) inkEdge(null);
+	};
+	const inkWidth = (text) => {
+		const p = emptyP();
+		if (!p) return 0;
+		try {
+			if (!inkFont) {
+				const cs = getComputedStyle(p, '::before');
+				inkFont = cs.font || `${cs.fontStyle} ${cs.fontWeight} ${cs.fontSize} ${cs.fontFamily}`;
+			}
+			measure = measure ?? document.createElement('canvas').getContext('2d');
+			measure.font = inkFont;
+			return measure.measureText(text).width;
+		} catch (_) {
+			return 0;
+		}
+	};
+	/* a live line's ink begins dark: the edge sits at 0 before the transition is worn, so the light starts from her
+	   first letter (style read once in between, so the start is never animated from where the last line ended) */
+	const inkStart = () => {
+		inkStop();
+		inkFont = null;
+		inkEdge(0);
+		const p = emptyP();
+		if (p) void getComputedStyle(p, '::before').getPropertyValue('--p-hush-lit'); // that pseudo only
+		root.dataset.pHushInk = '';
+	};
+	const inkTo = (text) => {
+		if (!('pHushInk' in root.dataset)) return;
+		inkEdge(Math.ceil(inkWidth(text)));
+	};
+	/* her line is whole: the light runs to its end (a soft edge past the last letter), then the ink lets go */
+	const inkDone = (line) => {
+		if (!('pHushInk' in root.dataset)) return;
+		inkEdge(Math.ceil(inkWidth(line)) + 48);
+		clearTimeout(inkTimer);
+		inkTimer = setTimeout(inkStop, INK_MS + 60);
+	};
 	/* the live line lets go: no frame left waiting, and its ask is let go too (the model stops writing it) */
 	const stopFlow = (abort = true) => {
 		const f = flowing;
@@ -253,7 +344,11 @@
 		if (!f) return;
 		f.raf = 0;
 		flowSteps++;
+		f.drawn++;
+		f.firstAt ??= performance.now();
+		f.lastAt = performance.now();
 		field()?.style.setProperty('--p-hush', toCss(f.text)); // the field she can see: the line so far
+		inkTo(f.text); // the light follows (A48)
 	};
 	/* a live line begins: the field empties at once (never a flash of the line before), the dial holds nothing
 	   until her line is whole */
@@ -261,7 +356,8 @@
 		stopFlow();
 		delete document.documentElement.dataset.pHushTall;
 		whole('');
-		flowing = { text: '', raf: 0, ctrl };
+		inkStart();
+		flowing = { text: '', raf: 0, ctrl, t0: performance.now(), drawn: 0, firstAt: null, lastAt: null };
 		shown = { line: '', from, mode, at: Date.now(), lingered, live: true };
 		stillest = 0;
 		return flowing;
@@ -275,20 +371,35 @@
 		if (!f.raf) f.raf = requestAnimationFrame(flowDraw);
 	};
 	/* her line is whole: the dial holds it this instant (no frame to wait for) · false when it was let go */
-	const flowEnd = (f, line, from) => {
+	const flowEnd = (f, line, from, how = null) => {
 		if (flowing !== f) return false;
 		const { mode, lingered, at } = shown;
 		const still = stillest; // the stillness while it streamed belongs to this line
 		stopFlow(false);
-		paint(line, from, mode, lingered, at);
+		paint(line, from, mode, lingered, at, { ink: true });
 		stillest = still;
+		const end = performance.now();
+		story = {
+			from,
+			live: true,
+			frames: f.drawn + 1, // her steps drawn, and the instant the dial took the whole line
+			first_ms: f.firstAt != null ? Math.round(f.firstAt - f.t0) : Math.round(end - f.t0),
+			span_ms: f.firstAt != null ? Math.round(end - f.firstAt) : 0,
+			how: how ?? null,
+			json: !!lastAsk?.json
+		};
 		return true;
 	};
 
-	const paint = (line, from, mode = 'open', lingered = 0, at = Date.now()) => {
+	const paint = (line, from, mode = 'open', lingered = 0, at = Date.now(), o = {}) => {
 		stopFlow(); // a live line still in hand gives way (its ask is let go)
 		delete document.documentElement.dataset.pHushTall; // a second row belongs to the line that asked for it
 		whole(line ?? ''); // written already: shown whole, at once (v0.16 · nothing replays at a typing pace)
+		if (o.ink) inkDone(line ?? ''); // a live line's light runs to its end (A48)
+		else {
+			inkStop(); // a line written earlier is lit at once
+			story = { from, live: false, why: o.why ?? null };
+		}
 		shown = { line, from, mode, at, lingered };
 		stillest = 0;
 		if (mode === 'open' && line) {
@@ -408,6 +519,7 @@
 		let data = null;
 		let firstMs = null;
 		let steps = 0;
+		let json = false; // v0.17 · the server answered whole (JSON) to a live ask: an older backend
 		try {
 			r = await rawFetch(LIVE_URL, {
 				method: 'POST',
@@ -458,7 +570,15 @@
 					}
 				}
 				take(buf + dec.decode());
-			} else data = await r.json().catch(() => null);
+			} else {
+				data = await r.json().catch(() => null);
+				json = r.ok && !!data?.whisper; // a line, whole: this server doesn't stream yet (or a proxy turned it)
+				if (json)
+					tellOnce(
+						'json',
+						'her line came whole (JSON), not as she writes it — is openwebui restarted on this build? (petal-launcher.sh restart openwebui)'
+					);
+			}
 		} catch (e) {
 			if (e?.name === 'AbortError') {
 				note('ask let go', { mode, why: 'a newer message, a new chat, or you began writing' });
@@ -473,13 +593,15 @@
 		const ms = Math.round(performance.now() - t0);
 		const status = data?.status ?? r.status; // a stream that failed says so in its last word
 		const ok = r.ok && !(Number(data?.status) >= 400);
-		lastAsk = { at: new Date().toLocaleTimeString(), mode, ms, status, body: data, first_ms: firstMs, steps };
+		lastAsk = { at: new Date().toLocaleTimeString(), mode, ms, status, body: data, first_ms: firstMs, steps, json };
 		note(ok ? 'answer' : 'refused', {
 			mode,
 			status,
 			ms,
 			first_ms: firstMs,
 			steps,
+			json,
+			how: data?.how ?? null,
 			chars: data?.whisper ? data.whisper.length : 0,
 			model: data?.model,
 			picked_by: data?.picked_by,
@@ -511,40 +633,63 @@
 	/* v0.16 · she writes the line live, as you open the chat (one ask, the one a refill always made); the pool
 	   (and any line still queued from before) carries the room only when she can't: resting, missed, gently
 	   stopped, or signed out — shown whole */
+	/* why the pool carries the room right now (v0.17 · told by petalHush.why()) */
+	const poolWhy = () =>
+		!live
+			? 'live is off for open mode (a dial in your hush.json, or 3 misses)'
+			: restingAt === navs
+				? `live rests until you navigate (the last ask missed${lastAsk?.status ? ': ' + lastAsk.status : ''})`
+				: !token()
+					? 'not signed in on this page'
+					: 'her open line could not be asked';
 	const show = () => {
+		// v0.17 · her open line still on its way stays (a second new-chat page while she writes it adopts it)
+		if (inflight && openFlow && flowing === openFlow && live && token()) {
+			openNav = navs;
+			return void note('her open line is still on its way: kept');
+		}
 		if (live && !inflight && restingAt !== navs && token()) return void openLive();
-		showPool();
+		showPool(poolWhy());
 	};
 
-	const showPool = () => {
+	const showPool = (why = null) => {
 		const queue = freshQueue();
 		const fromQueue = queue.shift()?.line;
 		const line = fromQueue ?? pick(pool, load(K.recent, [])[0]);
 		save(K.queue, queue);
 		if (line) {
-			paint(line, fromQueue ? 'queue (petal, written earlier)' : 'pool', 'open');
+			paint(line, fromQueue ? 'queue (petal, written earlier)' : 'pool', 'open', 0, Date.now(), { why });
 			lingerArm(null, 0);
-		} else note('nothing to paint', { pool: pool.length, queue: queue.length });
+		} else {
+			inkStop();
+			story = { from: 'nothing (no pool line fits the field)', live: false, why }; // v0.17 · the field rests empty, said why
+			note('nothing to paint', { pool: pool.length, queue: queue.length });
+		}
 	};
 
+	let openFlow = null; // v0.17 · the flow of the open ask in flight
+	let openNav = -1; // the navigation it belongs to (adopted by a later new-chat page)
 	const openLive = async () => {
 		if (chatIdOf()) return; // the open line is for new chats — inside a chat, reply mode speaks
 		inflight = true;
-		const navAtAsk = navs;
+		openNav = navs;
 		const ctrl = new AbortController();
 		const f = flowStart('live (petal, as she writes it)', 'open', 0, ctrl);
+		openFlow = f;
 		let res;
 		try {
 			res = await askLive('a new chat', { mode: 'open' }, ctrl.signal, (text) => flowLine(f, text));
 		} finally {
 			inflight = false;
+			if (openFlow === f) openFlow = null;
 		}
+		const navAtAsk = openNav;
 		if (res.aborted || navAtAsk !== navs || chatIdOf()) return; // she moved on: whatever is there now stays
 		const { ok, status, data } = res;
 		const line = data?.whisper;
 		if (line) {
 			misses = 0;
-			if (flowEnd(f, line, 'live (petal, as she wrote it)')) lingerArm(null, 0);
+			if (flowEnd(f, line, 'live (petal, as she wrote it)', data?.how)) lingerArm(null, 0);
 			return;
 		}
 		if (status > 0 && !ok) miss(`${status} ${data?.detail ?? ''}`.trim(), data?.tried);
@@ -559,7 +704,15 @@
 		note('resting until next navigation');
 		if (flowing === f) {
 			stopFlow(false);
-			showPool(); // the pool carries the room
+			showPool(
+				status > 0 && !ok
+					? `her live line missed (${status}${data?.detail ? ' ' + data.detail : ''})`
+					: ok && data?.gentle_stop
+						? 'Petal is being tucked in (the gentle stop)'
+						: ok
+							? `she answered but no line survived (${data?.reason ?? 'no reason given'}${data?.how?.whole ? ' · ' + data.how.whole : ''})`
+							: 'her live line could not be asked (offline?)'
+			); // the pool carries the room
 		}
 	};
 
@@ -615,7 +768,7 @@
 				if (wait > 0 && fieldIsEmpty() && !pulse) readStart(chatId, line, wait, data.pace);
 				else if (fresh && !fieldIsEmpty()) note('you were already answering — her line waits in the cache');
 				else {
-					paint(line, 'reply (petal, just now)', 'reply');
+					paint(line, 'reply (petal, just now)', 'reply', 0, Date.now(), { why: 'an older server answered her reply line whole' });
 					lingerArm(chatId, 0);
 				}
 			} else note('reply kept for later', { chat: short(chatId), chars: line.length });
@@ -659,7 +812,7 @@
 			misses = 0;
 			replyCache.set(chatId, line);
 			replyRecent.set(chatId, [line, ...(replyRecent.get(chatId) ?? []).filter((l) => l !== line)].slice(0, 6));
-			if (flowEnd(f, line, 'reply (petal, as she wrote it)')) lingerArm(chatId, 0);
+			if (flowEnd(f, line, 'reply (petal, as she wrote it)', data?.how)) lingerArm(chatId, 0);
 			return;
 		}
 		if (status > 0 && !ok) miss(`${status} ${data?.detail ?? ''}`.trim(), data?.tried);
@@ -670,7 +823,7 @@
 		if (flowing === f) {
 			stopFlow(false);
 			if (before.line != null && chatIdOf() === chatId)
-				paint(before.line, before.from, before.mode, before.lingered, before.at); // what the field said before
+				paint(before.line, before.from, before.mode, before.lingered, before.at, { why: 'her reply line missed: the field went back to what it said' }); // what the field said before
 		}
 	};
 
@@ -680,11 +833,11 @@
 		readStop('a different page');
 		anchor = { at: Date.now(), kind: 'open' };
 		if (cached) {
-			paint(cached, 'reply (petal, earlier in this chat)', 'reply');
+			paint(cached, 'reply (petal, earlier in this chat)', 'reply', 0, Date.now(), { why: 'the line she wrote here earlier (this page session), kept' });
 			lingerArm(chatId, 0);
 		}
-		else if (replyLines.length) paint(pick(replyLines, shown.line), 'reply pool', 'reply');
-		else paint(restLine, 'rest (until she speaks here)', 'rest');
+		else if (replyLines.length) paint(pick(replyLines, shown.line), 'reply pool', 'reply', 0, Date.now(), { why: 'a line of your reply pool until she speaks here' });
+		else paint(restLine, 'rest (until she speaks here)', 'rest', 0, Date.now(), { why: 'the rest line until she speaks here' });
 		clearTimeout(openTimer);
 		if (!replyLive || !replyOnOpen) return;
 		/* a brand-new chat arrives here right as its first message is sent —
@@ -703,8 +856,8 @@
 		lingerStop('you sent a message');
 		readStop('you sent a message');
 		anchor = { at: Date.now(), kind: 'send' }; // until she's done and hush hears when
-		if (replyLines.length) paint(pick(replyLines, shown.line), 'reply pool (while she writes)', 'reply');
-		else paint(restLine, 'rest (while she writes)', 'rest');
+		if (replyLines.length) paint(pick(replyLines, shown.line), 'reply pool (while she writes)', 'reply', 0, Date.now(), { why: 'a line of your reply pool while she writes her reply' });
+		else paint(restLine, 'rest (while she writes)', 'rest', 0, Date.now(), { why: 'the rest line while she writes her reply' });
 		askReply(chatId, messageId, 'after your message');
 	};
 
@@ -748,7 +901,7 @@
 		if (!fieldIsEmpty() || pulse)
 			return note(r.line ? 'you began first — her line stays in the cache' : 'you began first — no whisper asked');
 		if (!r.line) return void streamReply(r.chatId, r.messageId ?? null, 'after you read her'); // v0.16: live now
-		paint(r.line, 'reply (petal, after you read her)', 'reply');
+		paint(r.line, 'reply (petal, after you read her)', 'reply', 0, Date.now(), { why: 'an older server answered her reply line whole' });
 		lingerArm(r.chatId, 0);
 	};
 
@@ -874,14 +1027,14 @@
 				replyCache.set(chatId, line);
 				replyRecent.set(chatId, [line, ...(replyRecent.get(chatId) ?? []).filter((l) => l !== line)].slice(0, 6));
 			}
-			if (chatIdOf() === chatId && flowEnd(f, line, `linger ${count} (petal, after ${quiet}s of quiet)`))
+			if (chatIdOf() === chatId && flowEnd(f, line, `linger ${count} (petal, after ${quiet}s of quiet)`, res.data?.how))
 				lingerArm(chatId, count);
 			else lingerStop('you came back first');
 		} else {
 			if (res.status > 0 && !res.ok) miss(`${res.status} ${res.data?.detail ?? ''}`.trim(), res.data?.tried);
 			if (flowing === f) {
 				stopFlow(false);
-				if (before.line != null) paint(before.line, before.from, before.mode, before.lingered, before.at); // the line before stays
+				if (before.line != null) paint(before.line, before.from, before.mode, before.lingered, before.at, { why: 'her linger missed: the line before stays' }); // the line before stays
 			}
 			lingerStop(res.data?.reason ?? 'no line this time');
 		}
@@ -1308,6 +1461,11 @@
 			'live open/reply': `${live}/${replyLive}`,
 			'live line': flowing ? `${flowing.text.length} chars so far` : 'none', // v0.16 · numbers only
 			'live steps drawn': flowSteps,
+			'last line': story // v0.17 · how the field's line got there (petalHush.why() says it in words)
+				? story.live
+					? `live · ${story.frames} steps · first letters ${story.first_ms} ms · whole ${story.span_ms} ms later${story.how?.whole ? ' · ' + story.how.whole : ''}`
+					: `whole · ${story.from}${story.why ? ' · ' + story.why : ''}`
+				: '(none yet)',
 			'reply on open': replyOnOpen,
 			'open queue': `${freshQueue().length}/${cap}`,
 			'reply waiting': replyFor ? `for chat ${short(replyFor.chatId)}` : 'no',
@@ -1418,7 +1576,7 @@
 		readStop('a reflex line');
 		lingerStop('a reflex line');
 		const interrupted = !!flowing; // a live line she was still writing gives way (v0.16)
-		paint(line, from, kind === 'thanks' ? 'thanks' : 'reflex', 0);
+		paint(line, from, kind === 'thanks' ? 'thanks' : 'reflex', 0, Date.now(), { why: 'her thank-you, written ahead of time' });
 		if (!fitsOneRow(line)) root.dataset.pHushTall = '2';
 		note('reflex', { chars: line.length, kind, rows: root.dataset.pHushTall ? 2 : 1, interrupted });
 		return true; // no linger is armed: it stays until you type
@@ -1437,6 +1595,28 @@
 				console.warn('🌸 hush: your pool is still read from the public copy — move hush.json into petal-lenses/');
 			console.table(f);
 			return v;
+		},
+		/** v0.17 · how the field's line got there, in words and numbers (safe to paste: no word of hers) */
+		why() {
+			const st = story;
+			let said;
+			if (!st) said = 'no line yet on this page';
+			else if (st.live) {
+				const h = st.how;
+				said =
+					`her last line streamed live: ${st.frames} step${st.frames === 1 ? '' : 's'} drawn here, her first letters ` +
+					`${st.first_ms} ms after the ask, the whole line ${st.span_ms} ms after them`;
+				if (h)
+					said +=
+						` · the server: ${h.steps} step${h.steps === 1 ? '' : 's'} over ${h.span_ms ?? 0} ms ` +
+						`(${h.pieces} pieces in ${h.chunks} reads${h.thinking ? ', ' + h.thinking + ' of thinking, never shown' : ''})`;
+				if (h?.whole) said += ` · whole because ${h.whole}`;
+				else if (st.json) said += ' · whole because the server answered JSON (an older backend?)';
+				else if ((h && (h.span_ms ?? 0) < 250) || st.span_ms < 250)
+					said += ' · she wrote it in a blink: the ink lets you see each arrival';
+			} else said = `her last line came whole: ${st.from}${st.why ? ' — ' + st.why : ''}`;
+			console.log('%c🌸 hush · why%c ' + said, 'color:#f2a7d6;font-weight:600', 'color:inherit');
+			return said;
 		},
 		async ask() {
 			const chatId = chatIdOf();

@@ -33,6 +33,10 @@ random bits, for the same signed-in user only):
   failing mid-reply stops the stream naming it (`stop`, reason "broken · <error>"), never a quiet `end` (the page heals);
   so does the follower breaking ("broken · follow · <error>"); a reply gone quiet for good ends with `end` + why
   · 🚩 a flag carries the page's last voice transitions ("thread": state, why, cause, ids, idx, time)
+🎧 A48 · her playback rides with a 🚩: POST …/petal-stream/flag/clip (the page's last ~90 s of what it played) and
+  PUT …/petal-stream/flag/timeline (when she played, paused, sought, skipped) wait in memory beside the flagged trace
+  until the voice names the incident, then go to its clip door (voice_trace.deliver_clip) · a trace never flagged
+  refuses them · each sentence's floor (X-Petal-Floor, the gate's answer) rides on its `sentence` event
 
 the voice asks each sentence as soon as it's fed; while the next one isn't written yet she simply waits
 between sentences, and the station's little quiet holds the line (the same care as a late voice). done
@@ -402,6 +406,7 @@ async def produce(session, parts: list[dict], voice: str, q: asyncio.Queue, c: d
                     w = sent.watch()
                 buf, released, first, why, broke = bytearray(), 0, True, None, None  # broke: what ended it badly
                 status, unreachable = None, False
+                floor_now = None  # 🔓 A48 · this take's own floor, as the gate answered it (X-Petal-Floor)
 
                 async def out(upto: int, final: bool = False) -> None:
                     """sends buf[released:upto] to her ears, shaped only in "shaped" pacing"""
@@ -416,7 +421,8 @@ async def produce(session, parts: list[dict], voice: str, q: asyncio.Queue, c: d
                         whole = final and released >= len(buf)
                         await q.put(voice_events.Saying(i, part["text"], len(piece) / RATE if whole else None,
                                                         part.get("mid"), part.get("ix"),  # 🧵 A45 · whose words
-                                                        bool(part.get("cue"))))  # 🧵 A46 · her cue, never the reply's
+                                                        bool(part.get("cue")),  # 🧵 A46 · her cue, never the reply's
+                                                        floor_now))  # 🔓 A48 · the floor she spoke it with
                     if first:
                         piece, first = fade(piece, head_n, out=False), False
                     if final and shaped and tail_hold:
@@ -432,6 +438,8 @@ async def produce(session, parts: list[dict], voice: str, q: asyncio.Queue, c: d
                     async with session.post(f"{OMNI_URL}/audio/speech", json=payload, timeout=timeout,
                                             headers=hdrs) as r:
                         status = r.status
+                        f_open = r.headers.get("X-Petal-Floor")
+                        floor_now = f_open if f_open in ("open", "closed") else None
                         if take:
                             take.status = r.status
                         if r.status == 200 and r.headers.get("X-Petal-Silenced"):
@@ -608,6 +616,8 @@ async def station(session, parts: list[dict], voice: str, tr=None, events=None):
             mine = {"message_id": m.message_id} if m.message_id else {}  # 🧵 A45 · a followed reply's own id and place
             if m.cue:
                 mine["cue"] = True  # 🧵 A46 · her cue (idx -1): said, never in the reply's words
+            if getattr(m, "floor", None):
+                mine["floor"] = m.floor  # 🔓 A48 · the floor this sentence was spoken with (open: the veil was up)
             events.publish("sentence", idx=m.idx if m.ix is None else m.ix, text=m.text,
                            start=voice_events.clock(s["start"]), duration=round(seconds, 3), **mine)
 
@@ -619,6 +629,8 @@ async def station(session, parts: list[dict], voice: str, tr=None, events=None):
             mine = {"message_id": m.message_id} if m.message_id else {}
             if m.cue:
                 mine["cue"] = True
+            if getattr(m, "floor", None):
+                mine["floor"] = m.floor  # 🔓 A48
             events.publish("saying", idx=m.idx if m.ix is None else m.ix, text=m.text,
                            start=voice_events.clock(s["start"]), **mine)
 
@@ -913,6 +925,53 @@ if __name__ != "__main__":
             return {"ok": bool(folder), "planted": bool(folder), "incident": folder.name if folder else None,
                     "at": "fork", "part": f["part"], "flags": len(tr.flags)}
         return {"ok": True, "planted": False, "pending": True, "at": "fork", "part": f["part"], "flags": len(tr.flags)}
+
+    @router.post("/petal-stream/flag/clip")
+    async def petal_stream_flag_clip(request: Request, trace: str | None = None, message_id: str | None = None,
+                                     user=Depends(get_verified_user)):
+        """🎧 A48 · her playback for the reply she just flagged: the page's last ~90 s of what it played. it rides only
+        with a 🚩 (a trace never flagged refuses it), waits in memory until the voice names the incident, then goes
+        to its clip door"""
+        tr = voice_trace.find(user.id, trace, message_id)
+        if not tr:
+            raise HTTPException(404, "no recent petal stream for this playback")
+        if not tr.flags:
+            raise HTTPException(409, "her playback rides only with a 🚩: flag first")
+        length = request.headers.get("content-length")
+        if length and length.isdigit() and int(length) > voice_trace.CLIP_MAX:
+            raise HTTPException(413, "her playback is too long for the clip door (40 MB)")
+        data = bytearray()
+        async for chunk in request.stream():
+            data += chunk
+            if len(data) > voice_trace.CLIP_MAX:
+                raise HTTPException(413, "her playback is too long for the clip door (40 MB)")
+        if not data:
+            raise HTTPException(400, "no audio")
+        voice_trace.hold_clip(tr, bytes(data), request.headers.get("content-type") or "audio/wav")
+        out = await asyncio.to_thread(voice_trace.deliver_clip, tr)
+        return {"ok": True, **out}
+
+    @router.put("/petal-stream/flag/timeline")
+    async def petal_stream_flag_timeline(request: Request, trace: str | None = None, message_id: str | None = None,
+                                         user=Depends(get_verified_user)):
+        """🎧 A48 · when she played, paused, sought or skipped within that clip (numbers and ids only)"""
+        tr = voice_trace.find(user.id, trace, message_id)
+        if not tr:
+            raise HTTPException(404, "no recent petal stream for this playback")
+        if not tr.flags:
+            raise HTTPException(409, "her playback rides only with a 🚩: flag first")
+        raw = await request.body()
+        if len(raw) > voice_trace.TIMELINE_MAX:
+            raise HTTPException(413, "timeline too long")
+        try:
+            timeline = json.loads(raw or b"null")
+        except ValueError:
+            raise HTTPException(400, "invalid json") from None
+        if not isinstance(timeline, dict):
+            raise HTTPException(400, "the timeline is a json object")
+        voice_trace.hold_timeline(tr, timeline)
+        out = await asyncio.to_thread(voice_trace.deliver_clip, tr)
+        return {"ok": True, **out}
 
     @router.get("/petal-stream/{ticket}")
     async def petal_stream_play(ticket: str):

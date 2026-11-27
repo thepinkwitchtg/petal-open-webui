@@ -10,6 +10,7 @@
 	import { copyToClipboard, extractCurlyBraceWords, getDeepestChildId } from '$lib/utils';
 	import { getOutputText } from './Messages/structuredOutput';
 	import { thumbMarks } from '$lib/utils/petal-thumbs'; // 👍🏻 instant thumbs (A23)
+	import { sight as petalSight } from '$lib/utils/petal-sight'; // 🔋 A48 · "Loading…" pulses only where she can see it
 	import equal from 'fast-deep-equal';
 
 	import Message from './Messages/Message.svelte';
@@ -560,7 +561,7 @@
 								}
 							}}
 						>
-							<div class="w-full flex justify-center py-1 text-xs animate-pulse items-center gap-2">
+							<div class="w-full flex justify-center py-1 text-xs animate-pulse items-center gap-2" use:petalSight>
 								<Spinner className=" size-4" />
 								<div class=" ">{$i18n.t('Loading...')}</div>
 							</div>
