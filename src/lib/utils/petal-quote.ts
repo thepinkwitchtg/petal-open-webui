@@ -47,10 +47,12 @@ export function quoteLines<T extends { type: string }>(tokens: T[]): T[][] {
 const MARKS = '“”„«»';
 
 // an emoji drawn in colour: one shown as emoji by default, or a symbol asked to be one (VS16), with
-// its skin tone and any ZWJ sequence it joins · flags and keycaps too. a text-style symbol (✧, ©)
-// stays text, so it takes the gradient like the words around it
+// its skin tone and any ZWJ sequence it joins · flags and keycaps too · and every pictograph past the
+// basic plane (👁 🕯 🗝…): text-style by Unicode, but the colour font draws them anyway, so the gradient
+// cut them to a blob (lily, nov 26). a text-style symbol of the basic plane (✧, ©, ™, ♀) stays text,
+// so it takes the gradient like the words around it
 const EMOJI =
-	/\p{Regional_Indicator}{2}|[#*0-9]️?⃣|(?:\p{Emoji_Presentation}|\p{Extended_Pictographic}️)(?:\p{Emoji_Modifier}|️)*(?:‍\p{Extended_Pictographic}️?(?:\p{Emoji_Modifier}|️)*)*/gu;
+	/\p{Regional_Indicator}{2}|[#*0-9]️?⃣|(?:\p{Emoji_Presentation}|\p{Extended_Pictographic}️|(?=[\u{1F000}-\u{1FFFF}])\p{Extended_Pictographic})(?:\p{Emoji_Modifier}|️)*(?:‍\p{Extended_Pictographic}️?(?:\p{Emoji_Modifier}|️)*)*/gu;
 
 /** the words in runs: plain text, quotation marks and emoji, in order (joined, they give back the text) */
 export function quoteSegs(text: string): QuoteSeg[] {
