@@ -18,6 +18,20 @@ T = ROOT / 'routers/tasks.py'
 block = Path('petal-patches/tasks_petal_hush.py').read_text(encoding='utf-8')
 original = T.read_text(encoding='utf-8')
 
+# 🌸 A49 · never an older block over a newer one (nov 27: this graft laid the v0.17 patch back over A47's v0.18 block,
+#    and hush never streamed on her rig). hush lives in git since A47: the graft only ever adds a missing block now
+def _ver(text):
+    i = text.find('# >>> petal · hush · begin >>>')
+    j = text.find('# <<< petal · hush · end <<<', i + 1) if i >= 0 else -1
+    seg = text[i:j] if i >= 0 and j > i else text
+    vs = [(int(a), int(b)) for a, b in re.findall(r'^#\s*v(\d+)\.(\d+)\s*·', seg, re.M)]
+    return max(vs) if vs else None
+have, bring = _ver(original), _ver(block)
+if have and (not bring or bring <= have):
+    told = f"routers/tasks.py already holds block v{have[0]}.{have[1]}" + (f" (the patch is v{bring[0]}.{bring[1]})" if bring else "")
+    print(f"🌸 hush graft: {told} — left as it is (hush lives in git since A47)")
+    sys.exit(0)
+
 # ── strip any earlier graft → the upstream body ─────────────
 src = original
 if '# >>> petal · hush · begin >>>' in src:

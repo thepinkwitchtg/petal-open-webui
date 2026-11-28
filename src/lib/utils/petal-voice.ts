@@ -24,11 +24,18 @@
 //    in a hidden tab does everything hold (and carry on from there). her reply drawn again under her (a pick
 //    closing, the list keyed again, its words re-rendered) is found again where it is now, by its place; gone from
 //    the page (the chat changed), nothing of the trail stays
+//  · 🪟 A49 · one screen alive: a reply drawn in two chat screens at once (the phone's tabs drawer over the page's chat,
+//    a tab showing the same chat) registers twice; the voice acts on the copy she can see. the trail is drawn only
+//    there (one renderer per reply, the trail's door takes one consumer), her eyes look only inside screens that are
+//    alive (each in its own chat box), and a screen coming alive or going inert moves the trail to where she can see
+//    it, at the place her voice is now (never from a sentence's start, never back)
 import { get, writable } from 'svelte/store';
 import { config, settings } from '$lib/stores';
 import { getMessageContentParts } from '$lib/utils';
+import { countIn, inertAt, onScreens, screenIdOf } from '$lib/utils/petal-screen';
 import {
 	onSounding,
+	soundingDoor,
 	onVoiceStep,
 	petalStreamAudio,
 	petalStreamEnabled,
@@ -67,7 +74,43 @@ export type VoiceReply = {
 	pick?: () => boolean; // 🍒 one of a pair: her voice waits for the pick (contract 11.6)
 	pair?: () => [string, string] | null; // 🍒 A38 · shown inside an open pick: both replies, in the order they show
 };
-const replies = new Map<string, VoiceReply>();
+// 🪟 A49 · every copy of a reply on the page registers (two chat screens can draw the same one): the voice reads the
+// copy she can see (two in sight, a split view: the one in the chat her voice speaks for, else the newest), and with
+// none in sight the newest copy still speaks (the trail rests: it is drawn only where she can see it)
+const regs = new Map<string, VoiceReply[]>();
+const inSight = (r: VoiceReply) => {
+	const el = r.root();
+	return !!el && el.isConnected !== false && !inertAt(el);
+};
+function copyOf(id: string, seenOnly: boolean): VoiceReply | undefined {
+	const list = regs.get(id);
+	if (!list?.length) return undefined;
+	const seen = list.filter(inSight);
+	if (seen.length > 1) {
+		const chat = get(voiceThread).chat_id;
+		return seen.find((r) => !!chat && r.meta?.()?.chat_id === chat) ?? seen[seen.length - 1];
+	}
+	if (seen.length === 1) return seen[0];
+	return seenOnly ? undefined : list[list.length - 1];
+}
+/** the registry as this file reads it: one reply per id (the copy she can see first) · `seen` / `inSight`: only a copy
+ *  she can see (the trail and her eyes) */
+const replies = {
+	get: (id: string) => copyOf(id, false),
+	seen: (id: string) => copyOf(id, true),
+	*values(): Generator<VoiceReply> {
+		for (const id of regs.keys()) {
+			const r = copyOf(id, false);
+			if (r) yield r;
+		}
+	},
+	*inSight(): Generator<VoiceReply> {
+		for (const id of regs.keys()) {
+			const r = copyOf(id, true);
+			if (r) yield r;
+		}
+	}
+};
 // Lily's own messages only lend their words (a quote of hers said alone finds its part here)
 const lent = new Map<string, () => string>();
 export function lendWords(id: string, content: () => string): () => void {
@@ -85,11 +128,16 @@ const bump = () => {
 
 export function registerReply(r: VoiceReply): () => void {
 	wire();
-	replies.set(r.id, r);
+	const list = regs.get(r.id) ?? [];
+	list.push(r);
+	regs.set(r.id, list);
 	bump();
 	if (shown && r.id === shown.row.mid) relocateSoon(); // A35 · the reply she's hearing, drawn again: the trail follows
 	return () => {
-		if (replies.get(r.id) === r) replies.delete(r.id);
+		const now = regs.get(r.id);
+		const i = now ? now.indexOf(r) : -1;
+		if (now && i >= 0) now.splice(i, 1);
+		if (now && !now.length) regs.delete(r.id);
 		bump();
 		if (shown && r.id === shown.row.mid) relocateSoon(); // gone, or about to be drawn again: decided on the next frame
 	};
@@ -140,44 +188,56 @@ export function lendPickFocus(read: PickNow): () => void {
 export const eyesStats = { looks: 0, batches: 0, watched: 0 };
 
 const STEPS = Array.from({ length: 11 }, (_, i) => i / 10);
-type Watch = { id: string; kind: 'reply' | 'speaker' };
+type Watch = { id: string; kind: 'reply' | 'speaker'; io: IntersectionObserver };
 const watching = new Map<Element, Watch>();
 const shares = new Map<string, number>(); // reply id → how much of it is in view (0 … 1)
-let io: IntersectionObserver | null = null;
-let ioRoot: Element | null | undefined; // its box: the chat's (null: the window's), unset before the first
+// 🪟 A49 · one observer per chat box: a reply is seen against its own screen's box (a tab's chat has its own), and only
+// replies in a screen she can see are watched at all
+const ios = new Map<Element | null, IntersectionObserver>();
 let pending = false; // a change came while the page was hidden: look once she's back
 let queued = false;
 
 const pageHidden = () => typeof document !== 'undefined' && document.visibilityState === 'hidden';
+/** the chat box a reply lives in (the page's chat or a tab's), null: the window · (a page without closest(): the
+ *  page's own chat box, as before tabs) */
+const boxOf = (el: Element | null | undefined): Element | null =>
+	typeof el?.closest === 'function'
+		? el.closest('#messages-container, [id^="note-messages-"]')
+		: (document.getElementById?.('messages-container') ?? null);
 
-function observer(): IntersectionObserver | null {
+function observerFor(el: Element): IntersectionObserver | null {
 	if (typeof IntersectionObserver === 'undefined' || typeof document === 'undefined') return null;
-	const root = document.getElementById('messages-container'); // the chat's box (else the window's)
-	if (io && ioRoot === root) return io;
-	io?.disconnect(); // another chat's box: start over
-	watching.clear();
-	shares.clear();
-	speakersInView.set(new Set());
-	ioRoot = root;
-	io = new IntersectionObserver(seen, { root, threshold: STEPS });
-	return io;
+	const box = boxOf(el);
+	let o = ios.get(box);
+	if (!o) {
+		o = new IntersectionObserver(seen, { root: box, threshold: STEPS });
+		ios.set(box, o);
+	}
+	return o;
 }
 
-/** watch what's on screen now: each reply, and its speaker button once it's there (stale ones let go) */
+/** a reply's own speaker button (inside its own copy: two screens can draw the same reply) */
+const speakerOf = (r: VoiceReply) => {
+	const root = r.root();
+	return typeof root?.querySelector === 'function'
+		? root.querySelector<HTMLElement>(`[id="speak-button-${r.id}"]`)
+		: (document.getElementById?.(`speak-button-${r.id}`) ?? null);
+};
+
+/** watch what's on screen now: each reply she can see, and its speaker button once it's there (stale ones let go) */
 function watchAll() {
-	const obs = observer();
-	if (!obs) return;
-	const want = new Map<Element, Watch>();
-	for (const r of replies.values()) {
+	if (typeof IntersectionObserver === 'undefined' || typeof document === 'undefined') return;
+	const want = new Map<Element, Omit<Watch, 'io'>>();
+	for (const r of replies.inSight()) {
 		const el = r.root();
 		if (el) want.set(el, { id: r.id, kind: 'reply' });
-		const sp = document.getElementById(`speak-button-${r.id}`);
+		const sp = speakerOf(r);
 		if (sp) want.set(sp, { id: r.id, kind: 'speaker' });
 	}
 	let gone = false;
 	for (const [el, w] of watching)
 		if (!want.has(el)) {
-			obs.unobserve(el);
+			w.io.unobserve(el);
 			watching.delete(el);
 			if (w.kind === 'reply') shares.delete(w.id);
 			else gone = true;
@@ -188,8 +248,15 @@ function watchAll() {
 	}
 	for (const [el, w] of want)
 		if (!watching.has(el)) {
-			obs.observe(el); // its first sight arrives on its own
-			watching.set(el, w);
+			const o = observerFor(el);
+			if (!o) continue;
+			o.observe(el); // its first sight arrives on its own
+			watching.set(el, { ...w, io: o });
+		}
+	for (const [box, o] of ios) // a chat box that left the page takes its observer with it
+		if (box && box.isConnected === false) {
+			o.disconnect();
+			ios.delete(box);
 		}
 	eyesStats.watched = watching.size;
 	look();
@@ -240,10 +307,10 @@ function aside(id: string): boolean {
 /** 🔈 A40 · a reply still being written, outside an open pick, that already shows words: the play button joins it */
 const writingWithWords = (r: VoiceReply) => !r.done() && !r.pair?.() && !!r.content().trim();
 
-/** the newest reply that can be played (with none in view) */
+/** the newest reply that can be played (with none in view), in a screen she can see */
 function newest(): string | null {
 	let last: { id: string; at: number } | null = null;
-	for (const r of replies.values()) {
+	for (const r of replies.inSight()) {
 		const el = r.root();
 		if (!el || !r.done() || aside(r.id)) continue;
 		const at = el.getBoundingClientRect().top;
@@ -255,12 +322,13 @@ function newest(): string | null {
 /** of replies tied by their share, the one whose visible part sits nearest the view's middle (measured
  *  now, only when there is a tie to break) */
 function nearestMiddle(ids: string[]): string | null {
-	const view = ioRoot?.getBoundingClientRect() ?? { top: 0, bottom: innerHeight, height: innerHeight };
-	const middle = view.top + view.height / 2;
 	let [best, bestOff] = [ids[0] ?? null, Infinity];
 	for (const id of ids) {
-		const r = replies.get(id)?.root()?.getBoundingClientRect();
+		const el = replies.seen(id)?.root();
+		const r = el?.getBoundingClientRect();
 		if (!r) continue;
+		const view = boxOf(el)?.getBoundingClientRect() ?? { top: 0, bottom: innerHeight, height: innerHeight };
+		const middle = view.top + view.height / 2;
 		const [top, bottom] = [Math.max(r.top, view.top), Math.min(r.bottom, view.bottom)];
 		const off = Math.abs((top + bottom) / 2 - middle);
 		if (off < bestOff) [best, bestOff] = [id, off];
@@ -284,7 +352,7 @@ function look() {
 	let step = -1;
 	let tied: string[] = [];
 	let waiting = false; // the pick wins her eyes, but the reply she's on is still arriving
-	for (const r of replies.values()) {
+	for (const r of replies.inSight()) {
 		const mine = !!f && f.ids.includes(r.id);
 		if (mine && r.id !== f!.id) continue;
 		const share = mine ? pickShare : (shares.get(r.id) ?? 0);
@@ -636,7 +704,7 @@ function relocate() {
 	if (lineQuote) return lineLost();
 	const s = shown;
 	if (!s) return;
-	const host = replies.get(s.row.mid ?? '')?.words() ?? null;
+	const host = replies.seen(s.row.mid ?? '')?.words() ?? null; // 🪟 A49 · only a copy she can see
 	if (host?.isConnected && host === s.host && (!s.range || alive(s.range))) return; // nothing moved
 	if (!host?.isConnected) {
 		trail.clear();
@@ -667,7 +735,7 @@ function observeHost(host: HTMLElement) {
 
 /** her next sentence: its road under its words, in its own reply, and the quotes it reaches */
 function show(seq: number, row: VoiceRow, rewind = 0) {
-	const r = replies.get(row.mid ?? '');
+	const r = replies.seen(row.mid ?? ''); // 🪟 A49 · drawn only in a copy she can see (none: the lead rests)
 	const live = r?.words() ?? null;
 	const host = live?.isConnected ? live : null;
 	const found = host && r && !row.cue ? place(host, r.content(), row.idx, row.text) : null;
@@ -682,6 +750,19 @@ function show(seq: number, row: VoiceRow, rewind = 0) {
 	for (const q of host.querySelectorAll<HTMLElement>('.petal-quote'))
 		if (found.range.intersectsNode(q)) voiceReveal(q); // her voice reached it: the reveal plays again
 	observeHost(host);
+}
+
+/** 🪟 A49 · where her voice is on the trail's own clock: the page's animations take their time from the frame they're
+ *  in (it holds still through a long frame), her clock from the moment it was read. the lead is set where her voice
+ *  was at the frame's time, so the next frame finds them together (a long task on a phone never turns into a hop
+ *  forward that overshoots her, then a slow crawl back to her) · paused or waiting: where she is, as it is */
+export function onTrailClock(s: Sounding): number {
+	if (s.paused || s.waiting || !s.now || typeof document === 'undefined') return s.at;
+	const raw = document.timeline?.currentTime; // null: the page's animation clock isn't running
+	const tl = raw === null || raw === undefined ? NaN : Number(raw);
+	if (!Number.isFinite(tl)) return s.at;
+	const d = ((tl - s.now) / 1000) * (s.rate || 1);
+	return Math.max(0, s.at + Math.max(-0.5, Math.min(0.5, d)));
 }
 
 /** 🧵 A46 · the thread looked at her clock: the trail follows what it says is sounding, never a clock of its own */
@@ -701,7 +782,8 @@ function follow(s: Sounding) {
 		if (shown) shown.running = false;
 		return;
 	}
-	if (shown?.host && (!shown.host.isConnected || (shown.range && !alive(shown.range)))) return relocateSoon(); // A35
+	if (shown?.host && (!shown.host.isConnected || inertAt(shown.host) || (shown.range && !alive(shown.range))))
+		return relocateSoon(); // A35 · drawn again, or (🪟 A49) its screen went inert: found again where she can see it
 	// 🧵 A47 · a new sentence, a take made again, or the player back at a sentence's start: the road begins (again)
 	if (!shown || shown.row !== row || shown.seq !== s.seq || shown.take !== (row.take ?? 1) || shown.rewind !== (s.rewind ?? 0))
 		show(s.seq, row, s.rewind ?? 0);
@@ -719,10 +801,11 @@ function follow(s: Sounding) {
 		return;
 	}
 	if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return trail.freeze();
+	const at = onTrailClock(s); // 🪟 A49 · read on the trail's clock (laying the road took time since her clock was read)
 	if (!shown.running) {
-		trail.time(s.at, s.rate, false);
+		trail.time(at, s.rate, false);
 		shown.running = true;
-	} else trail.pin(s.at, s.rate); // A33 · on her clock: never ahead of her voice, never stepping back
+	} else trail.pin(at, s.rate); // A33 · on her clock: never ahead of her voice, never stepping back
 }
 
 /** meet her where she is now (her block back on screen, the tab visible again, her reply drawn again) */
@@ -822,7 +905,7 @@ function traceKey(e: KeyboardEvent) {
 // ── 🧵 A46 · a line the voice gave up: a dotted pink underline under its words (said, never a silent stop) ──────
 const skipRanges: Range[] = [];
 function markSkip(k: VoiceSkip) {
-	const r = replies.get(k.mid ?? '');
+	const r = replies.seen(k.mid ?? '');
 	const host = r?.words();
 	if (!r || !host?.isConnected) return;
 	const f = place(host, r.content(), k.idx, k.text);
@@ -890,6 +973,13 @@ function lineFollow(s: Sounding) {
 	if (s.seq !== lineSeq || !q) return;
 	const host = q.closest<HTMLElement>('#response-content-container') ?? q;
 	if (!host.isConnected) return lineLost(); // A35 · her reply drawn again under the line: the trail lets go
+	if (inertAt(host)) {
+		// 🪟 A49 · its screen went inert (the drawer over it, its tab parked): nothing of the trail there, laid again
+		// where her voice is once she can see it
+		if (lineFollowed) trail.clear();
+		lineFollowed = false;
+		return;
+	}
 	if (!s.row) {
 		if (lineFollowed) trail.rest();
 		return;
@@ -902,10 +992,10 @@ function lineFollow(s: Sounding) {
 		trail.lay(range, host, d * 1000);
 		trail.watch(q);
 		lineFollowed = true;
-		return s.paused ? trail.hold() : trail.time(s.at, s.rate, false);
+		return s.paused ? trail.hold() : trail.time(onTrailClock(s), s.rate, false);
 	}
 	if (s.paused || s.waiting) trail.hold();
-	else trail.pin(s.at, s.rate);
+	else trail.pin(onTrailClock(s), s.rate);
 }
 
 /** A35 · the reply her line lives in left the page (drawn again, the chat changed): the line plays on, the trail
@@ -954,6 +1044,35 @@ function wire() {
 	if (wired || typeof window === 'undefined') return;
 	wired = true;
 	onSounding(follow);
+	// 🪟 A49 · a screen came alive or went inert: her eyes look again (only where she can see), and the trail moves to
+	// the copy she can see, where her voice is now (none in sight: it rests)
+	onScreens(() => {
+		watchSoon();
+		if (lineQuote) {
+			if (inertAt(lineQuote)) {
+				if (lineFollowed) trail.clear();
+				lineFollowed = false;
+			} else if (!lineFollowed) resync();
+		} else if (shown) {
+			if (shown.host && inertAt(shown.host)) {
+				// its screen went inert: nothing of the trail stays there, not even for a frame; found again (next
+				// frame, the page settled) in the copy she can see
+				trail.clear();
+				unobserveHost();
+				shown = { ...shown, range: null, host: null, block: null, running: false, pos: -1 };
+			}
+			relocateSoon();
+		}
+	});
+	countIn('voice', () => {
+		const out: Record<string, Record<string, number>> = {};
+		const row = (id: string) => (out[id] ??= { copies: 0, eyes: 0, trail: 0 });
+		for (const list of regs.values()) for (const r of list) row(screenIdOf(r.root())).copies += 1;
+		for (const el of watching.keys()) row(screenIdOf(el)).eyes += 1;
+		const host = shown?.host ?? (lineFollowed ? lineQuote : null);
+		if (host?.isConnected) row(screenIdOf(host)).trail += 1;
+		return out;
+	});
 	let noted = 0;
 	voiceThread.subscribe((t) => {
 		if (t.state === 'ended' && t.why === 'natural' && t.message_id && t.kind !== 'line') {
@@ -983,9 +1102,10 @@ function wire() {
 		get eyes() {
 			return { target: get(voiceTarget), ...eyesStats }; // ids and numbers only
 		},
-		/** A33 · the trail, numbers only: the lead's state, ms into its road, ms it last was ahead of her voice */
+		/** A33 · the trail, numbers only: the lead's state, ms into its road, ms it last was ahead of her voice ·
+		 *  🪟 A49 · and its door: one consumer, and how many it refused */
 		get trail() {
-			return trail.state;
+			return { ...trail.state, door: soundingDoor() };
 		},
 		/** 🧵 A47 · why did she stop: her voice's last 20 transitions (ids and numbers only) */
 		get steps() {

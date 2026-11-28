@@ -9,11 +9,14 @@
 	import type { Writable } from 'svelte/store';
 
 	import { audioRoute, autoMode, earphones, followRoute, isPhone, setEarphones } from '$lib/utils/petal-autoplay';
-	import { stopAllVoice, voiceUI } from '$lib/utils/petal-voice';
+	import { stopAllVoice, voiceUI as uiAll } from '$lib/utils/petal-voice';
+	import { everAlive, gate, type PetalScreen } from '$lib/utils/petal-screen';
 
 	export let ear = true; // 💗 A39 · unpinned: 🎧 lives under the heart; ⏹ always shows while she speaks
 
 	const i18n: Writable<any> = getContext('i18n');
+	// 🪟 A49 · her voice reaches this chip only while its chat is the screen she sees
+	const voiceUI = gate(uiAll, getContext<PetalScreen | undefined>('petal-screen') ?? everAlive, 'ear·voiceUI');
 	const phone = isPhone();
 
 	$: routed = $followRoute && ($audioRoute === 'earphones' || $audioRoute === 'speaker');

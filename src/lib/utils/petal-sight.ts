@@ -6,10 +6,16 @@
 //  · whoever drives motion by hand (a typing job, a WAAPI loop) hears `seen(false | true)` and holds or goes on
 //  · watched only while something on it moves (`use:sight={moving}`): at rest nothing is observed
 //  · a batch of entries can carry an older word first: only the newest one per element counts
+// 🪟 A49 · a chat screen she can't see (petal-screen: under the phone's tabs drawer, a tab parked behind another) is
+// off her screen too, whatever the observer says (a covered chat still "intersects" the window): seen = in view AND in
+// a screen that's alive. a screen coming alive or going inert is heard at once, everything inside told again
+import { countIn, inertAt, onScreens, screenIdOf } from '$lib/utils/petal-screen';
+
 const OFF = 'data-petal-offscreen';
 
 type Seen = (on: boolean) => void;
-const watched = new Map<Element, { seen: Seen }>();
+type Watch = { seen: Seen; inView: boolean; told: boolean | null };
+const watched = new Map<Element, Watch>();
 let io: IntersectionObserver | null = null;
 let styled = false;
 
@@ -25,21 +31,41 @@ export function sightStyle() {
 	document.head.appendChild(el);
 }
 
+/** tell a watcher what it is now (in view, in a screen that's alive): its first word always, then only changes */
+function tellOne(el: Element, w: Watch, first = false) {
+	const on = w.inView && !inertAt(el);
+	if (!first && w.told === on) return;
+	w.told = on;
+	el.toggleAttribute(OFF, !on);
+	try {
+		w.seen(on);
+	} catch (err) {
+		console.warn('🌸 sight:', err);
+	}
+}
+
+let listening = false;
+function listenScreens() {
+	if (listening) return;
+	listening = true;
+	onScreens(() => {
+		for (const [el, w] of watched) if (w.told !== null) tellOne(el, w);
+	});
+	countIn('sight', () => sightBy(screenIdOf));
+}
+
 function observer(): IntersectionObserver | null {
 	if (io || typeof IntersectionObserver === 'undefined') return io;
+	listenScreens();
 	io = new IntersectionObserver((entries) => {
 		const newest = new Map<Element, IntersectionObserverEntry>();
 		for (const e of entries) newest.set(e.target, e); // entries come in time order: the last one is now
 		for (const [el, e] of newest) {
 			const w = watched.get(el);
 			if (!w) continue;
-			const on = e.isIntersecting;
-			el.toggleAttribute(OFF, !on);
-			try {
-				w.seen(on);
-			} catch (err) {
-				console.warn('🌸 sight:', err);
-			}
+			const first = w.told === null;
+			w.inView = e.isIntersecting;
+			tellOne(el, w, first);
 		}
 	});
 	return io;
@@ -51,7 +77,7 @@ export function watchSight(el: Element, seen: Seen = () => {}): () => void {
 	sightStyle();
 	const o = observer();
 	if (!o) return () => {};
-	const w = { seen };
+	const w: Watch = { seen, inView: true, told: null };
 	watched.set(el, w);
 	o.observe(el);
 	return () => {
@@ -62,8 +88,8 @@ export function watchSight(el: Element, seen: Seen = () => {}): () => void {
 	};
 }
 
-/** is it out of her view right now (as last seen; unwatched counts as in view) */
-export const offScreen = (el: Element | null | undefined) => !!el?.hasAttribute(OFF);
+/** is it out of her view right now (as last seen; unwatched counts as in view, unless its screen is inert) */
+export const offScreen = (el: Element | null | undefined) => !!el?.hasAttribute(OFF) || (!!el && inertAt(el));
 
 type SightArg = boolean | { on?: boolean; seen?: Seen } | null | undefined;
 
@@ -98,3 +124,15 @@ export const atEnd = (a: Animation) =>
 
 /** for her console and the tests: how many elements are watched right now (numbers only) */
 export const sightCount = () => watched.size;
+
+/** 🪟 A49 · watched elements per screen, and how many of them are told "not seen" (her console, numbers only) */
+export function sightBy(screenIdOf: (n: Node) => string): Record<string, { watched: number; held: number }> {
+	const out: Record<string, { watched: number; held: number }> = {};
+	for (const [el, w] of watched) {
+		const id = screenIdOf(el);
+		const row = (out[id] ??= { watched: 0, held: 0 });
+		row.watched += 1;
+		if (w.told === false) row.held += 1;
+	}
+	return out;
+}

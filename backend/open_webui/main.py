@@ -160,6 +160,7 @@ from open_webui.routers import petal_thumbs  # 👍🏻 one verdict per reply, i
 from open_webui.routers import petal_shelf  # 💗 what her shelf offers as a pull (A30 · arms)
 from open_webui.routers import petal_lounge  # 🌊 Petal Stream (A41): she speaks on her own, in a chat opened to it
 from open_webui.routers import petal_voice  # 🎙️ her voice's diary + her controls (A48)
+from open_webui.utils import petal_hush_guard  # 🌸 A49 · names an older hush block than the page needs, at boot
 from open_webui.utils import petal_temp_chats  # 🧪 contract 0's times-only counter
 from open_webui.utils import petal_gentle_stop  # 🌙 contract 8 · the outlet waits while Petal is tucked in
 from open_webui.utils import petal_state  # 🌸👁 what Petal sees of Lily's state (climaxes, thumbs, the trail)
@@ -875,6 +876,7 @@ app.include_router(petal_thumbs.router, prefix='/api/v1/petal', tags=['petal'])
 app.include_router(petal_shelf.router, prefix='/api/v1/petal', tags=['petal'])
 app.include_router(petal_lounge.router, prefix='/api/v1/petal', tags=['petal'])
 app.include_router(petal_voice.router, prefix='/api/v1/petal', tags=['petal'])
+petal_hush_guard.check_at_boot()  # 🌸 A49 · tasks.py's hush block vs the page's hush.js, said in the log
 app.include_router(notes.router, prefix='/api/v1/notes', tags=['notes'])
 app.include_router(search.router, prefix='/api/v1/search', tags=['search'])
 

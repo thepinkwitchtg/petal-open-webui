@@ -13,6 +13,11 @@
 	import type { i18n as i18nType, t } from 'i18next';
 
 	const i18n = getContext<Writable<i18nType>>('i18n');
+	// 🪟 A49 · a reply in a chat she can't see listens to nothing of her voice (its ✕, its 'said' mark): alive again, it
+	// reads the thread as it is now
+	const petalScreen = getContext<PetalScreen | undefined>('petal-screen') ?? everAlive;
+	const voiceThread = gate(threadAll, petalScreen, 'reply·voiceThread');
+	const spokenMessages = gate(spokenAll, petalScreen, 'reply·spokenMessages');
 
 	const dispatch = createEventDispatcher();
 
@@ -20,7 +25,8 @@
 
 	import { config, settings, TTSWorker, user, visibleControls } from '$lib/stores';
 	import { synthesizeOpenAISpeech } from '$lib/apis/audio';
-	import { flagPetalVoice, spokenMessages, stopVoice, voiceThread } from '$lib/utils/petalStream'; // 🧵 A46 · the one thread
+	import { flagPetalVoice, spokenMessages as spokenAll, stopVoice, voiceThread as threadAll } from '$lib/utils/petalStream'; // 🧵 A46 · the one thread
+	import { everAlive, gate, type PetalScreen } from '$lib/utils/petal-screen'; // 🪟 A49 · its voice listeners live only while its chat is seen
 	import { goto as petalGoto } from '$app/navigation'; // 🎧 A48 · a kept incident opens in her voice's diary
 	import { setContext as petalSetContext } from 'svelte';
 	import { sight as petalSight } from '$lib/utils/petal-sight'; // 🔋 A48 · her words move only while she can see them

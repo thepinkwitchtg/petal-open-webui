@@ -255,16 +255,28 @@ export type Sounding = {
 	skip?: VoiceSkip; // a line she just reached that the voice gave up
 	ended?: VoiceWhy; // she ended (nothing of the trail stays)
 	rewind?: number; // 🧵 A47 · counts the times the player went back to a sentence's start (the trail goes back with it)
+	now?: number; // 🪟 A49 · when her clock was read (performance.now()): the trail meets her on its own clock from it
 };
 type SoundingListener = (s: Sounding) => void;
-const soundingListeners = new Set<SoundingListener>();
-/** the trail's door: told on every look at her clock (a sentence begins, she moves inside it, pauses, ends) */
+// 🪟 A49 · one consumer: the trail. a second one would draw her voice a second time (two chat screens, two followers
+// fighting over where she is: the teleports), so it is refused and counted
+let soundingConsumer: SoundingListener | null = null;
+let soundingRefused = 0;
+/** the trail's door: told on every look at her clock (a sentence begins, she moves inside it, pauses, ends) · one
+ *  consumer at a time: a second is refused (it gets a no-op back) until the first lets go */
 export const onSounding = (fn: SoundingListener) => {
-	soundingListeners.add(fn);
+	if (soundingConsumer && soundingConsumer !== fn) {
+		soundingRefused += 1;
+		console.warn('🎙️ voice trail: a second consumer was refused (one trail per reply)');
+		return () => {};
+	}
+	soundingConsumer = fn;
 	return () => {
-		soundingListeners.delete(fn);
+		if (soundingConsumer === fn) soundingConsumer = null;
 	};
 };
+/** 🪟 A49 · her console and the tests, numbers only: the trail's door (1 consumer at most) and what it refused */
+export const soundingDoor = () => ({ consumers: soundingConsumer ? 1 : 0, refused: soundingRefused });
 
 // ── an ask ───────────────────────────────────────────────────────────────────────────────────────────────
 /** where a clip comes from (the speaker path when none is given): one per part, asked in order */
@@ -436,8 +448,17 @@ function tell(a: Ask, e: VoiceEvent) {
 		}
 	}
 }
+/** 🪟 A49 · her clock, read with the moment it was read: the element keeps one value through a task (the first read
+ *  sets it), so the same value read again keeps its first moment */
+let clockRead = { t: NaN, now: 0 };
+function clock(e: HTMLAudioElement): { t: number; now: number } {
+	const t = e.currentTime;
+	if (t !== clockRead.t) clockRead = { t, now: typeof performance !== 'undefined' ? performance.now() : Date.now() };
+	return clockRead;
+}
 function sound(a: Ask, extra: Partial<Sounding> = {}) {
-	const t = el && a.attached ? el.currentTime : 0;
+	const read = el && a.attached ? clock(el) : null;
+	const t = read ? read.t : 0;
 	const row = a.sounding;
 	const s: Sounding = {
 		seq: a.seq,
@@ -451,15 +472,16 @@ function sound(a: Ask, extra: Partial<Sounding> = {}) {
 		// in the middle of a stall (a sentence event, a heal) never sets the lead running while her voice is still
 		waiting: !!el && a.attached && !el.paused && !el.ended && el.readyState < 3,
 		rewind: a.rewind,
+		now: read?.now,
 		...extra
 	};
-	for (const fn of soundingListeners) {
+	const fn = soundingConsumer;
+	if (fn)
 		try {
 			fn(s);
 		} catch (err) {
 			console.warn('🎙️ voice trail:', err);
 		}
-	}
 }
 
 // ── the element ───────────────────────────────────────────────────────────────────────────────────────────
@@ -1208,7 +1230,7 @@ function addSkip(a: Ask, raw: Record<string, unknown> | null) {
  *  (only near an edge) one more look on the next frame */
 function look(a: Ask) {
 	if (active !== a || !a.attached || !el) return;
-	const t = el.currentTime;
+	const t = clock(el).t;
 	if (a.kind === 'stream') {
 		const cut = cutAt(a);
 		if (cut !== null && t >= cut - 0.05) {

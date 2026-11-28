@@ -28,6 +28,7 @@
 	import { thumbVerdict } from '$lib/utils/petal-thumbs';
 	import { lendPickFocus, pickFocus } from '$lib/utils/petal-voice';
 	import { watchSight } from '$lib/utils/petal-sight';
+	import { inertAt } from '$lib/utils/petal-screen'; // 🪟 A49 · a pick in a chat she can't see lends her eyes nothing
 	import {
 		reach,
 		reachedOf,
@@ -239,6 +240,7 @@
 	const focus = (slot: number) => {
 		const id = ids?.[slot];
 		const f = get(pickFocus);
+		if (root && inertAt(root)) return; // 🪟 A49 · its chat is not the screen she sees
 		if (id && (f?.id !== id || f.ids[0] !== ids[0])) pickFocus.set({ ids: [...ids], id });
 	};
 	const rest = (e: PointerEvent, slot: number | null) => {
@@ -253,7 +255,7 @@
 	// card centred in the scroller now (a swipe still settling counts where it lands), else the card under
 	// her pointer now (a key pressed while she points), else the one her pointer last rested on
 	const focusNow = () => {
-		if (!ids?.length) return null;
+		if (!ids?.length || (root && inertAt(root))) return null; // 🪟 A49 · only a pick she can see
 		let slot: number | null = null;
 		if ($mobile && scroller) {
 			const box = scroller.getBoundingClientRect();

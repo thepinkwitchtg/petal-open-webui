@@ -2298,6 +2298,7 @@
 				{:else if tab.kind === 'chat'}
 					<ChatTab
 						bind:this={chatViews[tab.id]}
+						petalActive={panelVisible && !!panelTarget && visibleTabIds.has(tab.id)}
 						bind:streaming={chatStreamingStates[tab.id]}
 						bind:tabTitleEditor={chatTitleEditors[tab.id]}
 						bind:tabActions={chatTabActions[tab.id]}

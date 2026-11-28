@@ -33,19 +33,35 @@
 	import { settings } from '$lib/stores';
 	import {
 		firstWords,
-		heardReplies,
+		heardReplies as heardAll,
 		tapTarget,
-		speakersInView,
-		voiceReplies,
+		speakersInView as speakersAll,
+		voiceReplies as repliesAll,
 		voiceTap,
-		voiceTarget,
-		voiceNotes,
-		voiceUI,
+		voiceTarget as targetAll,
+		voiceNotes as notesAll,
+		voiceUI as uiAll,
 		watchSoon,
 		type VoiceUI
 	} from '$lib/utils/petal-voice';
+	import { everAlive, gate, inertAt, type PetalScreen } from '$lib/utils/petal-screen';
 
 	const i18n = getContext<Writable<i18nType>>('i18n');
+	// 🪟 A49 · the bubble of a chat she can't see (under the phone's tabs drawer, a tab parked behind another) listens
+	// to nothing: each of her voice's stores reaches it only while its screen is alive, and alive again it reads them
+	// as they are now
+	const screen = getContext<PetalScreen | undefined>('petal-screen') ?? everAlive;
+	const alive = screen.active;
+	const voiceUI = gate(uiAll, screen, 'bubble·voiceUI');
+	const voiceTarget = gate(targetAll, screen, 'bubble·voiceTarget');
+	const heardReplies = gate(heardAll, screen, 'bubble·heardReplies');
+	const voiceReplies = gate(repliesAll, screen, 'bubble·voiceReplies');
+	const speakersInView = gate(speakersAll, screen, 'bubble·speakersInView');
+	const voiceNotes = gate(notesAll, screen, 'bubble·voiceNotes');
+	/** its own chat's box (a tab's chat has its own; outside any chat: the page's) */
+	const chatBox = (): HTMLElement | null =>
+		screen.root()?.querySelector<HTMLElement>('#messages-container, [id^="note-messages-"]') ??
+		document.getElementById('messages-container');
 	const gid = `pvb-ink-${++made}`;
 	const WAKE_MS = 2000; // a tap's full strength, before it steps back again
 	const DIM = 0.26; // the ghost while she speaks
@@ -71,7 +87,9 @@
 	 *  her eyes until then, so it doesn't count */
 	function speakerShown(id: string | null, inView: Set<string>): boolean {
 		if (!id || !inView.has(id)) return false;
-		const sp = document.getElementById(`speak-button-${id}`);
+		const sp =
+			(screen.root() ?? document).querySelector<HTMLElement>(`[id="speak-button-${id}"]`) ??
+			document.getElementById(`speak-button-${id}`);
 		return !!sp && !sp.classList.contains('hover-reveal');
 	}
 
@@ -128,7 +146,7 @@
 	/** only the chat's own words count (never the bar's): a grid of probes around the ring finds what's
 	 *  there, and each line of their text is measured against it */
 	function clearance(b: DOMRect): number {
-		const chat = document.getElementById('messages-container');
+		const chat = chatBox();
 		if (!chat) return 1;
 		const R = NEAR_PX;
 		let d = R;
@@ -165,14 +183,14 @@
 	};
 	/** while she speaks: new lines, a growing bar, a resize or the chat scrolling may bring words close (the
 	 *  chat's scroll is listened to only now, while her voice plays) */
-	let chatBox: HTMLElement | null = null;
+	let scroller: HTMLElement | null = null;
 	function watchNear() {
-		chatBox?.removeEventListener('scroll', measureSoon);
-		chatBox = document.getElementById('messages-container');
-		chatBox?.addEventListener('scroll', measureSoon, { passive: true });
+		scroller?.removeEventListener('scroll', measureSoon);
+		scroller = chatBox();
+		scroller?.addEventListener('scroll', measureSoon, { passive: true });
 		if (typeof ResizeObserver !== 'undefined') {
 			nearRO ??= new ResizeObserver(() => measureSoon()); // observing twice is a no-op
-			const chat = document.getElementById('messages-container');
+			const chat = chatBox();
 			const lines = chat?.firstElementChild ?? chat;
 			if (lines) nearRO.observe(lines);
 			if (root?.parentElement) nearRO.observe(root.parentElement);
@@ -180,8 +198,8 @@
 		measureSoon();
 	}
 	function unwatchNear() {
-		chatBox?.removeEventListener('scroll', measureSoon);
-		chatBox = null;
+		scroller?.removeEventListener('scroll', measureSoon);
+		scroller = null;
 		nearRO?.disconnect();
 		nearRO = null;
 		if (nearFrame) cancelAnimationFrame(nearFrame);
@@ -204,7 +222,7 @@
 	}
 	$: shown = bubble && (running || (!!target && !$heardReplies.has(target)));
 	$: speaking = running && !paused; // ‖ at 26 % (before a play and paused: ▶ at full)
-	$: if (typeof window !== 'undefined') speaking ? watchNear() : unwatchNear();
+	$: if (typeof window !== 'undefined') speaking && $alive ? watchNear() : unwatchNear(); // 🪟 A49 · only while alive
 	// the reply's own speaker is right there: it steps out of the way (keyboard focus still shows it)
 	$: aside = speakerSeen && !focusing;
 	$: presence = aside ? 0 : speaking ? (awake ? 1 : DIM * near) : 1;
@@ -228,12 +246,13 @@
 
 	const onKey = (e: KeyboardEvent) => {
 		if (e.defaultPrevented || e.repeat || $settings?.keyboardShortcuts === false) return;
+		if (!screen.isAlive()) return; // 🪟 A49 · a bubble she can't see never takes the hotkey
 		if (matchKeybinding(e) !== Shortcut.PETAL_VOICE) return;
 		const t = e.target instanceof Node ? e.target : null;
 		const box = root?.closest('[data-composer-id]') ?? root?.closest('form') ?? root?.parentElement;
 		const inside = !!(box && t && (box.contains(t) || root.contains(t)));
 		const loose = !t || t === document.body || t === document.documentElement;
-		const lone = bubbles.size === 1 && !document.querySelector('.modal, [role="alertdialog"]');
+		const lone = [...bubbles].filter((x) => !inertAt(x)).length === 1 && !document.querySelector('.modal, [role="alertdialog"]'); // 🪟 A49 · alone among the bubbles she can see
 		if (!inside && !(loose && lone)) return;
 		e.preventDefault();
 		e.stopPropagation();
@@ -261,7 +280,7 @@
 			barRO.observe(root.parentElement);
 		}
 		watchSoon();
-		if (speaking) watchNear(); // mounted while she speaks: the bar exists now
+		if (speaking && screen.isAlive()) watchNear(); // mounted while she speaks: the bar exists now
 		window.addEventListener('keydown', onKey, true);
 		window.addEventListener('resize', placeBar, { passive: true });
 	});

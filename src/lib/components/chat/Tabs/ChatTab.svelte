@@ -29,6 +29,7 @@
 	export let history;
 	export let modelId: string | null = null;
 	export let systemPrompt = '';
+	export let petalActive = true; // 🪟 A49 · its tab is the one she sees (Tabs says): only then does its chat work
 	const i18n = getContext<any>('i18n');
 	const draftKey = uuidv4();
 	const restored = !!initialView;
@@ -112,6 +113,7 @@
 		bind:tabActions
 		embedded={true}
 		tabbed={true}
+		{petalActive}
 		{parentChatId}
 		chatIdProp={chatId}
 		embeddedDraftKey={chatId ? '' : draftKey}

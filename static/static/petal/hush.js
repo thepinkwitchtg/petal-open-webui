@@ -1,6 +1,15 @@
 /* ═══════════════════════════════════════════════════════════
-   🌸 petal · hush  ·  v0.17 · open + reply + linger + pin + pulse + reflex · she writes it in
+   🌸 petal · hush  ·  v0.18 · open + reply + linger + pin + pulse + reflex · she writes it in
    the empty chat field whispers — and Petal writes the words.
+   needs the server's hush block ≥ 0.19 (routers/tasks.py: a line as she writes it + how it streamed;
+   the server's startup check reads this line and names an older block in its log)
+
+   v0.18 · one screen alive (A49): with 0.13.4's tabs more than one chat field can be on the page (the
+          page's chat under the phone's tabs drawer, a tab parked behind another): hush writes only in a
+          field she can see (a chat screen that's alive, petal-screen) and the light runs only there.
+          the dial left <html>: the whole line lives in one rule aimed at the chat fields themselves, so a
+          line landing restyles those fields, never the whole page (on a long chat that was a full-page
+          restyle per line: 55–75 ms here, ~4× on her phone). the console reads it where it lives now.
 
    v0.17 · you can see her write it (A48): on the rig Petal writes a whole whisper in about a
           tenth of a second, so a line drawn as it arrived landed in a few frames: to the eye,
@@ -237,12 +246,15 @@
 		return null;
 	};
 	const fields = () => [...document.querySelectorAll(FIELD)].filter(isField);
+	/* v0.18 · a chat screen she can't see (A49: under the phone's tabs drawer, a tab parked) wears
+	   data-petal-inert: its field is never the one hush writes in */
+	const inert = (el) => !!el?.closest?.('[data-petal-screen]')?.hasAttribute('data-petal-inert'); // the screen nearest it decides
 	const field = () => {
 		const all = fields();
 		if (all.length < 2) return all[0] ?? null;
-		const seen = all.filter((el) => el.getClientRects().length > 0);
+		const seen = all.filter((el) => el.getClientRects().length > 0 && !inert(el));
 		const active = document.activeElement;
-		return seen.find((el) => el.contains(active)) ?? seen[0] ?? all[0];
+		return seen.find((el) => el.contains(active)) ?? seen[0] ?? all.find((el) => !inert(el)) ?? all[0];
 	};
 	const emptyP = () => field()?.querySelector('p.is-editor-empty') ?? null;
 	let flowing = null; // the live line in hand: { text, raf, ctrl } (v0.16)
@@ -264,6 +276,8 @@
 	   long chat each of those frames was a whole-page restyle, 55–110 ms each on the replica) */
 	const root = document.documentElement;
 	const INK_AT = ":is(#chat-input, [id^='chat-tab-input-']) p.is-editor-empty:first-child:not(.ai-autocompletion)::before";
+	/* v0.18 · the light runs only in the field she can see: each live line aims the rule at that one field */
+	const inkAt = (f) => (f?.id ? `#${CSS.escape(f.id)} p.is-editor-empty:first-child:not(.ai-autocompletion)::before` : INK_AT);
 	let inkSheet = null;
 	const inkRule = () => {
 		try {
@@ -311,6 +325,11 @@
 	const inkStart = () => {
 		inkStop();
 		inkFont = null;
+		const r = inkRule();
+		if (r)
+			try {
+				r.selectorText = inkAt(field());
+			} catch (_) {}
 		inkEdge(0);
 		const p = emptyP();
 		if (p) void getComputedStyle(p, '::before').getPropertyValue('--p-hush-lit'); // that pseudo only
@@ -335,8 +354,35 @@
 		if (f.raf) cancelAnimationFrame(f.raf);
 		if (abort) f.ctrl?.abort();
 	};
+	/* v0.18 · the dial: the whole line, in one rule aimed at the chat fields themselves (never on <html>: a value
+	   there is inherited by the whole page, so every line landing restyled all of it) · every field shows it, a tab
+	   left behind too, so a screen she comes back to already holds the line of now */
+	const DIAL_AT = "#chat-input, [id^='chat-tab-input-']";
+	let dialSheet = null;
+	const dialRule = () => {
+		try {
+			if (!dialSheet?.isConnected || !dialSheet.sheet?.cssRules?.length) {
+				dialSheet?.remove();
+				dialSheet = document.createElement('style');
+				dialSheet.id = 'petal-hush-dial';
+				dialSheet.textContent = `${DIAL_AT}{}`;
+				document.head.appendChild(dialSheet);
+			}
+			return dialSheet.sheet?.cssRules?.[0] ?? null;
+		} catch (_) {
+			return null;
+		}
+	};
+	/* the whole line as the dial holds it now (css text, as before: '""' when empty) */
+	const dialNow = () => {
+		const r = dialSheet ? dialRule() : null;
+		const v = r?.style.getPropertyValue('--p-hush');
+		return (v || getComputedStyle(document.documentElement).getPropertyValue('--p-hush')).trim();
+	};
 	const whole = (line) => {
-		document.documentElement.style.setProperty('--p-hush', toCss(line));
+		const r = dialRule();
+		if (r) r.style.setProperty('--p-hush', toCss(line));
+		else document.documentElement.style.setProperty('--p-hush', toCss(line)); // no stylesheet to write in: the old way
 		for (const el of fields()) el.style.removeProperty('--p-hush'); // every field, a tab left behind too
 	};
 	const flowDraw = () => {
@@ -1436,7 +1482,7 @@
 		const el = field();
 		const empty = emptyP();
 		const drawn = empty ? getComputedStyle(empty, '::before').content : null;
-		const dial = getComputedStyle(root).getPropertyValue('--p-hush').trim();
+		const dial = dialNow(); // v0.18 · where the dial lives now (never <html>)
 		const skinLoaded = getComputedStyle(root).getPropertyValue('--abyss').trim() !== '';
 		let theme = null;
 		try {

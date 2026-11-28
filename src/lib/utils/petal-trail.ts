@@ -340,9 +340,22 @@ export class Trail {
 			if (!this.seen()) return this.freeze();
 			this.wake(); // what held off her screen carries on from where it was
 			if (paused) return this.hold();
-			this.leadAnim.play();
+			this.run();
 			this.startDrops();
 		} catch {}
+	}
+
+	/** 🪟 A49 · the lead runs from where it's pinned, from the page's animation clock now: a play() only starts on the
+	 *  next frame (on a phone, a long frame later: the lead began behind her voice, then hopped to meet her) · a lead
+	 *  held still for her (rate 0) just plays, and stays held */
+	private run() {
+		const a = this.leadAnim;
+		if (!a) return;
+		const rate = a.playbackRate;
+		const raw = a.timeline?.currentTime; // null: its clock isn't running (it plays as before)
+		const tl = raw === null || raw === undefined ? NaN : Number(raw);
+		if (a.playState === 'running' || !rate || !Number.isFinite(tl)) return void a.play();
+		a.startTime = tl - Number(a.currentTime ?? 0) / rate;
 	}
 
 	/** her voice paused (or waiting for the stream): the lead holds where she is, no new mark drops, and what it

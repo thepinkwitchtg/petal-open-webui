@@ -5,9 +5,13 @@
 	import { getContext } from 'svelte';
 	import type { Writable } from 'svelte/store';
 	import type { i18n as i18nType } from 'i18next';
-	import { playReply, togglePause, voiceUI } from '$lib/utils/petal-voice';
+	import { playReply, togglePause, voiceUI as uiAll } from '$lib/utils/petal-voice';
+	import { everAlive, gate, type PetalScreen } from '$lib/utils/petal-screen';
 
 	const i18n = getContext<Writable<i18nType>>('i18n');
+	// 🪟 A49 · her voice reaches this speaker only while its chat is the screen she sees (a reply drawn in a chat she
+	// can't see holds its last look, and reads her voice as it is now when that chat comes back)
+	const voiceUI = gate(uiAll, getContext<PetalScreen | undefined>('petal-screen') ?? everAlive, 'speaker·voiceUI');
 
 	export let id: string;
 

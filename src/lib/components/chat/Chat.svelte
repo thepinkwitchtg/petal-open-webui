@@ -65,6 +65,8 @@
 	import { playReply, speakingNow } from '$lib/utils/petal-voice'; // 🔈 auto-playback in speaker mode (A23)
 	import { askedHere, askedLater, autoAfter, bornHere, picked, installAutoplay, newSend } from '$lib/utils/petal-autoplay'; // 🔈 A37
 	import { watchLounge } from '$lib/utils/petal-lounge'; // 🌊 A41 · Petal Stream: she speaks on her own
+	import { setContext as petalSetContext } from 'svelte';
+	import { newScreen, screenRoot } from '$lib/utils/petal-screen'; // 🪟 A49 · one screen alive: only the chat she sees works
 	import { petalDraft } from '$lib/utils/petal-draft'; // 📷 A33 · her draft kept in this browser too
 	import { installPetalCamera } from '$lib/utils/petal-camera'; // 📷 A33 · the camera stays in the page
 	import {
@@ -228,6 +230,12 @@
 	$: if (isSavedChatId($chatId)) mainChatHref = `/c/${$chatId}`;
 	export let embedded = false;
 	export let tabbed = false;
+	// 🪟 A49 · this chat is a screen: alive while she can see it (a tab's chat: its tab in front, the panel shown ·
+	// the page's chat: in front of its group on a wide screen, not under the phone's tabs drawer), inert otherwise
+	export let petalActive = true;
+	const petalScreen = newScreen(embedded ? 'tab' : 'main');
+	petalSetContext('petal-screen', petalScreen);
+	onDestroy(() => petalScreen.destroy());
 	const chatId = embedded ? writable('') : _chatId;
 	const chatTitle = embedded ? writable('') : _chatTitle;
 	const audioQueue = embedded ? writable<AudioQueue | null>(null) : _audioQueue;
@@ -4804,6 +4812,7 @@
 	let mainChatActive = false;
 	let mainChatStyle = '';
 	let mainChatGroupId = '';
+	$: petalScreen.set(embedded ? petalActive : fullWidthTabs ? mainChatActive : !($mobile && $showTabs)); // 🪟 A49
 	export let tabTitleEditor: import('svelte').Snippet | undefined = undefined;
 	let editingTitle = false;
 	let titleDraft = '';
@@ -6620,6 +6629,7 @@
 		: ' '} w-full max-w-full min-w-0 flex flex-col"
 	id={chatContainerId}
 	data-chat={embedded ? instanceId : 'main'}
+	use:screenRoot={petalScreen}
 	role="presentation"
 	on:dragover|capture={(event) => tabs?.handleChatDragOver(event)}
 	on:drop|capture={(event) => tabs?.handleChatDrop(event)}
